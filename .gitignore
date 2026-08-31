@@ -1,0 +1,28 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+
+# models and scan output
+*.pt
+*.onnx
+*.mlpackage/
+*.mlmodel
+highlights/
+output/
+*.sqlite
+.ultralytics/
+screenshots/
+
+# local media (too large for git)
+inputclips/
+*.mov
+*.mp4
+*.MP4
+*.MOV

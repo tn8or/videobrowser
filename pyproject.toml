@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "videobrowser"
+version = "0.1.0"
+description = "Extract interesting moments from motorcycle track-day GoPro footage"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    "lap>=0.5.12",
+    "ultralytics>=8.3.0",
+    "opencv-python-headless>=4.10.0",
+    "numpy>=1.26",
+    "torch>=2.4",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+videobrowser = "videobrowser.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
