@@ -26,10 +26,34 @@ def test_clip_windows_pad_and_merge():
     ]
     windows = clip_windows(events, pad=10, duration=100)
     assert len(windows) == 1
-    assert windows[0].t_start == 12.5
-    assert windows[0].t_end == 32.5
+    assert windows[0].t_start <= 12.5
+    assert windows[0].t_end >= 32.5
     assert "approaching_rider" in windows[0].types
     assert windows[0].score == 0.9
+
+
+def test_clip_windows_merge_offset_duplicates():
+    events = [
+        _event("approaching_rider", 401, 404, 0.9),
+        _event("nearby_rider", 400, 410, 0.5),
+        _event("receding_rider", 402, 405, 0.8),
+        _event("approaching_rider", 412, 415, 0.85),
+        _event("nearby_rider", 411, 418, 0.4),
+    ]
+    windows = clip_windows(events, pad=10, duration=500, max_len=24, max_clips=12)
+    assert len(windows) == 1
+    assert windows[0].t_start <= 402.5
+    assert windows[0].t_end >= 413.5
+    assert windows[0].t_end - windows[0].t_start <= 40.5
+
+
+def test_clip_windows_keep_separate_laps():
+    events = [
+        _event("approaching_rider", 358, 362, 0.9),
+        _event("approaching_rider", 402, 406, 0.85),
+    ]
+    windows = clip_windows(events, pad=10, duration=500, max_len=24, max_clips=12)
+    assert len(windows) == 2
 
 
 def test_clip_windows_do_not_span_whole_session():

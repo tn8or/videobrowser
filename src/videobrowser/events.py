@@ -63,16 +63,34 @@ def clip_windows(
     duration: float,
     max_len: float = 24.0,
     max_clips: int = 12,
+    merge_gap: float = 8.0,
 ) -> list[ClipWindow]:
-    """Cut short clips around the strongest peaks instead of one file of the whole session."""
+    """Cut clips around the strongest peaks, merging near-duplicates into one file."""
     if not events:
         return []
     half = min(pad, max(1.0, max_len / 2.0))
+    max_merge = max(max_len, 40.0)
     ranked = sorted(events, key=lambda e: (-e.score, e.t_start))
     windows: list[ClipWindow] = []
+
+    def _types(bucket: list[Event]) -> list[str]:
+        types: list[str] = []
+        for item in bucket:
+            if item.type not in types:
+                types.append(item.type)
+        return types
+
+    def _make(lo: float, hi: float, bucket: list[Event]) -> ClipWindow:
+        return ClipWindow(
+            t_start=lo,
+            t_end=hi,
+            recording_id=bucket[0].recording_id,
+            types=_types(bucket),
+            score=max(e.score for e in bucket),
+            events=bucket,
+        )
+
     for event in ranked:
-        if len(windows) >= max_clips:
-            break
         peak = event.t_peak
         lo = max(0.0, peak - half)
         hi = min(duration, max(peak + half, lo + 1.0))
@@ -80,25 +98,31 @@ def clip_windows(
             extra = (hi - lo - max_len) / 2.0
             lo += extra
             hi -= extra
-        if any(min(hi, w.t_end) - max(lo, w.t_start) > 4.0 for w in windows):
-            continue
-        nearby = [e for e in events if e.t_end >= lo and e.t_start <= hi]
-        if not nearby:
-            nearby = [event]
-        types: list[str] = []
-        for item in nearby:
-            if item.type not in types:
-                types.append(item.type)
-        windows.append(
-            ClipWindow(
-                t_start=lo,
-                t_end=hi,
-                recording_id=event.recording_id,
-                types=types,
-                score=max(e.score for e in nearby),
-                events=nearby,
+        nearby = [e for e in events if e.t_end >= lo and e.t_start <= hi] or [event]
+        host: int | None = None
+        for i, existing in enumerate(windows):
+            overlap = min(hi, existing.t_end) - max(lo, existing.t_start)
+            gap = 0.0 if overlap >= 0 else -overlap
+            union_lo = min(lo, existing.t_start)
+            union_hi = max(hi, existing.t_end)
+            if gap <= merge_gap and union_hi - union_lo <= max_merge:
+                host = i
+                break
+        if host is not None:
+            prev = windows[host]
+            bucket = list(prev.events)
+            for item in nearby:
+                if item not in bucket:
+                    bucket.append(item)
+            windows[host] = _make(
+                min(lo, prev.t_start),
+                max(hi, prev.t_end),
+                bucket,
             )
-        )
+            continue
+        if len(windows) >= max_clips:
+            continue
+        windows.append(_make(lo, hi, nearby))
     windows.sort(key=lambda w: w.t_start)
     return windows
 
