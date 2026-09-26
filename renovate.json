@@ -33,6 +33,13 @@
       "matchManagers": ["pep621"],
       "matchDepTypes": ["optionalDependencies", "devDependencies"],
       "groupName": "Python optional dependencies"
+    },
+    {
+      "description": "CI base image (Dockerfile.ci); merge rebuilds via ci-image workflow",
+      "matchManagers": ["dockerfile"],
+      "matchFileNames": ["Dockerfile.ci"],
+      "groupName": "CI base image"
     }
   ]
 }
+
