@@ -1,0 +1,16 @@
+# CI image for videobrowser: Python + Cairo build deps + ffmpeg.
+# Build/push (amd64, matches the ARC runner nodes):
+#   docker buildx build --platform linux/amd64 \
+#     -f Dockerfile.ci -t ghcr.io/tn8or/videobrowser/ci:3.12-bookworm --push .
+FROM python:3.12-bookworm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        pkg-config \
+        libcairo2-dev \
+        ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1
