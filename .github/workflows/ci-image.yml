@@ -42,5 +42,6 @@ jobs:
             --build-arg "DOCKERFILE_HASH=$HASH" \
             -f Dockerfile.ci \
             -t "$CI_IMAGE" .
+          docker run --rm "$CI_IMAGE" python -c "import sys; v=f'{sys.version_info.major}.{sys.version_info.minor}'; assert v == '${PY}', v"
           docker push "$CI_IMAGE"
-          echo "Pushed $CI_IMAGE (dockerfile.hash=$HASH)"
+          echo "Pushed $CI_IMAGE (dockerfile.hash=$HASH, python=${PY})"

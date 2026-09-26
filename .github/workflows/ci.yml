@@ -33,12 +33,14 @@ jobs:
             echo "Dockerfile.ci FROM does not match .python-version (${PY})" >&2
             exit 1
           fi
+          echo "py=${PY}" >> "${GITHUB_OUTPUT}"
           echo "image=${IMAGE}" >> "${GITHUB_OUTPUT}"
           echo "Using ${IMAGE}"
 
       - name: Build image if Dockerfile changed
         env:
           CI_IMAGE: ${{ steps.pin.outputs.image }}
+          PY: ${{ steps.pin.outputs.py }}
         run: |
           set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -46,7 +48,8 @@ jobs:
           if docker pull "$CI_IMAGE"; then
             CURRENT="$(docker image inspect -f '{{index .Config.Labels "dockerfile.hash"}}' "$CI_IMAGE" 2>/dev/null || true)"
             if [ "$CURRENT" = "$HASH" ]; then
-              echo "Image up to date (hash=$HASH)"
+              docker run --rm "$CI_IMAGE" python -c "import sys; v=f'{sys.version_info.major}.{sys.version_info.minor}'; assert v == '${PY}', v"
+              echo "Image up to date (hash=$HASH, python=${PY})"
               exit 0
             fi
             echo "CI image inputs changed ($CURRENT -> $HASH); rebuilding"
@@ -57,6 +60,7 @@ jobs:
             --build-arg "DOCKERFILE_HASH=$HASH" \
             -f Dockerfile.ci \
             -t "$CI_IMAGE" .
+          docker run --rm "$CI_IMAGE" python -c "import sys; v=f'{sys.version_info.major}.{sys.version_info.minor}'; assert v == '${PY}', v"
           docker push "$CI_IMAGE"
 
   test:
