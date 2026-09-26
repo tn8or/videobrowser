@@ -14,15 +14,28 @@
   "automergeType": "pr",
   "platformAutomerge": true,
   "ignoreTests": false,
-  "ignorePaths": [
-    "**/requirements.txt"
-  ],
   "dockerfile": {
     "managerFilePatterns": [
       "/(^|/)Dockerfile\\.ci$/"
     ]
   },
   "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Shared CI Python minor (.python-version ↔ Dockerfile.ci FROM)",
+      "managerFilePatterns": [
+        "/(^|/)\\.python-version$/",
+        "/(^|/)Dockerfile\\.ci$/"
+      ],
+      "matchStrings": [
+        "^(?<currentValue>\\d+\\.\\d+)\\s*$",
+        "FROM python:(?<currentValue>\\d+\\.\\d+)-bookworm@"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "python",
+      "versioningTemplate": "docker",
+      "extractVersionTemplate": "^(?<version>\\d+\\.\\d+)"
+    },
     {
       "customType": "regex",
       "description": "Explicit # renovate datasource pins for ARG/ENV *_VERSION in Dockerfile.ci",
@@ -41,19 +54,20 @@
       "groupName": "GitHub Actions"
     },
     {
-      "description": "Group Python runtime dependencies",
-      "matchManagers": ["pep621"],
-      "matchDepTypes": ["dependencies"],
-      "groupName": "Python dependencies"
+      "description": "Group Python deps from pyproject.toml (pep621/poetry managers)",
+      "matchManagers": ["pep621", "poetry"],
+      "matchFileNames": ["pyproject.toml"],
+      "groupName": "Python pyproject"
     },
     {
-      "description": "Group Python optional / dev dependencies",
-      "matchManagers": ["pep621"],
-      "matchDepTypes": ["optionalDependencies", "devDependencies"],
-      "groupName": "Python optional dependencies"
+      "description": "CI Python image: digests only — no 3.12→3.14 style jumps",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["python"],
+      "matchUpdateTypes": ["minor", "major"],
+      "enabled": false
     },
     {
-      "description": "CI Dockerfile.ci: base image digests/tags and pinned apt packages",
+      "description": "CI Dockerfile.ci: base image digests and pinned apt packages",
       "matchManagers": ["dockerfile"],
       "matchFileNames": ["Dockerfile.ci"],
       "groupName": "CI Dockerfile"
