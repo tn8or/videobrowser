@@ -60,7 +60,7 @@
     },
     {
       "description": "CI Dockerfile.ci: custom *_VERSION pins",
-      "matchManagers": ["regex"],
+      "matchManagers": ["custom.regex"],
       "matchFileNames": ["Dockerfile.ci"],
       "groupName": "CI Dockerfile"
     }
