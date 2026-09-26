@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 class ProbeError(RuntimeError):
@@ -22,6 +24,9 @@ class VideoInfo:
     codec: str
     has_gpmd: bool
     gpmd_index: int | None
+    # UTC epoch seconds of the recording start, from the clip's creation
+    # metadata. None when no usable timestamp is present.
+    creation_utc: float | None = None
 
 
 def ffprobe_json(path: Path) -> dict[str, Any]:
@@ -69,6 +74,36 @@ def _stream_rotation(stream: dict[str, Any]) -> int:
     return 0
 
 
+def _creation_utc(tags: dict[str, Any]) -> float | None:
+    """Parse the GoPro creation timestamp into UTC epoch seconds.
+
+    GoPro often writes ``creation_time`` as a ``Z`` timestamp whose clock digits
+    are the camera's local wall time (not true UTC). Treat the digits as
+    Europe/Copenhagen local, matching the RaceBox compositor.
+
+    Prefer :func:`videobrowser.telemetry.creation_utc_prefer_gps` at use sites:
+    GPMD ``GPSU`` is authoritative when the camera clock is wrong.
+    """
+    raw = tags.get("com.apple.quicktime.creationdate") or tags.get("creation_time")
+    if not raw:
+        return None
+    cleaned = str(raw).replace("Z", "").replace("+00:00", "")
+    try:
+        naive = datetime.fromisoformat(cleaned)
+    except ValueError:
+        return None
+    local = naive.replace(tzinfo=ZoneInfo("Europe/Copenhagen"))
+    return local.astimezone(timezone.utc).timestamp()
+
+
+def local_date_label(utc_epoch: float | None, tz_name: str = "Europe/Copenhagen") -> str:
+    """Calendar date in *tz_name* for grouping outputs (``YYYY-MM-DD``)."""
+    if utc_epoch is None:
+        return "unknown"
+    local = datetime.fromtimestamp(utc_epoch, tz=timezone.utc).astimezone(ZoneInfo(tz_name))
+    return local.strftime("%Y-%m-%d")
+
+
 def _fps(stream: dict[str, Any]) -> float:
     for key in ("avg_frame_rate", "r_frame_rate"):
         value = stream.get(key) or "0/0"
@@ -113,4 +148,5 @@ def probe(path: Path) -> VideoInfo:
         codec=str(video.get("codec_name") or ""),
         has_gpmd=gpmd_index is not None,
         gpmd_index=gpmd_index,
+        creation_utc=_creation_utc(fmt.get("tags") or {}),
     )

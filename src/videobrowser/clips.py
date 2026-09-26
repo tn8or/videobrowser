@@ -17,19 +17,52 @@ def _run(cmd: list[str]) -> None:
 
 # GoPro rotation metadata is unreliable, so orientation is detected visually and
 # baked into the pixels here. Each pipeline pairs a decoder with an encoder;
-# hardware (VideoToolbox) is tried first, then a pure software fallback.
+# hardware is tried first (VideoToolbox on macOS, NVENC on Windows/Linux),
+# then a pure software fallback.
 _REENCODE_PIPELINES: tuple[tuple[list[str], list[str]], ...] = (
     (["-hwaccel", "videotoolbox"], ["-c:v", "h264_videotoolbox", "-b:v", "60M"]),
+    (
+        ["-hwaccel", "cuda"],
+        [
+            "-c:v", "h264_nvenc",
+            "-preset", "p4",
+            "-rc", "vbr",
+            "-b:v", "60M",
+            "-pix_fmt", "yuv420p",
+        ],
+    ),
     ([], ["-c:v", "libx264", "-crf", "18", "-preset", "veryfast", "-pix_fmt", "yuv420p"]),
 )
 
 
-def _reencode(input_args: list[str], rot: str, dest: Path) -> None:
+def _reencode_pipelines(rotation: int) -> tuple[tuple[list[str], list[str]], ...]:
+    """Pick encode pipelines for a baked rotation.
+
+    90/270 produce portrait frames. VideoToolbox often reports success but
+    writes the unrotated landscape buffer into the 9:16 size (stretched,
+    still sideways). NVENC does not have that bug, so it stays in the stack.
+    180 stays 16:9 and VideoToolbox does apply the filter; leftover Display
+    Matrix is stripped separately in ``_reencode``.
+    """
+    if rotation % 180:
+        return tuple(
+            p for p in _REENCODE_PIPELINES if "videotoolbox" not in " ".join(p[0] + p[1])
+        )
+    return _REENCODE_PIPELINES
+
+
+def _reencode(input_args: list[str], rot: str, dest: Path, rotation: int = 180) -> None:
     """Re-encode with a baked rotation filter, trying hardware then software."""
     last: RuntimeError | None = None
-    for decode_args, encode_args in _REENCODE_PIPELINES:
+    for decode_args, encode_args in _reencode_pipelines(rotation):
         cmd = (
             ["ffmpeg", "-hide_banner", "-y", "-loglevel", "error", *decode_args]
+            # Input option: treat the source as unrotated so the encoder does
+            # not copy GoPro Display Matrix side data onto the baked file.
+            # ``rotate=0`` metadata alone does not clear that matrix; leftover
+            # -180 makes the overlay decoder (and VLC) flip the footage again
+            # while the HUD is drawn upright.
+            + ["-display_rotation", "0"]
             + input_args
             + ["-vf", rot, *encode_args, "-c:a", "copy"]
             + ["-metadata:s:v:0", "rotate=0", "-movflags", "+faststart", str(dest)]
@@ -64,7 +97,7 @@ def _cut(
     rot = rotation_filter(rotation)
     try:
         if rot:
-            _reencode(input_args, rot, dest)
+            _reencode(input_args, rot, dest, rotation=rotation)
         else:
             _run(
                 ["ffmpeg", "-hide_banner", "-y", "-loglevel", "error"]
@@ -149,7 +182,7 @@ def export_clip(
         rot = rotation_filter(rotation)
         try:
             if rot:
-                _reencode(input_args, rot, dest)
+                _reencode(input_args, rot, dest, rotation=rotation)
             else:
                 _run(
                     ["ffmpeg", "-hide_banner", "-y", "-loglevel", "error"]

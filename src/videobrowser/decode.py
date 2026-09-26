@@ -10,6 +10,18 @@ import numpy as np
 
 from videobrowser.probe import VideoInfo
 
+# Tried in order for analysis decode. Unavailable backends fail fast.
+_HWACCEL_TRY: tuple[list[str], ...] = (
+    ["-hwaccel", "videotoolbox"],
+    ["-hwaccel", "cuda"],
+)
+
+
+def _hwaccel_name(args: list[str]) -> str:
+    if len(args) >= 2 and args[0] == "-hwaccel":
+        return args[1]
+    return "software"
+
 
 def scaled_size(width: int, height: int, max_side: int, rotation: int = 0) -> tuple[int, int]:
     if rotation % 180:
@@ -65,10 +77,8 @@ def decode_one_frame(
     vf = ",".join(vf_parts)
     expected = width * height * 3
 
-    def _run(hwaccel: bool) -> bytes:
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
-        if hwaccel:
-            cmd += ["-hwaccel", "videotoolbox"]
+    def _run(hw: list[str]) -> bytes:
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", *hw]
         cmd += [
             "-noautorotate",
             "-ss",
@@ -87,9 +97,11 @@ def decode_one_frame(
         ]
         return subprocess.run(cmd, capture_output=True).stdout
 
-    raw = _run(True)
-    if len(raw) < expected:
-        raw = _run(False)
+    raw = b""
+    for hw in (*_HWACCEL_TRY, []):
+        raw = _run(hw)
+        if len(raw) >= expected:
+            break
     if len(raw) < expected:
         return None
     return np.frombuffer(raw[:expected], dtype=np.uint8).copy().reshape(height, width, 3)
@@ -121,6 +133,7 @@ class FrameDecoder:
         self.width, self.height = scaled_size(info.width, info.height, max_side, self.rotation)
         self._proc: subprocess.Popen[bytes] | None = None
         self.hwaccel = False
+        self.backend = "software"
 
     def __enter__(self) -> FrameDecoder:
         return self
@@ -147,11 +160,13 @@ class FrameDecoder:
         parts.append(f"scale={self.width}:{self.height}")
         return ",".join(parts)
 
-    def _cmd(self, hwaccel: bool) -> list[str]:
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
-        if hwaccel:
-            cmd += ["-hwaccel", "videotoolbox"]
-        cmd += [
+    def _cmd(self, hw: list[str]) -> list[str]:
+        return [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            *hw,
             "-noautorotate",
             "-i",
             str(self.path),
@@ -163,12 +178,11 @@ class FrameDecoder:
             "rawvideo",
             "pipe:1",
         ]
-        return cmd
 
-    def _iter(self, hwaccel: bool) -> Iterator[Frame]:
+    def _iter(self, hw: list[str]) -> Iterator[Frame]:
         try:
             self._proc = subprocess.Popen(
-                self._cmd(hwaccel),
+                self._cmd(hw),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
             )
@@ -195,13 +209,24 @@ class FrameDecoder:
                 t += dt
         finally:
             self.close()
-        if not yielded and hwaccel:
-            raise RuntimeError("videotoolbox decode produced no frames")
+        if not yielded and hw:
+            raise RuntimeError(f"{_hwaccel_name(hw)} decode produced no frames")
 
     def frames(self) -> Iterator[Frame]:
-        self.hwaccel = True
+        last: RuntimeError | None = None
+        for hw in _HWACCEL_TRY:
+            self.backend = _hwaccel_name(hw)
+            self.hwaccel = True
+            try:
+                yield from self._iter(hw)
+                return
+            except RuntimeError as exc:
+                last = exc
+        self.backend = "software"
+        self.hwaccel = False
         try:
-            yield from self._iter(hwaccel=True)
+            yield from self._iter([])
         except RuntimeError:
-            self.hwaccel = False
-            yield from self._iter(hwaccel=False)
+            if last is not None:
+                raise last
+            raise

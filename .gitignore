@@ -8,6 +8,7 @@ build/
 .mypy_cache/
 .ruff_cache/
 .DS_Store
+*.vbo
 
 # models and scan output
 *.pt
@@ -26,3 +27,4 @@ inputclips/
 *.mp4
 *.MP4
 *.MOV
+racebox/fetcher/downloads.db

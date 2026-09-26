@@ -14,10 +14,16 @@ dependencies = [
     "numpy>=1.26",
     "torch>=2.4",
     "tqdm>=4.66",
+    "pycairo>=1.25.0",
+    # IANA tz database; required on Windows so overlay clocks can use CEST/CET.
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# RaceBox session auto-download (Playwright/Chromium). Requires
+# `playwright install chromium` after installing.
+fetch = ["playwright>=1.44.0"]
 
 [project.scripts]
 videobrowser = "videobrowser.cli:main"

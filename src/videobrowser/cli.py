@@ -22,8 +22,23 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     scan = sub.add_parser("scan", help="Scan video files and export highlight clips")
-    scan.add_argument("inputs", nargs="+", type=Path, help="Video files or folders")
+    scan.add_argument(
+        "inputs",
+        nargs="+",
+        type=Path,
+        help="Video files or folders (folders are searched recursively)",
+    )
     scan.add_argument("-o", "--out", type=Path, required=True, help="Output directory")
+    scan.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help=(
+            "Skip any file or folder whose relative path contains TEXT "
+            "(repeatable, case-insensitive substring)"
+        ),
+    )
     scan.add_argument("--fps", type=float, default=5.0, help="Analysis frame rate (default 5)")
     scan.add_argument("--size", type=int, default=640, help="Max analysis side in pixels")
     scan.add_argument("--pad", type=float, default=10.0, help="Seconds of pad around each event")
@@ -74,21 +89,53 @@ def build_parser() -> argparse.ArgumentParser:
         default=12,
         help="Max clips per recording (highest-scoring peaks, default 12)",
     )
+    scan.add_argument(
+        "--no-racebox",
+        action="store_true",
+        help="Disable the RaceBox telemetry overlay stage entirely",
+    )
+    scan.add_argument(
+        "--no-fetch",
+        action="store_true",
+        help="Do not auto-download RaceBox sessions before scanning",
+    )
+    scan.add_argument(
+        "--sessions-dir",
+        type=Path,
+        default=None,
+        help="Directory of RaceBox .vbo sessions (default: <out>/sessions)",
+    )
+    scan.add_argument(
+        "--font",
+        default="/System/Library/Fonts/Supplemental/Arial.ttf",
+        help="TTF font used for overlay text",
+    )
+    scan.add_argument(
+        "--stats",
+        type=Path,
+        default=None,
+        help="Stats SQLite for lap bests (default: <out>/stats.sqlite)",
+    )
     return parser
 
 
 def scan_cmd(args: argparse.Namespace) -> int:
     inputs = [p.expanduser() for p in args.inputs]
-    paths = iter_video_paths(inputs)
+    out = args.out.expanduser().resolve()
+    paths = iter_video_paths(
+        inputs, exclude_roots=[out], exclude_substrings=args.exclude
+    )
+    if args.exclude:
+        print("exclude: " + ", ".join(args.exclude))
     if not paths:
         print("no video files found", file=sys.stderr)
         return 1
-    recordings = group_recordings(paths)
+    recordings = group_recordings(paths, input_roots=inputs)
     camera_map = CameraMap.load(args.map) if args.map else CameraMap({}, {})
     if args.map:
         print(f"camera map override: {args.map}")
 
-    out = args.out.expanduser().resolve()
+    print(f"found {len(paths)} video(s) in {len(recordings)} recording(s)")
     out.mkdir(parents=True, exist_ok=True)
     db = ScanDB.open(out / "scan.sqlite")
     device = pick_device(args.device)
@@ -115,6 +162,24 @@ def scan_cmd(args: argparse.Namespace) -> int:
         max_clips=args.max_clips,
     )
 
+    if not args.no_racebox:
+        try:
+            from videobrowser.racebox_stage import prepare
+
+            print("racebox: setting up overlays…", flush=True)
+            sessions_dir = (args.sessions_dir or (out / "sessions")).expanduser()
+            stats_path = (args.stats or (out / "stats.sqlite")).expanduser()
+            config.racebox = prepare(
+                out_dir=out,
+                sessions_dir=sessions_dir,
+                font_path=args.font,
+                stats_path=stats_path,
+                do_fetch=not args.no_fetch,
+            )
+        except Exception as exc:
+            print(f"racebox setup failed, continuing without overlays: {exc}")
+            config.racebox = None
+
     all_events = []
     try:
         for recording in recordings:
@@ -126,7 +191,7 @@ def scan_cmd(args: argparse.Namespace) -> int:
         all_events,
         clips=[
             {"path": str(p)}
-            for p in sorted((out / "clips").glob("*.mp4"))
+            for p in sorted((out / "clips").rglob("*.mp4"))
         ]
         if (out / "clips").exists()
         else [],

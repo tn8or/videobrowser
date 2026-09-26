@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 from tqdm import tqdm
 
@@ -13,9 +14,10 @@ from videobrowser.gopro import Recording
 from videobrowser.motion import DEFAULT_THRESHOLD, event_is_moving, scene_motion
 from videobrowser.preview import write_previews
 from videobrowser.profiles import CameraMap, Profile, apply_ego_mask, guess_profile_from_samples, resolve_profile
+from videobrowser.probe import local_date_label
 from videobrowser.puck import detect_puck
 from videobrowser.riders import RiderTracker, TrackPoint, score_tracks
-from videobrowser.telemetry import LeanSample, lean_series, leaned
+from videobrowser.telemetry import LeanSample, creation_utc_prefer_gps, lean_series, leaned
 
 
 @dataclass
@@ -37,6 +39,8 @@ class ScanConfig:
     min_motion: float = DEFAULT_THRESHOLD
     max_clip_seconds: float = 24.0
     max_clips: int = 12
+    # Optional RaceboxContext; when set, overlay clips are produced after cuts.
+    racebox: Any = None
 
 
 def pick_device(requested: str) -> str:
@@ -211,7 +215,7 @@ def scan_recording(
         ) as decoder:
             frame_iter = decoder.frames()
             first = next(frame_iter, None)
-            backend = "videotoolbox" if decoder.hwaccel else "software"
+            backend = decoder.backend
             print(f"  decode {backend} {decoder.width}x{decoder.height} @ {config.fps:g}fps")
 
             def _frames():
@@ -273,7 +277,10 @@ def scan_recording(
         max_len=config.max_clip_seconds,
         max_clips=config.max_clips,
     )
-    clip_dir = config.out_dir / "clips"
+    date_label = local_date_label(
+        creation_utc_prefer_gps(recording.chapters[0].info) if recording.chapters else None
+    )
+    clip_dir = config.out_dir / "clips" / date_label
     if not config.no_clips:
         _clear_stale_outputs(clip_dir, recording.recording_id, ".mp4")
     clip_records: list[tuple[ClipWindow, Path | None]] = []
@@ -287,7 +294,15 @@ def scan_recording(
                 print(f"  clip failed {dest.name}: {exc}")
         clip_records.append((window, path))
 
-    preview_dir = config.out_dir / "previews"
+    if config.racebox is not None and not config.no_clips:
+        try:
+            from videobrowser.racebox_stage import run_for_recording
+
+            run_for_recording(recording, windows, profile.rotation, config.racebox)
+        except Exception as exc:
+            print(f"  racebox overlays failed: {exc}")
+
+    preview_dir = config.out_dir / "previews" / date_label
     if config.preview_limit and events:
         _clear_stale_outputs(preview_dir, recording.recording_id, ".jpg")
         try:

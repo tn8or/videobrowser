@@ -1,7 +1,7 @@
 import numpy as np
 
 from videobrowser.decode import rotate_bgr, scaled_size
-from videobrowser.probe import normalize_rotation
+from videobrowser.probe import local_date_label, normalize_rotation
 from videobrowser.profiles import (
     SIDE,
     CameraMap,
@@ -70,6 +70,16 @@ def test_infer_rotation_upside_down():
     image[:200, :] = (90, 90, 90)
     image[200:, :] = (220, 155, 35)
     assert infer_rotation(image) == 180
+
+
+def test_local_date_label_copenhagen():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    cph = ZoneInfo("Europe/Copenhagen")
+    morning = datetime(2026, 8, 1, 9, 15, tzinfo=cph)
+    assert local_date_label(morning.astimezone(timezone.utc).timestamp()) == "2026-08-01"
+    assert local_date_label(None) == "unknown"
 
 
 def test_normalize_display_matrix():
