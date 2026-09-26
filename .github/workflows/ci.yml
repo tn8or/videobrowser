@@ -10,9 +10,6 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  CI_IMAGE: ghcr.io/tn8or/videobrowser/ci:3.12-bookworm
-
 jobs:
   image:
     name: Ensure CI image
@@ -20,22 +17,39 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image: ${{ steps.pin.outputs.image }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve CI Python image
+        id: pin
+        run: |
+          set -euo pipefail
+          PY="$(tr -d '[:space:]' < .python-version)"
+          IMAGE="ghcr.io/tn8or/videobrowser/ci:${PY}-bookworm"
+          if ! grep -qE "^FROM python:${PY}-bookworm@" Dockerfile.ci; then
+            echo "Dockerfile.ci FROM does not match .python-version (${PY})" >&2
+            exit 1
+          fi
+          echo "image=${IMAGE}" >> "${GITHUB_OUTPUT}"
+          echo "Using ${IMAGE}"
+
       - name: Build image if Dockerfile changed
+        env:
+          CI_IMAGE: ${{ steps.pin.outputs.image }}
         run: |
           set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          HASH="$(sha256sum Dockerfile.ci | awk '{print $1}')"
+          HASH="$(sha256sum Dockerfile.ci .python-version | sha256sum | awk '{print $1}')"
           if docker pull "$CI_IMAGE"; then
             CURRENT="$(docker image inspect -f '{{index .Config.Labels "dockerfile.hash"}}' "$CI_IMAGE" 2>/dev/null || true)"
             if [ "$CURRENT" = "$HASH" ]; then
               echo "Image up to date (hash=$HASH)"
               exit 0
             fi
-            echo "Dockerfile.ci changed ($CURRENT -> $HASH); rebuilding"
+            echo "CI image inputs changed ($CURRENT -> $HASH); rebuilding"
           else
             echo "Image missing; building"
           fi
@@ -53,6 +67,7 @@ jobs:
       contents: read
       packages: read
     env:
+      CI_IMAGE: ${{ needs.image.outputs.image }}
       PIP_INDEX_URL: http://pypi-proxy.github-arc.svc.cluster.local:8080/simple/
       PIP_TRUSTED_HOST: pypi-proxy.github-arc.svc.cluster.local
     steps:

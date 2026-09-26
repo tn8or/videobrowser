@@ -9,14 +9,12 @@ on:
     branches: [main]
     paths:
       - Dockerfile.ci
+      - .python-version
       - .github/workflows/ci-image.yml
 
 concurrency:
   group: ci-image
   cancel-in-progress: true
-
-env:
-  CI_IMAGE: ghcr.io/tn8or/videobrowser/ci:3.12-bookworm
 
 jobs:
   build:
@@ -32,8 +30,14 @@ jobs:
       - name: Build and push
         run: |
           set -euo pipefail
+          PY="$(tr -d '[:space:]' < .python-version)"
+          CI_IMAGE="ghcr.io/tn8or/videobrowser/ci:${PY}-bookworm"
+          if ! grep -qE "^FROM python:${PY}-bookworm@" Dockerfile.ci; then
+            echo "Dockerfile.ci FROM does not match .python-version (${PY})" >&2
+            exit 1
+          fi
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          HASH="$(sha256sum Dockerfile.ci | awk '{print $1}')"
+          HASH="$(sha256sum Dockerfile.ci .python-version | sha256sum | awk '{print $1}')"
           docker build --pull --no-cache \
             --build-arg "DOCKERFILE_HASH=$HASH" \
             -f Dockerfile.ci \

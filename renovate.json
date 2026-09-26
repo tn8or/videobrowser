@@ -22,6 +22,22 @@
   "customManagers": [
     {
       "customType": "regex",
+      "description": "Shared CI Python minor (.python-version ↔ Dockerfile.ci FROM)",
+      "managerFilePatterns": [
+        "/(^|/)\\.python-version$/",
+        "/(^|/)Dockerfile\\.ci$/"
+      ],
+      "matchStrings": [
+        "^(?<currentValue>\\d+\\.\\d+)\\s*$",
+        "FROM python:(?<currentValue>\\d+\\.\\d+)-bookworm@"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "python",
+      "versioningTemplate": "docker",
+      "extractVersionTemplate": "^(?<version>\\d+\\.\\d+)"
+    },
+    {
+      "customType": "regex",
       "description": "Explicit # renovate datasource pins for ARG/ENV *_VERSION in Dockerfile.ci",
       "managerFilePatterns": [
         "/(^|/)Dockerfile\\.ci$/"
@@ -44,7 +60,14 @@
       "groupName": "Python pyproject"
     },
     {
-      "description": "CI Dockerfile.ci: base image digests/tags and pinned apt packages",
+      "description": "CI Python image: digests only — no 3.12→3.14 style jumps",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["python"],
+      "matchUpdateTypes": ["minor", "major"],
+      "enabled": false
+    },
+    {
+      "description": "CI Dockerfile.ci: base image digests and pinned apt packages",
       "matchManagers": ["dockerfile"],
       "matchFileNames": ["Dockerfile.ci"],
       "groupName": "CI Dockerfile"
