@@ -30,7 +30,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from videobrowser.clips import export_clip
+from videobrowser.clips import display_rotation_args, export_clip
 from videobrowser.events import ClipWindow
 from videobrowser.gopro import Recording, chapter_at
 from videobrowser.overlay_bridge import ensure_on_path, load as _load_bridge
@@ -306,7 +306,7 @@ def _overlay_pass(
         # leftover GoPro Display Matrix and invert the footage under an
         # upright overlay.
         "-noautorotate",
-        "-display_rotation", "0",
+        *display_rotation_args(0),
         "-i", str(src),
         "-f", "rawvideo",
         "-pix_fmt", "bgra",
