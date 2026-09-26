@@ -1,6 +1,38 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:recommended",
+    ":automergeRequireAllStatusChecks"
+  ],
+  "timezone": "Europe/Copenhagen",
+  "schedule": [
+    "at any time"
+  ],
+  "prHourlyLimit": 1,
+  "automerge": true,
+  "automergeType": "pr",
+  "platformAutomerge": true,
+  "ignoreTests": false,
+  "ignorePaths": [
+    "**/requirements.txt"
+  ],
+  "packageRules": [
+    {
+      "description": "Group GitHub Actions updates",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Group Python runtime dependencies",
+      "matchManagers": ["pep621"],
+      "matchDepTypes": ["dependencies"],
+      "groupName": "Python dependencies"
+    },
+    {
+      "description": "Group Python optional / dev dependencies",
+      "matchManagers": ["pep621"],
+      "matchDepTypes": ["optionalDependencies", "devDependencies"],
+      "groupName": "Python optional dependencies"
+    }
   ]
 }
