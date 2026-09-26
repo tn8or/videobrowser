@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI_IMAGE: ghcr.io/tn8or/videobrowser/ci:3.12-bookworm
+
+jobs:
+  image:
+    name: Ensure CI image
+    runs-on: videobrowser
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image if Dockerfile changed
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          HASH="$(sha256sum Dockerfile.ci | awk '{print $1}')"
+          if docker pull "$CI_IMAGE"; then
+            CURRENT="$(docker image inspect -f '{{index .Config.Labels "dockerfile.hash"}}' "$CI_IMAGE" 2>/dev/null || true)"
+            if [ "$CURRENT" = "$HASH" ]; then
+              echo "Image up to date (hash=$HASH)"
+              exit 0
+            fi
+            echo "Dockerfile.ci changed ($CURRENT -> $HASH); rebuilding"
+          else
+            echo "Image missing; building"
+          fi
+          docker build --pull \
+            --build-arg "DOCKERFILE_HASH=$HASH" \
+            -f Dockerfile.ci \
+            -t "$CI_IMAGE" .
+          docker push "$CI_IMAGE"
+
+  test:
+    name: Tests
+    needs: image
+    runs-on: videobrowser
+    permissions:
+      contents: read
+      packages: read
+    env:
+      PIP_INDEX_URL: http://pypi-proxy.github-arc.svc.cluster.local:8080/simple/
+      PIP_TRUSTED_HOST: pypi-proxy.github-arc.svc.cluster.local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install package and run tests
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "$CI_IMAGE"
+          # DinD cannot bind-mount the runner workspace; stream the tree in via tar.
+          tar -C "$PWD" --exclude .git -czf - . | docker run --rm -i \
+            -e PIP_INDEX_URL \
+            -e PIP_TRUSTED_HOST \
+            -e PIP_DISABLE_PIP_VERSION_CHECK \
+            "$CI_IMAGE" \
+            bash -lc 'mkdir -p /workspace && tar -C /workspace -xzf - && cd /workspace && python -m pip install -U pip && pip install -e ".[dev]" && pytest -q'

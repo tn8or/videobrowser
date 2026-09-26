@@ -15,6 +15,30 @@ def _run(cmd: list[str]) -> None:
         raise RuntimeError(proc.stderr.strip() or f"command failed: {cmd[:4]}")
 
 
+_DISPLAY_ROTATION_SUPPORTED: bool | None = None
+
+
+def ffmpeg_supports_display_rotation() -> bool:
+    """True when ffmpeg accepts ``-display_rotation`` (FFmpeg >= ~6.1)."""
+    global _DISPLAY_ROTATION_SUPPORTED
+    if _DISPLAY_ROTATION_SUPPORTED is None:
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-h", "full"],
+            capture_output=True,
+            text=True,
+        )
+        blob = (proc.stdout or "") + (proc.stderr or "")
+        _DISPLAY_ROTATION_SUPPORTED = "-display_rotation" in blob
+    return _DISPLAY_ROTATION_SUPPORTED
+
+
+def display_rotation_args(degrees: int = 0) -> list[str]:
+    """Input args that clear/override Display Matrix when the build supports it."""
+    if ffmpeg_supports_display_rotation():
+        return ["-display_rotation", str(degrees)]
+    return []
+
+
 # GoPro rotation metadata is unreliable, so orientation is detected visually and
 # baked into the pixels here. Each pipeline pairs a decoder with an encoder;
 # hardware is tried first (VideoToolbox on macOS, NVENC on Windows/Linux),
@@ -61,8 +85,9 @@ def _reencode(input_args: list[str], rot: str, dest: Path, rotation: int = 180) 
             # not copy GoPro Display Matrix side data onto the baked file.
             # ``rotate=0`` metadata alone does not clear that matrix; leftover
             # -180 makes the overlay decoder (and VLC) flip the footage again
-            # while the HUD is drawn upright.
-            + ["-display_rotation", "0"]
+            # while the HUD is drawn upright. Needs FFmpeg >= ~6.1; omitted on
+            # older builds (e.g. Debian bookworm 5.1).
+            + display_rotation_args(0)
             + input_args
             + ["-vf", rot, *encode_args, "-c:a", "copy"]
             + ["-metadata:s:v:0", "rotate=0", "-movflags", "+faststart", str(dest)]

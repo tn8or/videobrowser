@@ -1,0 +1,42 @@
+name: CI image
+
+on:
+  # Pick up Debian/security updates inside the same base tag.
+  schedule:
+    - cron: "0 4 * * 1" # Mondays 04:00 UTC
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile.ci
+      - .github/workflows/ci-image.yml
+
+concurrency:
+  group: ci-image
+  cancel-in-progress: true
+
+env:
+  CI_IMAGE: ghcr.io/tn8or/videobrowser/ci:3.12-bookworm
+
+jobs:
+  build:
+    name: Rebuild CI image
+    runs-on: videobrowser
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          HASH="$(sha256sum Dockerfile.ci | awk '{print $1}')"
+          docker build --pull --no-cache \
+            --build-arg "DOCKERFILE_HASH=$HASH" \
+            -f Dockerfile.ci \
+            -t "$CI_IMAGE" .
+          docker push "$CI_IMAGE"
+          echo "Pushed $CI_IMAGE (dockerfile.hash=$HASH)"
