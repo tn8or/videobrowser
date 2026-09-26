@@ -21,7 +21,7 @@ jobs:
       image: ${{ steps.pin.outputs.image }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Resolve CI Python image
         id: pin
@@ -76,7 +76,7 @@ jobs:
       PIP_TRUSTED_HOST: pypi-proxy.github-arc.svc.cluster.local
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install package and run tests
         run: |
