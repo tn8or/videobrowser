@@ -75,6 +75,7 @@ output/
   highlights/YYYY-MM-DD/     # highlight clips re-cut with a COMPACT telemetry overlay
   full_sessions/YYYY-MM-DD/  # one clip per RaceBox session, out-lap -> in-lap (FULL overlay)
   fastest_laps/YYYY-MM-DD/   # fastest timed lap per session, +/-10s (FULL overlay)
+  vertical/YYYY-MM-DD/       # 1080x1920 follow-cam copy of each highlight (VERTICAL overlay)
   sessions/                  # downloaded/.vbo files (default location)
   stats.sqlite               # lap bests used for green/purple lap colouring
   scan.sqlite                # detection log
@@ -91,6 +92,11 @@ RaceBox session date. Recordings with no timestamp go under `unknown/`.
 - **Full** (`full_sessions/`, `fastest_laps/`): date/time, lap number + running
   lap timer with ON TRACK / BEHIND, last four laps with sector times, track map,
   speed, lean.
+
+- **Vertical** (`vertical/`): the compact elements laid out for 9:16 phone
+  video, kept clear of the Reels / TikTok / Shorts UI. The 9:16 crop pans to
+  follow the rider that triggered the clip (else the kneepuck, else any rider
+  in view). Made with `--no-racebox` too, using GoPro telemetry or date/time.
 
 Corner entry/exit speeds are disabled in all variants.
 
@@ -175,6 +181,7 @@ track days.
 | `--max-clip-seconds` | 24 | Max highlight length |
 | `--max-clips` | 12 | Max highlights per recording |
 | `--no-racebox` | off | Disable the RaceBox overlay stage entirely |
+| `--no-vertical` | off | Do not write 1080x1920 follow-cam copies to `vertical/` |
 | `--no-fetch` | off | Do not auto-download RaceBox sessions |
 | `--sessions-dir` | `<out>/sessions` | Folder of `.vbo` sessions |
 | `--font` | Arial | TTF font for overlay text |

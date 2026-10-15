@@ -48,16 +48,8 @@ Done (committed, untested on real footage):
 - [x] `tests/test_vertical.py`: path logic, layout and overlay tests pass
 
 Next steps:
-- [ ] Fix `test_export_vertical_follows_subject`. The first version used
-      `drawbox=x='40+t*250'`, but in drawbox `t` means thickness, so the source
-      had no box and the test failed for that reason (crop offsets looked right:
-      30 -> 360 px). It was switched to an `overlay` of a white `color` source,
-      but that ffmpeg command then hung (likely the overlay never ending; try
-      adding `:shortest=1` / `eof_action=endall`, or `-t 2`). Debug helper idea:
-      spy on `vertical._render` to print `offsets`.
-- [ ] Run the full suite: `pip install -e ".[dev]" && pytest`
-- [ ] README + INSTRUCTIONS: document `vertical/` output and `--no-vertical`
+- [x] ffmpeg integration test fixed (synthetic video now uses `overlay ... shortest=1`)
+- [x] README documents `vertical/` and `--no-vertical`
 - [ ] Try on real footage; tune `SMOOTH_TAU`, `MAX_PAN_PER_S`, `SWITCH_RATIO`
       in `vertical.py`, and check the overlay safe zones on a phone
 - [ ] Verify `sendcmd` + `crop` commands on the CI image's ffmpeg (bookworm 5.1)
-- [ ] Open a draft PR from `claude/project-thread-i75obm`

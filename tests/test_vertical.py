@@ -174,7 +174,7 @@ def _make_moving_box(path: Path) -> None:
             "-f", "lavfi", "-i", "color=c=black:s=640x360:d=2:r=25",
             "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
             "-f", "lavfi", "-i", "color=c=white:s=60x120:d=2:r=25",
-            "-filter_complex", "[0:v][2:v]overlay=x='40+t*250':y=120[v]",
+            "-filter_complex", "[0:v][2:v]overlay=x='40+t*250':y=120:shortest=1[v]",
             "-map", "[v]", "-map", "1:a",
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
             str(path),
