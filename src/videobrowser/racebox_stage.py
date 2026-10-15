@@ -436,12 +436,13 @@ def _pick_highlight_source(
     fps: float,
     clip_start_utc: Optional[float],
     clip_end_utc: Optional[float],
+    variant: str = "compact",
 ):
     # 1. Overlapping RaceBox session -> compact overlay with track map.
     if clip_start_utc is not None and clip_end_utc is not None:
         matches = _sessions_overlapping(ctx.sessions, clip_start_utc, clip_end_utc)
         if matches:
-            config = _render_config(ctx, width, height, fps, "compact")
+            config = _render_config(ctx, width, height, fps, variant)
             try:
                 renderer = _new_session_renderer(ctx, matches[0], config, clip_start_utc)
                 return _SessionFrameSource(renderer, clip_start_utc, fps)
@@ -458,16 +459,68 @@ def _pick_highlight_source(
         except Exception:
             lean, speed = [], []
         if lean or speed:
-            config = _render_config(ctx, width, height, fps, "compact")
+            config = _render_config(ctx, width, height, fps, variant)
             local_start = window.t_start - chapter.offset
             return _GpmdFrameSource(ctx, config, lean, speed, local_start, fps, clip_start_utc)
 
     # 3. Date/time only (requires a wall-clock timestamp).
     if clip_start_utc is not None:
-        config = _render_config(ctx, width, height, fps, "compact")
+        config = _render_config(ctx, width, height, fps, variant)
         return _GpmdFrameSource(ctx, config, [], [], 0.0, fps, clip_start_utc)
 
     return None
+
+
+def overlay_context(out_dir: Path, font_path: str) -> RaceboxContext:
+    """Session-less context for overlays when the RaceBox stage is disabled.
+
+    Overlays then fall back to the clip's own GoPro telemetry or date/time.
+    """
+    return RaceboxContext(
+        sessions=[],
+        stats_path=Path(out_dir) / "stats.sqlite",
+        font_path=font_path or _DEFAULT_FONT,
+        out_dir=str(out_dir),
+        rb=_rb(),
+        gpu_caps=None,
+    )
+
+
+def recording_start_utc(recording: Recording, ctx: RaceboxContext) -> Optional[float]:
+    """UTC start of *recording*, aligned to the RaceBox clock when possible."""
+    if not recording.chapters:
+        return None
+    info0 = recording.chapters[0].info
+    blob = None
+    if info0.has_gpmd and info0.gpmd_index is not None:
+        blob = extract_gpmd_bytes(info0.path, info0.gpmd_index)
+    rec_start_utc = creation_utc_prefer_gps(info0, blob)
+    if rec_start_utc is not None and blob and ctx.sessions:
+        offset = _gopro_session_offset(blob, ctx.sessions)
+        if abs(offset) >= 0.05:
+            print(f"  racebox clock aligned by {offset:+.2f}s")
+            rec_start_utc += offset
+    return rec_start_utc
+
+
+def overlay_source(
+    ctx: RaceboxContext,
+    recording: Recording,
+    window: ClipWindow,
+    width: int,
+    height: int,
+    fps: float,
+    rec_start_utc: Optional[float],
+    variant: str,
+):
+    """Frame source for an overlay over *window*, or None when there is no data."""
+    clip_start_utc = rec_start_utc + window.t_start if rec_start_utc is not None else None
+    clip_end_utc = (
+        clip_start_utc + (window.t_end - window.t_start) if clip_start_utc is not None else None
+    )
+    return _pick_highlight_source(
+        ctx, recording, window, width, height, fps, clip_start_utc, clip_end_utc, variant
+    )
 
 
 def _highlight_name(window: ClipWindow) -> str:
@@ -629,24 +682,16 @@ def run_for_recording(
     windows: list[ClipWindow],
     rotation: int,
     ctx: RaceboxContext,
-) -> None:
+) -> Optional[float]:
+    """Render the overlay sets for *recording*; returns its aligned UTC start."""
     if ctx is None or not ctx.enabled:
-        return
+        return None
     if not recording.chapters:
-        return
+        return None
 
     out_dir = Path(ctx.out_dir)
 
-    info0 = recording.chapters[0].info
-    blob = None
-    if info0.has_gpmd and info0.gpmd_index is not None:
-        blob = extract_gpmd_bytes(info0.path, info0.gpmd_index)
-    rec_start_utc = creation_utc_prefer_gps(info0, blob)
-    if rec_start_utc is not None and blob and ctx.sessions:
-        offset = _gopro_session_offset(blob, ctx.sessions)
-        if abs(offset) >= 0.05:
-            print(f"  racebox clock aligned by {offset:+.2f}s")
-            rec_start_utc += offset
+    rec_start_utc = recording_start_utc(recording, ctx)
     rec_end_utc = rec_start_utc + recording.duration if rec_start_utc is not None else None
     date_label = local_date_label(rec_start_utc)
 
@@ -660,7 +705,7 @@ def run_for_recording(
         _render_highlight(ctx, recording, window, rotation, rec_start_utc, highlights_dir)
 
     if rec_start_utc is None or rec_end_utc is None or not ctx.sessions:
-        return
+        return rec_start_utc
 
     matched = _sessions_overlapping(ctx.sessions, rec_start_utc, rec_end_utc)
     for session in matched:
@@ -683,3 +728,4 @@ def run_for_recording(
             rec_end_utc,
             out_dir / ctx.fastest_dir / session_date,
         )
+    return rec_start_utc
