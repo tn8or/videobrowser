@@ -95,6 +95,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable the RaceBox telemetry overlay stage entirely",
     )
     scan.add_argument(
+        "--no-vertical",
+        action="store_true",
+        help="Do not write 1080x1920 follow-cam copies of clips to <out>/vertical",
+    )
+    scan.add_argument(
         "--no-fetch",
         action="store_true",
         help="Do not auto-download RaceBox sessions before scanning",
@@ -160,6 +165,8 @@ def scan_cmd(args: argparse.Namespace) -> int:
         min_motion=args.min_motion,
         max_clip_seconds=args.max_clip_seconds,
         max_clips=args.max_clips,
+        vertical=not args.no_vertical,
+        font_path=args.font,
     )
 
     if not args.no_racebox:

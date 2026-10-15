@@ -21,7 +21,8 @@ class RenderConfig:
     fps: int
     font_path: str
     # "full" draws the complete telemetry HUD; "compact" draws only the
-    # date/time, track map, speedometer and lean indicator.
+    # date/time, track map, speedometer and lean indicator; "vertical" is the
+    # compact HUD laid out for 9:16 social video (kept clear of app UI).
     variant: str = "full"
     # Corner Pre/Entry/Min metrics are disabled by default in the merged
     # pipeline; keep the flag so the drawing code can be re-enabled later.
@@ -252,7 +253,61 @@ def _draw_datetime(
     )
 
 
+# Fractions of a 9:16 frame covered by Reels / TikTok / Shorts UI: status and
+# tabs on top, caption and audio strip at the bottom, buttons down the right.
+_VERTICAL_SAFE_TOP = 0.12
+_VERTICAL_SAFE_BOTTOM = 0.25
+
+
+def is_compact(config: RenderConfig) -> bool:
+    """True for variants that draw only clock, map, speed and lean."""
+    return config.variant in ("compact", "vertical")
+
+
+def _compute_vertical_layout(config: RenderConfig):
+    margin = int(config.width * 0.08)
+    base_size = max(18, int(config.width * 0.045))
+    font_size = float(base_size)
+    font_large_size = base_size * 1.6
+    font_small_size = base_size * 0.75
+
+    bl_x = float(margin)
+    bottom = config.height * (1.0 - _VERTICAL_SAFE_BOTTOM)
+    box_size = int(base_size * 1.6)
+    # Speed and lean sit side by side bottom-left, above the caption strip and
+    # left of the button column, so neither hides under app UI.
+    speed_y = float(bottom - box_size - int(base_size * 1.4))
+    scratch = cairo.ImageSurface(cairo.FORMAT_A8, 8, 8)
+    scratch_ctx = cairo.Context(scratch)
+    _select_font(scratch_ctx, config.font_path, font_large_size)
+    speed_w = scratch_ctx.text_extents("999.9 km/h").x_advance
+    lean_cx = bl_x + speed_w + base_size * 2.0
+    box_x = lean_cx - box_size / 2
+    lean_text_y = speed_y
+    box_y = lean_text_y + int(base_size * 1.2)
+    bottom_line_y = int(speed_y + base_size * 3.8)
+    clock = _clock_block_metrics(scratch_ctx, config.font_path, font_size)
+    clock_top = float(int(config.height * _VERTICAL_SAFE_TOP))
+    x0 = float(margin)
+    y0 = clock_top + clock["height"] + int(base_size * 0.5)
+    return {
+        "margin": margin, "base_size": base_size,
+        "font_size": font_size, "font_large_size": font_large_size,
+        "font_small_size": font_small_size,
+        "x0": x0, "y0": y0, "list_y": y0 + int(base_size * 4.4),
+        "bl_x": bl_x, "speed_y": speed_y,
+        "clock_left": bl_x, "clock_top": clock_top,
+        "clock_width": clock["width"], "clock_height": clock["height"],
+        "box_x": float(box_x), "box_y": float(box_y), "box_size": box_size,
+        "lean_text_y": lean_text_y, "lean_cx": lean_cx,
+        "br_x": float(box_x), "br_y": lean_text_y,
+        "bottom_line_y": bottom_line_y,
+    }
+
+
 def _compute_layout(config: RenderConfig):
+    if config.variant == "vertical":
+        return _compute_vertical_layout(config)
     margin = int(min(config.width, config.height) * 0.10)
     base_size = max(18, int(min(config.width, config.height) * 0.03))
     font_size = float(base_size)
@@ -299,6 +354,11 @@ def _compute_layout(config: RenderConfig):
 
 def _map_geometry(config: RenderConfig) -> tuple[int, int, int, int]:
     """Square track-map box in the top-right, sized from the short side."""
+    if config.variant == "vertical":
+        margin = int(config.width * 0.08)
+        side = int(config.width * 0.28)
+        top = int(config.height * _VERTICAL_SAFE_TOP)
+        return config.width - side - margin, top, side, side
     margin = int(min(config.width, config.height) * 0.10)
     side = int(min(config.width, config.height) * 0.25)
     return config.width - side - margin, margin, side, side
@@ -374,7 +434,7 @@ def build_static_layer(
         )
         ctx.fill()
 
-    if config.variant != "compact":
+    if not is_compact(config):
         _bg_rect(x0, y0, "Lap 999", font_size)
         _bg_rect(x0, y0 + base_size + 6, "09:59.999", font_large_size)
         _bg_rect(x0, int(y0 + base_size * 2.8), "ON TRACK", font_small_size)
@@ -460,7 +520,7 @@ def render_frame(
     if state.wall_time_utc is not None:
         _draw_datetime(ctx, config, L, state.wall_time_utc, bg=not use_cached_bg)
 
-    compact = config.variant == "compact"
+    compact = is_compact(config)
 
     if not compact:
         if state.is_in_lap:

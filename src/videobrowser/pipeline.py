@@ -41,6 +41,9 @@ class ScanConfig:
     max_clips: int = 12
     # Optional RaceboxContext; when set, overlay clips are produced after cuts.
     racebox: Any = None
+    # 1080x1920 follow-cam copies of each clip under ``vertical/``.
+    vertical: bool = True
+    font_path: str = "/System/Library/Fonts/Supplemental/Arial.ttf"
 
 
 def pick_device(requested: str) -> str:
@@ -144,6 +147,58 @@ def _clear_stale_outputs(directory: Path, recording_id: str, suffix: str) -> Non
             print(f"  could not remove stale {path.name}: {exc}")
 
 
+def _export_verticals(
+    recording: Recording,
+    windows: list[ClipWindow],
+    profile: Profile,
+    config: ScanConfig,
+    tracks: dict[int, list[TrackPoint]],
+    puck_positions: list[tuple[float, float]],
+    rec_start_utc: float | None,
+    out_dir: Path,
+) -> None:
+    from videobrowser.vertical import export_vertical, focus_samples
+
+    overlay_factory = None
+    try:
+        from videobrowser import racebox_stage as rbs
+
+        ctx = config.racebox or rbs.overlay_context(config.out_dir, config.font_path)
+        if rec_start_utc is None:
+            rec_start_utc = rbs.recording_start_utc(recording, ctx)
+    except Exception as exc:
+        print(f"  vertical: overlay unavailable ({exc}); exporting without it")
+        ctx = None
+
+    # Without a tracked subject, aim where this mount puts the action.
+    fallback = 0.5
+    if profile.puck_roi is not None:
+        fallback = profile.puck_roi.x + profile.puck_roi.w / 2.0
+
+    _clear_stale_outputs(out_dir, recording.recording_id, ".mp4")
+    for window in windows:
+        dest = out_dir / _clip_name(window)
+        if ctx is not None:
+
+            def overlay_factory(w, h, fps, window=window):
+                return rbs.overlay_source(
+                    ctx, recording, window, w, h, fps, rec_start_utc, "vertical"
+                )
+
+        try:
+            export_vertical(
+                recording,
+                window,
+                dest,
+                profile.rotation,
+                focus_samples(window, tracks, puck_positions),
+                fallback_cx=fallback,
+                overlay_factory=overlay_factory,
+            )
+        except Exception as exc:
+            print(f"  vertical failed {dest.name}: {exc}")
+
+
 def scan_recording(
     recording: Recording,
     config: ScanConfig,
@@ -191,6 +246,8 @@ def scan_recording(
         tracker.reset()
     tracks: dict[int, list[TrackPoint]] = {}
     puck_hits: list[tuple[float, float]] = []
+    # (t, x centre as a fraction of frame width) for the vertical crop.
+    puck_positions: list[tuple[float, float]] = []
     motion_samples: list[tuple[float, float]] = []
     prev_image = None
     lean_samples = _lean_for_recording(recording) if "puck" in profile.pipelines else []
@@ -254,6 +311,9 @@ def scan_recording(
                         hit = detect_puck(frame.image, profile.puck_roi)
                         if hit:
                             puck_hits.append((global_t, hit.score))
+                            puck_positions.append(
+                                (global_t, hit.cx / max(1, frame.image.shape[1]))
+                            )
         if remaining is not None:
             remaining -= chapter.duration
 
@@ -294,13 +354,28 @@ def scan_recording(
                 print(f"  clip failed {dest.name}: {exc}")
         clip_records.append((window, path))
 
+    rec_start_utc: float | None = None
     if config.racebox is not None and not config.no_clips:
         try:
             from videobrowser.racebox_stage import run_for_recording
 
-            run_for_recording(recording, windows, profile.rotation, config.racebox)
+            rec_start_utc = run_for_recording(
+                recording, windows, profile.rotation, config.racebox
+            )
         except Exception as exc:
             print(f"  racebox overlays failed: {exc}")
+
+    if config.vertical and not config.no_clips and windows:
+        _export_verticals(
+            recording,
+            windows,
+            profile,
+            config,
+            tracks,
+            puck_positions,
+            rec_start_utc,
+            config.out_dir / "vertical" / date_label,
+        )
 
     preview_dir = config.out_dir / "previews" / date_label
     if config.preview_limit and events:
