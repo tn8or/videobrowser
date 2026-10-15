@@ -101,10 +101,10 @@ def fetch_sessions(sessions_dir: Path, headful: bool = False, max_clicks: int = 
         password = dl.read_secret(pass_f)
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=not headful)
-            context = browser.new_context(accept_downloads=True)
+            context = dl.new_context(browser)
             page = context.new_page()
             try:
-                dl.login(page, username, password)
+                dl.ensure_logged_in(page, username, password)
                 dl.load_all_sessions(page)
                 downloaded, skipped = dl.download_via_clicks(
                     page, sessions_dir, False, max_clicks, tracker

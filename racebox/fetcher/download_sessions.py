@@ -136,6 +136,99 @@ def login(page, username: str, password: str) -> None:
         page.goto(SESSIONS_URL, wait_until="domcontentloaded")
 
 
+# RaceBox put a Cloudflare Turnstile challenge on the login form, which an
+# automated browser can't pass. We log in once interactively (``--login``),
+# persist the cookies here, and reuse them for headless runs.
+AUTH_STATE_PATH = Path(__file__).resolve().parent / "auth_state.json"
+
+
+class NotLoggedInError(RuntimeError):
+    pass
+
+
+def is_logged_in(page) -> bool:
+    page.goto(SESSIONS_URL, wait_until="domcontentloaded")
+    return "/webapp/login" not in page.url
+
+
+def new_context(browser, auth_state: Path = AUTH_STATE_PATH):
+    if auth_state.exists():
+        return browser.new_context(
+            accept_downloads=True, storage_state=str(auth_state)
+        )
+    return browser.new_context(accept_downloads=True)
+
+
+def ensure_logged_in(page, username: str, password: str) -> None:
+    """Use saved cookies if still valid, else try a scripted login; raise if both fail."""
+    if is_logged_in(page):
+        return
+    try:
+        login(page, username, password)
+    except Exception:
+        pass
+    if is_logged_in(page):
+        page.context.storage_state(path=str(AUTH_STATE_PATH))
+        return
+    raise NotLoggedInError(
+        "not logged in to racebox.pro (login is behind a Cloudflare captcha). "
+        "Run once interactively: python racebox/fetcher/download_sessions.py --login"
+    )
+
+
+CHROME_BIN = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CHROME_PROFILE_DIR = Path(__file__).resolve().parent / "chrome_profile"
+CDP_PORT = 9333
+
+
+def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
+    """Log in by hand in a plain (non-automated) Chrome, then copy its cookies.
+
+    Turnstile rejects Playwright-launched browsers even when a human clicks, so
+    Chrome is started as a normal process with its own profile; we only attach
+    over CDP after the user confirms they are logged in.
+    """
+    import subprocess
+    import urllib.request
+
+    CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.Popen(
+        [
+            CHROME_BIN,
+            f"--user-data-dir={CHROME_PROFILE_DIR}",
+            f"--remote-debugging-port={CDP_PORT}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            LOGIN_URL,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        input(
+            "Log in to RaceBox in the Chrome window (solve the captcha), "
+            "then press Enter here… "
+        )
+        for _ in range(20):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=1)
+                break
+            except Exception:
+                time.sleep(0.5)
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
+            context = browser.contexts[0]
+            page = context.new_page()
+            if not is_logged_in(page):
+                raise NotLoggedInError("still not logged in; try --login again")
+            auth_state.parent.mkdir(parents=True, exist_ok=True)
+            context.storage_state(path=str(auth_state))
+            auth_state.chmod(0o600)
+            print(f"Saved login session to {auth_state}")
+    finally:
+        proc.terminate()
+
+
 def try_enable_bike_mode(page) -> None:
     candidates = [
         "text=/Bike Mode/i",
@@ -615,20 +708,35 @@ def main() -> int:
         action="store_true",
         help="Save debug screenshots when UI elements are not found",
     )
+    parser.add_argument(
+        "--login",
+        action="store_true",
+        help="Log in interactively (solve the captcha) and save cookies for later runs",
+    )
     args = parser.parse_args()
 
     script_dir = Path(__file__).resolve().parent
     username = read_secret(script_dir / "username")
     password = read_secret(script_dir / "password")
+
+    if args.login:
+        interactive_login()
+        return 0
+
     output_dir = Path(args.output_dir).resolve()
     tracker = DownloadTracker(script_dir / "downloads.db")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.headful)
-        context = browser.new_context(accept_downloads=True)
+        context = new_context(browser)
         page = context.new_page()
 
-        login(page, username, password)
+        try:
+            ensure_logged_in(page, username, password)
+        except NotLoggedInError as exc:
+            print(exc)
+            browser.close()
+            return 1
         load_all_sessions(page)
 
         print("Clicking through sessions to download VBO files...")
