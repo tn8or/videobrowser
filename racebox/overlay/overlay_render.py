@@ -253,10 +253,9 @@ def _draw_datetime(
     )
 
 
-# Fractions of a 9:16 frame covered by Reels / TikTok / Shorts UI: status and
-# tabs on top, caption and audio strip at the bottom, buttons down the right.
+# Inset of the vertical HUD from the top edge (clock, map); speed and lean
+# mirror it from the bottom edge.
 _VERTICAL_SAFE_TOP = 0.12
-_VERTICAL_SAFE_BOTTOM = 0.25
 
 
 def is_compact(config: RenderConfig) -> bool:
@@ -272,22 +271,24 @@ def _compute_vertical_layout(config: RenderConfig):
     font_small_size = base_size * 0.75
 
     bl_x = float(margin)
-    bottom = config.height * (1.0 - _VERTICAL_SAFE_BOTTOM)
     box_size = int(base_size * 1.6)
-    # Speed and lean sit side by side bottom-left, above the caption strip and
-    # left of the button column, so neither hides under app UI.
-    speed_y = float(bottom - box_size - int(base_size * 1.4))
     scratch = cairo.ImageSurface(cairo.FORMAT_A8, 8, 8)
     scratch_ctx = cairo.Context(scratch)
+    clock = _clock_block_metrics(scratch_ctx, config.font_path, font_size)
+    clock_top = float(int(config.height * _VERTICAL_SAFE_TOP))
+    # Speed (bottom-left) and lean (bottom-right) share a baseline whose text
+    # plaque ends as far above the bottom edge as the clock starts below the top.
+    _, pad_y = _text_bg_pad(font_large_size)
     _select_font(scratch_ctx, config.font_path, font_large_size)
-    speed_w = scratch_ctx.text_extents("999.9 km/h").x_advance
-    lean_cx = bl_x + speed_w + base_size * 2.0
+    speed_ext = scratch_ctx.text_extents("999.9 km/h")
+    below_baseline = speed_ext.y_bearing + speed_ext.height
+    speed_y = float(config.height - clock_top - pad_y - below_baseline)
+    lean_w = scratch_ctx.text_extents("90°").width
+    lean_cx = config.width - margin - lean_w / 2
     box_x = lean_cx - box_size / 2
     lean_text_y = speed_y
     box_y = lean_text_y + int(base_size * 1.2)
     bottom_line_y = int(speed_y + base_size * 3.8)
-    clock = _clock_block_metrics(scratch_ctx, config.font_path, font_size)
-    clock_top = float(int(config.height * _VERTICAL_SAFE_TOP))
     x0 = float(margin)
     y0 = clock_top + clock["height"] + int(base_size * 0.5)
     return {
@@ -302,6 +303,8 @@ def _compute_vertical_layout(config: RenderConfig):
         "lean_text_y": lean_text_y, "lean_cx": lean_cx,
         "br_x": float(box_x), "br_y": lean_text_y,
         "bottom_line_y": bottom_line_y,
+        # The vertical HUD shows lean as a number only, without the gauge.
+        "lean_box": False,
     }
 
 
@@ -349,6 +352,7 @@ def _compute_layout(config: RenderConfig):
         "lean_text_y": lean_text_y, "lean_cx": box_x + box_size / 2,
         "br_x": float(box_x), "br_y": lean_text_y,
         "bottom_line_y": bottom_line_y,
+        "lean_box": True,
     }
 
 
@@ -457,10 +461,11 @@ def build_static_layer(
     if config.show_corners:
         _bg_rect(br_x, bottom_line_y, "Prev Max 90.0° | Best 90.0°", font_small_size)
 
-    _set_source_rgba(ctx, GRAY)
-    ctx.set_line_width(2)
-    ctx.rectangle(box_x, box_y, box_size, box_size)
-    ctx.stroke()
+    if L["lean_box"]:
+        _set_source_rgba(ctx, GRAY)
+        ctx.set_line_width(2)
+        ctx.rectangle(box_x, box_y, box_size, box_size)
+        ctx.stroke()
 
     if map_layer is not None:
         ctx.set_source_surface(map_layer, 0, 0)
@@ -609,6 +614,7 @@ def render_frame(
         )
         draw_text_bg(lean_tx, br_y, lean_text, font_large_size, WHITE)
 
+    if state.lean_angle is not None and L["lean_box"]:
         if not use_cached_bg:
             _set_source_rgba(ctx, GRAY)
             ctx.set_line_width(2)

@@ -157,11 +157,18 @@ def test_vertical_layout_stays_inside_safe_zone():
     alpha = np.frombuffer(frame, dtype=np.uint8).reshape(1920, 1080, 4)[:, :, 3]
     ys, xs = np.nonzero(alpha)
     assert len(ys) > 0
-    assert ys.min() >= int(1920 * 0.12) - 40  # clear of status bar / tabs
-    assert ys.max() <= int(1920 * 0.75)  # clear of caption strip
-    # Nothing below the map in the right-hand button column.
-    low = ys > int(1920 * 0.12) + int(1080 * 0.28) + 20
-    assert xs[low].max() < 1080 - 150
+    top = int(1920 * 0.12)
+    # Clock starts `top` below the top edge; speed/lean end `top` above the bottom.
+    assert ys.min() >= top - 2
+    assert abs((1920 - ys.max()) - top) <= 4
+    # Speed sits bottom-left and lean bottom-right on the same line; the lean
+    # gauge (box + needle) is not drawn.
+    bottom = ys > 1920 // 2
+    assert xs[bottom].min() < 1080 * 0.15
+    assert xs[bottom].max() > 1080 * 0.85
+    band = alpha[1920 // 2 :]
+    assert not band[:, int(1080 * 0.55) : int(1080 * 0.75)].any()
+    assert ys[bottom].min() > 1920 - top - 120
     # Compact variant: no lap timer text in the vertical HUD.
     assert orr.is_compact(config)
 

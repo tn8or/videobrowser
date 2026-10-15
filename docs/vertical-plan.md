@@ -33,8 +33,8 @@ compact telemetry overlay laid out for Reels / TikTok / Shorts.
    Encoders reuse `clips._reencode_pipelines` (VideoToolbox / NVENC / x264) at 20M.
 4. **Overlay** (`racebox/overlay/overlay_render.py`): new `variant="vertical"`
    = compact HUD (clock, map, speed, lean) with a phone-safe layout: clock
-   top-left and map top-right below the top 12%; speed and lean side by side
-   bottom-left above the bottom 25% and clear of the right button column.
+   top-left and map top-right, 12% below the top edge; speed bottom-left and
+   lean (number only, no gauge) bottom-right, ending 12% above the bottom edge.
 5. **Plumbing**: `pipeline.scan_recording` records puck x positions, calls
    `_export_verticals` after the RaceBox stage; `racebox_stage` gained
    `overlay_context` (session-less ctx), `recording_start_utc`,
