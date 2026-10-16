@@ -43,6 +43,8 @@ class ScanConfig:
     racebox: Any = None
     # 1080x1920 follow-cam copies of each clip under ``vertical/``.
     vertical: bool = True
+    # Landscape clips under ``clips/`` plus the RaceBox overlay renders.
+    landscape: bool = True
     font_path: str = "/System/Library/Fonts/Supplemental/Arial.ttf"
 
 
@@ -341,13 +343,14 @@ def scan_recording(
         creation_utc_prefer_gps(recording.chapters[0].info) if recording.chapters else None
     )
     clip_dir = config.out_dir / "clips" / date_label
-    if not config.no_clips:
+    write_landscape = config.landscape and not config.no_clips
+    if write_landscape:
         _clear_stale_outputs(clip_dir, recording.recording_id, ".mp4")
     clip_records: list[tuple[ClipWindow, Path | None]] = []
     for window in windows:
         dest = clip_dir / _clip_name(window)
         path: Path | None = None
-        if not config.no_clips:
+        if write_landscape:
             try:
                 path = export_clip(recording, window, dest, rotation=profile.rotation)
             except RuntimeError as exc:
@@ -355,7 +358,7 @@ def scan_recording(
         clip_records.append((window, path))
 
     rec_start_utc: float | None = None
-    if config.racebox is not None and not config.no_clips:
+    if config.racebox is not None and write_landscape:
         try:
             from videobrowser.racebox_stage import run_for_recording
 
