@@ -182,6 +182,7 @@ track days.
 | `--max-clips` | 12 | Max highlights per recording |
 | `--no-racebox` | off | Disable the RaceBox overlay stage entirely |
 | `--no-vertical` | off | Do not write 1080x1920 follow-cam copies to `vertical/` |
+| `--no-landscape` | off | Do not write landscape clips or RaceBox overlay renders (only `vertical/`) |
 | `--no-fetch` | off | Do not auto-download RaceBox sessions |
 | `--sessions-dir` | `<out>/sessions` | Folder of `.vbo` sessions |
 | `--font` | Arial | TTF font for overlay text |
