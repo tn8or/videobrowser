@@ -163,8 +163,8 @@ def _sky_score(bgr: np.ndarray) -> float:
     return float(max(blue, overcast * 0.65))
 
 
-def infer_rotation(image: np.ndarray) -> int:
-    """Rotate so the sky (if any) ends up at the top. Downward mounts stay at 0."""
+def _sky_rotation(image: np.ndarray) -> int | None:
+    """Rotation that puts a clearly visible sky on top, or None without one."""
     h, w = image.shape[:2]
     band_h, band_w = max(1, h // 4), max(1, w // 4)
     scores = {
@@ -178,11 +178,34 @@ def infer_rotation(image: np.ndarray) -> int:
     second = ranked[1][1]
     # Need a clear winner so glare on a footpeg/side cam is not treated as sky.
     if best < 0.08 or best < second + 0.06:
-        return 0
+        return None
     # A sideways sky with sky also along the top is usually glare on an upright mount.
     if best_name in {"left", "right"} and scores["top"] >= 0.10:
         return 0
     return {"top": 0, "right": 270, "bottom": 180, "left": 90}[best_name]
+
+
+def infer_rotation(image: np.ndarray) -> int:
+    """Rotate so the sky (if any) ends up at the top. Downward mounts stay at 0."""
+    rotation = _sky_rotation(image)
+    return 0 if rotation is None else rotation
+
+
+def infer_rotation_from_samples(images: list[np.ndarray]) -> int:
+    """One rotation for the whole recording, voted across *images*.
+
+    Frames without a clear sky abstain. Turning the footage sideways needs a
+    majority of all frames: one frame with a bright fairing, white bridge or
+    sunlit tarmac along an edge must not rotate a landscape mount by 90.
+    """
+    votes = [r for r in (_sky_rotation(image) for image in images) if r is not None]
+    if not votes:
+        return 0
+    counts = Counter(votes)
+    sideways = max((90, 270), key=lambda r: counts[r])
+    if counts[sideways] * 2 > len(images):
+        return sideways
+    return 180 if counts[180] > counts[0] else 0
 
 
 def _has_gauge(gray: np.ndarray) -> bool:
@@ -291,16 +314,12 @@ def profile_from_guess(name: str, rotation: int, ego_side: str) -> Profile:
 def guess_profile_from_samples(images: list[np.ndarray]) -> Profile:
     if not images:
         return UNKNOWN
-    votes: list[tuple[str, int, str]] = []
-    for image in images:
-        rotation = infer_rotation(image)
-        upright = rotate_bgr(image, rotation)
-        name, ego = classify_upright(upright)
-        votes.append((name, rotation, ego))
+    # Rotation is decided once for the recording, not per mount guess: a lone
+    # frame must not win a tie between differently classified frames.
+    rotation = infer_rotation_from_samples(images)
+    votes = [classify_upright(rotate_bgr(image, rotation)) for image in images]
     name = Counter(v[0] for v in votes).most_common(1)[0][0]
-    subset = [v for v in votes if v[0] == name]
-    rotation = Counter(v[1] for v in subset).most_common(1)[0][0]
-    ego = Counter(v[2] for v in subset).most_common(1)[0][0]
+    ego = Counter(v[1] for v in votes if v[0] == name).most_common(1)[0][0]
     return profile_from_guess(name, rotation, ego)
 
 

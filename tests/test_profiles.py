@@ -9,6 +9,7 @@ from videobrowser.profiles import (
     guess_profile,
     guess_profile_from_samples,
     infer_rotation,
+    infer_rotation_from_samples,
     resolve_profile,
 )
 
@@ -129,3 +130,37 @@ def test_vote_from_samples():
     assert profile.name == "side"
     assert profile.ego_side == "right"
     assert "puck" in profile.pipelines
+
+
+def _sky_right() -> np.ndarray:
+    image = np.zeros((360, 640, 3), dtype=np.uint8)
+    image[:, :400] = (90, 90, 90)
+    image[:, 400:] = (220, 155, 35)
+    image[:90, :] = (90, 90, 90)
+    return image
+
+
+def test_lone_sideways_frame_does_not_rotate_recording():
+    # Frames without sky abstain and classify differently; before, the single
+    # "sky on the right" frame won the name tie and turned the clip 270.
+    side = np.full((360, 640, 3), 130, dtype=np.uint8)
+    side[:, 460:] = 25
+    dash = np.full((360, 640, 3), 140, dtype=np.uint8)
+    dash[270:, :] = 20
+    profile = guess_profile_from_samples([_sky_right(), side, dash])
+    assert profile.rotation == 0
+    assert infer_rotation_from_samples([_sky_right(), side, dash, side, dash]) == 0
+
+
+def test_sideways_mount_needs_majority():
+    flat = np.full((360, 640, 3), 110, dtype=np.uint8)
+    assert infer_rotation_from_samples([_sky_right()] * 3 + [flat] * 2) == 270
+    assert infer_rotation_from_samples([_sky_right()] * 2 + [flat] * 3) == 0
+
+
+def test_upside_down_wins_over_abstaining_frames():
+    upside = np.zeros((360, 640, 3), dtype=np.uint8)
+    upside[:200, :] = (90, 90, 90)
+    upside[200:, :] = (220, 155, 35)
+    flat = np.full((360, 640, 3), 110, dtype=np.uint8)
+    assert infer_rotation_from_samples([upside, flat, flat]) == 180
