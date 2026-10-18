@@ -90,9 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max clips per recording (highest-scoring peaks, default 12)",
     )
     scan.add_argument(
+        "--no-overlay",
         "--no-racebox",
+        dest="no_overlay",
         action="store_true",
-        help="Disable the RaceBox telemetry overlay stage entirely",
+        help="No overlays at all: skip the RaceBox stage and the date/time on verticals",
     )
     scan.add_argument(
         "--no-vertical",
@@ -172,10 +174,11 @@ def scan_cmd(args: argparse.Namespace) -> int:
         max_clips=args.max_clips,
         vertical=not args.no_vertical,
         landscape=not args.no_landscape,
+        overlay=not args.no_overlay,
         font_path=args.font,
     )
 
-    if not args.no_racebox:
+    if not args.no_overlay:
         try:
             from videobrowser.racebox_stage import prepare
 

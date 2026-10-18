@@ -52,8 +52,8 @@ videobrowser scan inputclips -o output
 # A whole library — folders are searched recursively
 videobrowser scan ~/Movies/GoPro -o output
 
-# Detection only, no RaceBox overlays
-videobrowser scan inputclips -o output --no-racebox
+# Detection only, no overlays
+videobrowser scan inputclips -o output --no-overlay
 ```
 
 `videobrowser` is the installed console script. You can also run:
@@ -96,7 +96,8 @@ RaceBox session date. Recordings with no timestamp go under `unknown/`.
 - **Vertical** (`vertical/`): the compact elements laid out for 9:16 phone
   video, kept clear of the Reels / TikTok / Shorts UI. The 9:16 crop pans to
   follow the rider that triggered the clip (else the kneepuck, else any rider
-  in view). Made with `--no-racebox` too, using GoPro telemetry or date/time.
+  in view). Without RaceBox sessions the overlay uses GoPro telemetry or
+  date/time; `--no-overlay` leaves it off entirely.
 
 Corner entry/exit speeds are disabled in all variants.
 
@@ -143,7 +144,7 @@ point at another folder) and skip the network with `--no-fetch`.
 ### 3. Detection only (no overlays)
 
 ```bash
-videobrowser scan inputclips -o output --no-racebox
+videobrowser scan inputclips -o output --no-overlay
 ```
 
 Produces `clips/` and `previews/` only.
@@ -180,7 +181,7 @@ track days.
 | `--previews` | 8 | Annotated preview JPEGs per recording |
 | `--max-clip-seconds` | 24 | Max highlight length |
 | `--max-clips` | 12 | Max highlights per recording |
-| `--no-racebox` | off | Disable the RaceBox overlay stage entirely |
+| `--no-overlay` | off | No overlays: skip the RaceBox stage and date/time on verticals (alias `--no-racebox`) |
 | `--no-vertical` | off | Do not write 1080x1920 follow-cam copies to `vertical/` |
 | `--no-landscape` | off | Do not write landscape clips or RaceBox overlay renders (only `vertical/`) |
 | `--no-fetch` | off | Do not auto-download RaceBox sessions |
