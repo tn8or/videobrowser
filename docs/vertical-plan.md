@@ -8,7 +8,9 @@ compact telemetry overlay laid out for Reels / TikTok / Shorts.
 ## Decisions (agreed with Tommy)
 
 - Clips with no rider to follow (e.g. kneepuck only): crop around the puck
-  position, otherwise a fixed crop (puck ROI centre for side mounts, else centre).
+  position, otherwise a fixed centred crop. Riders in view (e.g. a corner exit
+  ahead) outrank the puck, and a clip opens centred rather than on a subject
+  that only appears later.
 - Without RaceBox session data, vertical clips still get GoPro GPMD speed/lean
   and date/time when available. `--no-overlay` (alias `--no-racebox`) turns
   every overlay off, verticals included.
@@ -19,12 +21,15 @@ compact telemetry overlay laid out for Reels / TikTok / Shorts.
 
 1. **Focus samples** (`src/videobrowser/vertical.py: focus_samples`): per
    analysed frame (5 fps) inside the clip window, pick the subject:
-   tracks referenced by the window's events -> kneepuck position -> any other
-   rider with box height >= 5% of frame. Largest box wins, but the current
+   tracks referenced by the window's events -> any other rider with box
+   height >= 5% of frame -> kneepuck position. Riders are tracked on the
+   ego-masked frame only; boxes centred in the puck ROI are kept for the crop
+   but not scored as rider events. Largest box wins, but the current
    target is kept while its area is >= 50% of the largest (hysteresis).
    Output: horizontal centre as fraction of frame width.
-2. **Crop path** (`crop_centers`): interpolate to clip fps (hold first/last
-   sample), clamp to reachable range, zero-phase EMA (tau 0.35 s), then
+2. **Crop path** (`crop_centers`): interpolate to clip fps (hold the first
+   sample if it is within 1 s of the start, else start at the centre and pan
+   in over the second before it; hold the last sample), clamp to reachable range, zero-phase EMA (tau 0.35 s), then
    rate-limit pan to 0.6 frame widths/s.
 3. **Render** (`export_vertical`): single-chapter windows decode straight from
    the source with accurate `-ss`; multi-chapter windows are joined with

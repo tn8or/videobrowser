@@ -67,13 +67,14 @@ def test_focus_prefers_event_track_over_bigger_bystander():
     assert [round(s.cx, 2) for s in samples] == [0.2]
 
 
-def test_focus_uses_puck_before_bystanders_and_ignores_tiny_boxes():
+def test_focus_prefers_riders_in_view_over_puck_and_ignores_tiny_boxes():
     tracks = {
-        5: [_pt(1.0, 5, 0.9)],
+        5: [_pt(1.0, 5, 0.5)],  # rider ahead, e.g. through a corner exit
         6: [_pt(2.0, 6, 0.1, h=0.01)],  # too far away to follow
     }
-    samples = focus_samples(_window(), tracks, puck_positions=[(1.0, 0.35), (2.0, 0.4)])
-    assert [(s.t, round(s.cx, 2)) for s in samples] == [(1.0, 0.35), (2.0, 0.4)]
+    samples = focus_samples(_window(), tracks, puck_positions=[(1.0, 0.85), (2.0, 0.8)])
+    # Rider wins at t=1; at t=2 nobody followable is in view, so the puck steers.
+    assert [(s.t, round(s.cx, 2)) for s in samples] == [(1.0, 0.5), (2.0, 0.8)]
 
 
 def test_focus_keeps_current_target_until_clearly_smaller():
@@ -108,8 +109,27 @@ def test_crop_centers_clamp_to_frame_and_limit_pan_speed():
     assert centers[-1] == pytest.approx(0.84, abs=1e-3)
 
 
+def test_crop_centers_start_centred_when_subject_appears_late():
+    fps = 25.0
+    # Subject only shows up 4 s into the clip, at the far right.
+    samples = [FocusSample(4.0, 0.9), FocusSample(5.0, 0.9)]
+    centers = crop_centers(samples, 0.0, 150, fps, half_width=0.16)
+    # Opens centred instead of on the right edge, then pans over to it.
+    assert centers[0] == pytest.approx(0.5, abs=1e-3)
+    assert np.allclose(centers[: int(2.0 * fps)], 0.5, atol=0.01)
+    assert centers[-1] == pytest.approx(0.84, abs=1e-3)
+    assert np.max(np.abs(np.diff(centers))) <= MAX_PAN_PER_S / fps + 1e-9
+
+
+def test_crop_centers_start_on_subject_already_in_view():
+    samples = [FocusSample(0.2, 0.3), FocusSample(1.0, 0.3)]
+    centers = crop_centers(samples, 0.0, 50, 25.0, half_width=0.16)
+    assert np.allclose(centers, 0.3)
+
+
 def test_crop_centers_hold_ends_and_follow_steady_subject():
-    samples = [FocusSample(2.0, 0.4), FocusSample(3.0, 0.4)]
+    # First sample within LEAD_IN_S of the start: held back to frame 0.
+    samples = [FocusSample(0.8, 0.4), FocusSample(3.0, 0.4)]
     centers = crop_centers(samples, 0.0, 125, 25.0, half_width=0.16)
     assert np.allclose(centers, 0.4)
 
@@ -287,3 +307,19 @@ def test_export_verticals_overlay_follows_config(tmp_path: Path, monkeypatch, ov
     )
     assert len(calls) == 1
     assert (calls[0] is not None) is overlay
+
+
+def test_tracks_in_puck_roi_are_followed_but_not_scored():
+    from videobrowser.pipeline import _in_roi, _merge_tracks
+    from videobrowser.profiles import UNKNOWN
+
+    ahead = _pt(1.0, 1, 0.5, h=0.1)  # centre-top of frame: inside the puck ROI
+    beside = _pt(1.0, 2, 0.9, h=0.3)
+    assert _in_roi(ahead, UNKNOWN.puck_roi)
+    assert not _in_roi(beside, UNKNOWN.puck_roi)
+    assert not _in_roi(ahead, None)
+
+    later = _pt(2.0, 1, 0.8, h=0.1)
+    merged = _merge_tracks({1: [later], 2: [beside]}, {1: [ahead]})
+    assert [p.t for p in merged[1]] == [1.0, 2.0]
+    assert merged[2] == [beside]

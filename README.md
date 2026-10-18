@@ -95,8 +95,8 @@ RaceBox session date. Recordings with no timestamp go under `unknown/`.
 
 - **Vertical** (`vertical/`): the compact elements laid out for 9:16 phone
   video, kept clear of the Reels / TikTok / Shorts UI. The 9:16 crop pans to
-  follow the rider that triggered the clip (else the kneepuck, else any rider
-  in view). Without RaceBox sessions the overlay uses GoPro telemetry or
+  follow the rider that triggered the clip (else any rider in view, else the
+  kneepuck). It opens centred unless the subject is already in view. Without RaceBox sessions the overlay uses GoPro telemetry or
   date/time; `--no-overlay` leaves it off entirely.
 
 Corner entry/exit speeds are disabled in all variants.
