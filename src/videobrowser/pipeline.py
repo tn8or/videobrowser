@@ -66,7 +66,8 @@ def pick_device(requested: str) -> str:
 def _sample_frames(recording: Recording, max_side: int, rotation: int = 0) -> list:
     chapter = recording.chapters[0]
     duration = recording.duration or chapter.duration or 0.0
-    fractions = (0.22, 0.5, 0.78)
+    # Odd count so rotation and mount votes cannot tie.
+    fractions = (0.12, 0.31, 0.5, 0.69, 0.88)
     frames = []
     for frac in fractions:
         t = duration * frac

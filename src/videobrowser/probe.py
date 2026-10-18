@@ -66,9 +66,11 @@ def _stream_rotation(stream: dict[str, Any]) -> int:
     for item in stream.get("side_data_list") or []:
         if "rotation" in item:
             try:
-                # displaymatrix rotation is often -90 / 90
+                # Display Matrix rotation is counter-clockwise (a phone held
+                # upright reads -90); ``rotate`` tags and rotation_filter() are
+                # clockwise, so flip the sign.
                 raw = float(item["rotation"])
-                return int(round(raw)) % 360
+                return int(round(-raw)) % 360
             except (TypeError, ValueError):
                 pass
     return 0

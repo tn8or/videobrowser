@@ -1,11 +1,12 @@
 import subprocess
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
 from videobrowser.clips import _reencode_pipelines, export_clip
-from videobrowser.decode import rotation_filter
+from videobrowser.decode import rotate_bgr, rotation_filter
 from videobrowser.events import ClipWindow
 from videobrowser.gopro import Chapter, Recording
 from videobrowser.probe import probe
@@ -259,3 +260,39 @@ def test_export_clears_gopro_display_matrix(tmp_path: Path):
     np.testing.assert_array_equal(stored, auto)
     # Sky/track: after a correct 180 bake the top band is brighter than the bottom.
     assert stored[: stored.shape[0] // 5].mean() > stored[-stored.shape[0] // 5 :].mean()
+
+
+def _decode_png(path: Path, dest: Path, args: list[str]) -> np.ndarray:
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args, "-i", str(path)]
+        + ["-frames:v", "1", str(dest)],
+        check=True,
+    )
+    return cv2.imread(str(dest)).astype(int)
+
+
+def test_probe_display_matrix_rotation_is_clockwise(tmp_path: Path):
+    from videobrowser.clips import ffmpeg_supports_display_rotation
+
+    if not ffmpeg_supports_display_rotation():
+        pytest.skip("ffmpeg lacks -display_rotation")
+    base = tmp_path / "base.mp4"
+    tagged = tmp_path / "tagged.mp4"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi"]
+        + ["-i", "testsrc=size=320x180:rate=10", "-t", "1", "-pix_fmt", "yuv420p", str(base)],
+        check=True,
+    )
+    # -display_rotation is counter-clockwise, like the matrix GoPro/phones write.
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-display_rotation", "90"]
+        + ["-i", str(base), "-c", "copy", str(tagged)],
+        check=True,
+    )
+    info = probe(tagged)
+    assert info.rotation == 270
+    shown = _decode_png(tagged, tmp_path / "auto.png", [])
+    stored = _decode_png(tagged, tmp_path / "stored.png", ["-noautorotate"])
+    ours = rotate_bgr(stored.astype(np.uint8), info.rotation).astype(int)
+    assert rotation_filter(info.rotation) == "transpose=2"
+    assert np.abs(ours - shown).mean() < 2.0
