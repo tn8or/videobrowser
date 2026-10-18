@@ -13,7 +13,7 @@ from videobrowser.events import ClipWindow, Event, clip_windows, dumps_extra, me
 from videobrowser.gopro import Recording
 from videobrowser.motion import DEFAULT_THRESHOLD, event_is_moving, scene_motion
 from videobrowser.preview import write_previews
-from videobrowser.profiles import CameraMap, Profile, apply_ego_mask, guess_profile_from_samples, resolve_profile
+from videobrowser.profiles import CameraMap, Profile, Rect, apply_ego_mask, guess_profile_from_samples, resolve_profile
 from videobrowser.probe import local_date_label
 from videobrowser.puck import detect_puck
 from videobrowser.riders import RiderTracker, TrackPoint, score_tracks
@@ -131,6 +131,27 @@ def _puck_events(hits: list[tuple[float, float]], recording_id: str) -> list[Eve
     return events
 
 
+def _in_roi(point: TrackPoint, roi: Rect | None) -> bool:
+    """True when the centre of *point*'s box lies inside *roi* (frame fractions)."""
+    if roi is None:
+        return False
+    cx = 0.5 * (point.x1 + point.x2) / max(1, point.frame_w)
+    cy = 0.5 * (point.y1 + point.y2) / max(1, point.frame_h)
+    return roi.x <= cx <= roi.x + roi.w and roi.y <= cy <= roi.y + roi.h
+
+
+def _merge_tracks(
+    *parts: dict[int, list[TrackPoint]],
+) -> dict[int, list[TrackPoint]]:
+    merged: dict[int, list[TrackPoint]] = {}
+    for part in parts:
+        for track_id, points in part.items():
+            merged.setdefault(track_id, []).extend(points)
+    for points in merged.values():
+        points.sort(key=lambda p: p.t)
+    return merged
+
+
 def _clip_name(window: ClipWindow) -> str:
     types = "+".join(window.types)
     return f"{window.recording_id}_{int(window.t_start):05d}_{types}.mp4"
@@ -176,11 +197,6 @@ def _export_verticals(
             print(f"  vertical: overlay unavailable ({exc}); exporting without it")
             ctx = None
 
-    # Without a tracked subject, aim where this mount puts the action.
-    fallback = 0.5
-    if profile.puck_roi is not None:
-        fallback = profile.puck_roi.x + profile.puck_roi.w / 2.0
-
     _clear_stale_outputs(out_dir, recording.recording_id, ".mp4")
     for window in windows:
         dest = out_dir / _clip_name(window)
@@ -198,7 +214,6 @@ def _export_verticals(
                 dest,
                 profile.rotation,
                 focus_samples(window, tracks, puck_positions),
-                fallback_cx=fallback,
                 overlay_factory=overlay_factory,
             )
         except Exception as exc:
@@ -251,6 +266,8 @@ def scan_recording(
     if tracker is not None:
         tracker.reset()
     tracks: dict[int, list[TrackPoint]] = {}
+    # Boxes inside the puck ROI: followed by the vertical crop, not scored.
+    focus_tracks: dict[int, list[TrackPoint]] = {}
     puck_hits: list[tuple[float, float]] = []
     # (t, x centre as a fraction of frame width) for the vertical crop.
     puck_positions: list[tuple[float, float]] = []
@@ -303,15 +320,20 @@ def scan_recording(
                 prev_image = frame.image
                 if "riders" in profile.pipelines and tracker is not None:
                     masked = apply_ego_mask(frame.image, profile)
-                    if profile.puck_roi is not None:
-                        x1, y1, x2, y2 = profile.puck_roi.to_pixels(
-                            masked.shape[1], masked.shape[0]
-                        )
-                        masked[y1:y2, x1:x2] = 0
                     points = tracker.update(masked)
                     for point in points:
                         point.t = global_t
-                        tracks.setdefault(point.track_id, []).append(point)
+                        # The puck ROI is where the camera rider's own knee
+                        # shows, so boxes centred there do not count as other
+                        # riders. They are not blacked out before tracking
+                        # either: riders ahead pass through that area too, and
+                        # the vertical crop needs to see them.
+                        bucket = (
+                            focus_tracks
+                            if _in_roi(point, profile.puck_roi)
+                            else tracks
+                        )
+                        bucket.setdefault(point.track_id, []).append(point)
                 if "puck" in profile.pipelines and profile.puck_roi is not None:
                     if leaned(lean_samples, global_t, config.lean_gate) or not lean_samples:
                         hit = detect_puck(frame.image, profile.puck_roi)
@@ -378,7 +400,7 @@ def scan_recording(
             windows,
             profile,
             config,
-            tracks,
+            _merge_tracks(tracks, focus_tracks),
             puck_positions,
             rec_start_utc,
             config.out_dir / "vertical" / date_label,

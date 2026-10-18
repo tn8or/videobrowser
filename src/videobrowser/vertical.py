@@ -2,10 +2,12 @@
 
 Each clip window gets a 9:16 crop that pans sideways to keep the rider the
 scan flagged in frame. The crop path comes from the tracker boxes collected
-during the scan (5 fps by default): the event's own tracks first, then the
-kneepuck position, then any other rider in view. It is interpolated to the
-clip frame rate, smoothed and speed-limited so the virtual camera glides
-instead of jumping, then applied by ffmpeg's ``crop`` filter via ``sendcmd``.
+during the scan (5 fps by default): the event's own tracks first, then any
+other rider in view, then the kneepuck position. The clip opens centred (or
+on the subject when it is already in view) and glides over to the action. The
+path is interpolated to the clip frame rate, smoothed and speed-limited so the
+virtual camera glides instead of jumping, then applied by ffmpeg's ``crop``
+filter via ``sendcmd``.
 A compact HUD laid out for phone screens is composited on top.
 """
 
@@ -39,6 +41,10 @@ SWITCH_RATIO = 0.5
 SMOOTH_TAU = 0.35
 # Fastest pan, in source-frame widths per second.
 MAX_PAN_PER_S = 0.6
+# When the subject first shows up later than this into the clip, the crop
+# starts at the fallback (centre) and pans over this long before it appears,
+# instead of opening on wherever the subject will be seconds later.
+LEAD_IN_S = 1.0
 # Vertical output bitrate (the landscape exports use 60M for full-res frames).
 _BITRATE = "20M"
 
@@ -56,8 +62,10 @@ def focus_samples(
 ) -> list[FocusSample]:
     """Where the action is over *window*, one sample per analysed frame.
 
-    Priority per frame: tracks named by the window's events, then the kneepuck,
-    then any other rider big enough to matter. Among candidates the largest box
+    Priority per frame: tracks named by the window's events, then any other
+    rider big enough to matter, then the kneepuck. The puck is the camera
+    rider's own knee, so it only steers the crop when nobody else is in view
+    (riders ahead, e.g. a corner exit, are the action). Among candidates the largest box
     wins, but the current target is kept while it stays reasonably large so the
     crop does not flick between two riders side by side.
     """
@@ -87,12 +95,12 @@ def focus_samples(
         primary = [p for p in points if p.track_id in event_ids]
         if primary:
             candidates = primary
+        elif points:
+            candidates = points
         elif t in puck_by_t:
             samples.append(FocusSample(t, puck_by_t[t]))
             current = None
             continue
-        elif points:
-            candidates = points
         else:
             continue
         best = max(candidates, key=lambda p: p.area)
@@ -135,7 +143,13 @@ def crop_centers(
     frame_t = t_start + np.arange(n) / fps
     ts = np.array([s.t for s in samples], dtype=np.float64)
     xs = np.array([s.cx for s in samples], dtype=np.float64)
-    # Holds the first / last sample before and after the subject is visible.
+    order = np.argsort(ts, kind="stable")
+    ts, xs = ts[order], xs[order]
+    if ts[0] - LEAD_IN_S > t_start:
+        # Subject appears later: open on the fallback and pan in just before.
+        ts = np.concatenate(([t_start, ts[0] - LEAD_IN_S], ts))
+        xs = np.concatenate(([fallback, fallback], xs))
+    # Holds the last sample after the subject leaves.
     raw = np.clip(np.interp(frame_t, ts, xs), lo, hi)
 
     alpha = 1.0 - math.exp(-1.0 / max(1e-6, fps * SMOOTH_TAU))
