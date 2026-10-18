@@ -45,6 +45,8 @@ class ScanConfig:
     vertical: bool = True
     # Landscape clips under ``clips/`` plus the RaceBox overlay renders.
     landscape: bool = True
+    # Date/time/telemetry overlay on vertical clips (off with ``--no-overlay``).
+    overlay: bool = True
     font_path: str = "/System/Library/Fonts/Supplemental/Arial.ttf"
 
 
@@ -162,15 +164,17 @@ def _export_verticals(
     from videobrowser.vertical import export_vertical, focus_samples
 
     overlay_factory = None
-    try:
-        from videobrowser import racebox_stage as rbs
+    ctx = None
+    if config.overlay:
+        try:
+            from videobrowser import racebox_stage as rbs
 
-        ctx = config.racebox or rbs.overlay_context(config.out_dir, config.font_path)
-        if rec_start_utc is None:
-            rec_start_utc = rbs.recording_start_utc(recording, ctx)
-    except Exception as exc:
-        print(f"  vertical: overlay unavailable ({exc}); exporting without it")
-        ctx = None
+            ctx = config.racebox or rbs.overlay_context(config.out_dir, config.font_path)
+            if rec_start_utc is None:
+                rec_start_utc = rbs.recording_start_utc(recording, ctx)
+        except Exception as exc:
+            print(f"  vertical: overlay unavailable ({exc}); exporting without it")
+            ctx = None
 
     # Without a tracked subject, aim where this mount puts the action.
     fallback = 0.5

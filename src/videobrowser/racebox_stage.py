@@ -472,7 +472,7 @@ def _pick_highlight_source(
 
 
 def overlay_context(out_dir: Path, font_path: str) -> RaceboxContext:
-    """Session-less context for overlays when the RaceBox stage is disabled.
+    """Session-less context for overlays when RaceBox setup is unavailable.
 
     Overlays then fall back to the clip's own GoPro telemetry or date/time.
     """

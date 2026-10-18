@@ -9,8 +9,9 @@ compact telemetry overlay laid out for Reels / TikTok / Shorts.
 
 - Clips with no rider to follow (e.g. kneepuck only): crop around the puck
   position, otherwise a fixed crop (puck ROI centre for side mounts, else centre).
-- Vertical clips are also made with `--no-racebox`: no RaceBox session data,
-  but GoPro GPMD speed/lean and date/time when available.
+- Without RaceBox session data, vertical clips still get GoPro GPMD speed/lean
+  and date/time when available. `--no-overlay` (alias `--no-racebox`) turns
+  every overlay off, verticals included.
 - `--no-vertical` disables the stage. `--no-clips` also skips it.
 - 1080p sources only give a 608x1080 crop (upscaled, a bit soft); 4K is fine.
 
