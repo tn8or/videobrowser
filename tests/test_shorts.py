@@ -87,3 +87,31 @@ def test_build_shorts_end_to_end(tmp_path):
     assert 7.0 < float(info["format"]["duration"]) < 9.0
     page = (day / "index.html").read_text()
     assert "action-01.mp4" in page and "F_00005_approaching_rider.mp4" in page
+
+
+@needs_ffmpeg
+def test_failed_render_keeps_previous_short_and_drops_stale_ones(tmp_path, monkeypatch):
+    import videobrowser.shorts as shorts
+
+    out = tmp_path / "out"
+    src = tmp_path / "GX010001.MP4"
+    _video(src, 20, "320x180")
+    db = ScanDB.open(out / "scan.sqlite")
+    db.save_recording_meta("F", "cockpit", 0, 1785571200.0, "2026-08-01", 20.0,
+                           [{"path": str(src), "offset": 0.0, "duration": 20.0}])
+    db.replace_events("F", [("F", "nearby_rider", 8.0, 10.0, 0.5, "1", None, "{}")])
+    db.close()
+    day = out / "shorts" / "2026-08-01"
+    day.mkdir(parents=True)
+    (day / "action-01.mp4").write_bytes(b"previous")
+    (day / "overhalinger-03.mp4").write_bytes(b"stale")
+
+    def boom(plan, day_data, dest):
+        dest.write_bytes(b"half")
+        raise RuntimeError("ffmpeg died")
+
+    monkeypatch.setattr(shorts, "render_short", boom)
+    build_shorts(out, audio_sync=False, crashes=False)
+    assert (day / "action-01.mp4").read_bytes() == b"previous"
+    assert not (day / "overhalinger-03.mp4").exists()
+    assert not list(day.glob(".*partial*"))

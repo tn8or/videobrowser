@@ -271,7 +271,9 @@ def scan_cmd(args: argparse.Namespace) -> int:
 
             build_shorts(out, sessions_dir=(args.sessions_dir or (out / "sessions")).expanduser())
         except Exception as exc:
-            print(f"shorts failed: {exc}")
+            # Detection is already saved in scan.sqlite; just flag the failure.
+            print(f"shorts failed: {exc}", file=sys.stderr)
+            return 1
     return 0
 
 

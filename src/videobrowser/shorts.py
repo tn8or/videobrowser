@@ -617,17 +617,26 @@ def build_shorts(
         print("  moments: " + ", ".join(f"{t}={n}" for t, n in counts.items() if n))
         written: dict[str, Path] = {}
         if render:
-            for old in day_dir.glob("*.mp4"):
-                old.unlink()
             for plan in plans:
+                # Render beside the old file and swap it in only once complete,
+                # so a failed or interrupted run keeps the previous short.
+                final = day_dir / f"{plan.name}.mp4"
+                partial = day_dir / f".{plan.name}.partial.mp4"
                 try:
-                    path = render_short(plan, day, day_dir / f"{plan.name}.mp4")
+                    path = render_short(plan, day, partial)
                 except Exception as exc:
                     print(f"  short {plan.name} failed: {exc}")
+                    partial.unlink(missing_ok=True)
                     continue
                 if path is not None:
-                    written[plan.name] = path
-                    print(f"  wrote {path.relative_to(out_dir)} ({plan.duration:.0f}s)")
+                    os.replace(partial, final)
+                    written[plan.name] = final
+                    print(f"  wrote {final.relative_to(out_dir)} ({plan.duration:.0f}s)")
+            # Shorts this plan no longer produces (fewer moments than last run).
+            names = {plan.name for plan in plans}
+            for old in day_dir.glob("*.mp4"):
+                if old.stem not in names and not old.name.startswith("."):
+                    old.unlink()
         write_index(day_dir, day, plans, written)
         results[label] = list(written.values())
     return results
