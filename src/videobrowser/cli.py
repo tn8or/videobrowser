@@ -128,7 +128,57 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Stats SQLite for lap bests (default: <out>/stats.sqlite)",
     )
+    scan.add_argument(
+        "--no-shorts",
+        action="store_true",
+        help="Do not build the per-day shorts under <out>/shorts after the scan",
+    )
+
+    shorts = sub.add_parser(
+        "shorts",
+        help="Build per-day vertical shorts (mixed action + themes) from a finished scan",
+    )
+    shorts.add_argument("-o", "--out", type=Path, required=True, help="Scan output directory")
+    shorts.add_argument(
+        "inputs",
+        nargs="*",
+        type=Path,
+        help="Source folders; only needed for outputs scanned before shorts existed",
+    )
+    shorts.add_argument("--date", action="append", default=[], metavar="YYYY-MM-DD", help="Only this day (repeatable)")
+    shorts.add_argument("--short-seconds", type=float, default=50.0, help="Max length of each short (default 50)")
+    shorts.add_argument("--max-action", type=int, default=6, help="Max mixed action shorts per day (default 6)")
+    shorts.add_argument("--no-audio-sync", action="store_true", help="Sync cameras by GPS only")
+    shorts.add_argument("--no-crash", action="store_true", help="Skip crash detection from telemetry")
+    shorts.add_argument("--dry-run", action="store_true", help="Write moments.json and index.html only")
+    shorts.add_argument(
+        "--sessions-dir",
+        type=Path,
+        default=None,
+        help="RaceBox .vbo sessions for absolute time (default: <out>/sessions)",
+    )
     return parser
+
+
+def shorts_cmd(args: argparse.Namespace) -> int:
+    from videobrowser.shorts import build_shorts
+
+    out = args.out.expanduser().resolve()
+    if not (out / "scan.sqlite").exists():
+        print(f"no scan.sqlite in {out}", file=sys.stderr)
+        return 1
+    build_shorts(
+        out,
+        inputs=[p.expanduser() for p in args.inputs],
+        sessions_dir=(args.sessions_dir or (out / "sessions")).expanduser(),
+        dates=args.date or None,
+        max_seconds=args.short_seconds,
+        max_action_shorts=args.max_action,
+        audio_sync=not args.no_audio_sync,
+        crashes=not args.no_crash,
+        render=not args.dry_run,
+    )
+    return 0
 
 
 def scan_cmd(args: argparse.Namespace) -> int:
@@ -214,6 +264,14 @@ def scan_cmd(args: argparse.Namespace) -> int:
     )
     (out / "events.json").write_text(json.dumps(payload, indent=2))
     print(f"wrote {out / 'events.json'}  ({len(all_events)} events)")
+
+    if not (args.no_shorts or args.no_vertical or args.no_clips):
+        try:
+            from videobrowser.shorts import build_shorts
+
+            build_shorts(out, sessions_dir=(args.sessions_dir or (out / "sessions")).expanduser())
+        except Exception as exc:
+            print(f"shorts failed: {exc}")
     return 0
 
 
@@ -222,5 +280,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "scan":
         return scan_cmd(args)
+    if args.cmd == "shorts":
+        return shorts_cmd(args)
     parser.error(f"unknown command {args.cmd}")
     return 2

@@ -76,6 +76,7 @@ output/
   full_sessions/YYYY-MM-DD/  # one clip per RaceBox session, out-lap -> in-lap (FULL overlay)
   fastest_laps/YYYY-MM-DD/   # fastest timed lap per session, +/-10s (FULL overlay)
   vertical/YYYY-MM-DD/       # 1080x1920 follow-cam copy of each highlight (VERTICAL overlay)
+  shorts/YYYY-MM-DD/         # ready-to-post shorts per day + index.html overview (see "Shorts")
   sessions/                  # downloaded/.vbo files (default location)
   stats.sqlite               # lap bests used for green/purple lap colouring
   scan.sqlite                # detection log
@@ -188,8 +189,64 @@ track days.
 | `--sessions-dir` | `<out>/sessions` | Folder of `.vbo` sessions |
 | `--font` | Arial | TTF font for overlay text |
 | `--stats` | `<out>/stats.sqlite` | Lap-bests SQLite |
+| `--no-shorts` | off | Do not build `shorts/` after the scan |
 
 Run `videobrowser scan --help` for the complete list.
+
+---
+
+## Shorts
+
+After a scan (or on its own with `videobrowser shorts -o output`) the day's
+vertical clips are cut into near-finished 9:16 shorts:
+
+```
+shorts/2026-08-01/
+  action-01.mp4 ...        # the day's best moments, several shorts of <= 50 s
+  overhalinger-01.mp4      # one series per theme (needs at least 2 moments)
+  overhalet-01.mp4
+  indhentninger-01.mp4
+  knae-01.mp4
+  styrt-01.mp4             # own crash, from GoPro telemetry
+  index.html               # the shorts + every clip of the day, by type
+  moments.json             # what was found and how each camera was synced
+```
+
+**Cameras on one clock.** Every recording of a day starts from its GoPro GPS
+time. Overlapping recordings (front, rear, helmet) are then laid on top of
+each other by matching their GPS tracks, or on the RaceBox log when a session
+overlaps. Engine sound refines the result when both cameras' loudness
+envelopes match clearly; otherwise GPS stands. Turn the audio step off with
+`--no-audio-sync`.
+
+**Themes.** Event meaning depends on which way the camera faces (rear
+profiles: `rear`, `rear_right`, `rear_rotated`; everything else is front):
+
+| Theme | Rule | Reliability |
+|-------|------|-------------|
+| Overhaling | front `approaching` ends, rear `receding` starts within -1.5..+5 s | good with front + rear |
+| Bliver overhalet | rear `approaching` ends, front `receding` starts within -1.5..+5 s | good with front + rear |
+| Indhenter | front `approaching` for 1.5 s+ that is not an overtake | good |
+| Knæ i asfalten | `kneepuck_visible` | as the puck detector |
+| Styrt (own) | accelerometer jolt >= 3x gravity, moving >= 30 km/h before, stopped after | needs real crash data to tune |
+| Action | any other event, for the mixed shorts | |
+
+Crashes of other riders are not detected; the detector has no notion of a
+fall. Each piece is taken from the vertical clip that covers it (crop + HUD);
+a piece no clip covers (e.g. the rear half of an overtake) is cut from the
+source with a centred crop. A label with the theme and time opens each moment.
+
+Outputs scanned before this feature have no per-recording metadata yet; pass
+the source folders once: `videobrowser shorts -o output inputclips`.
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--date` | all | Only this day (repeatable) |
+| `--short-seconds` | 50 | Max length of each short |
+| `--max-action` | 6 | Max mixed action shorts per day |
+| `--no-audio-sync` | off | Sync cameras by GPS only |
+| `--no-crash` | off | Skip crash detection |
+| `--dry-run` | off | Only write `moments.json` and `index.html` |
 
 ---
 

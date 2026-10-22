@@ -366,9 +366,10 @@ def scan_recording(
         max_len=config.max_clip_seconds,
         max_clips=config.max_clips,
     )
-    date_label = local_date_label(
+    start_utc = (
         creation_utc_prefer_gps(recording.chapters[0].info) if recording.chapters else None
     )
+    date_label = local_date_label(start_utc)
     clip_dir = config.out_dir / "clips" / date_label
     write_landscape = config.landscape and not config.no_clips
     if write_landscape:
@@ -443,6 +444,35 @@ def scan_recording(
                 dumps_extra(e.extra),
             )
             for e in events
+        ],
+    )
+    vertical_dir = config.out_dir / "vertical" / date_label
+    db.replace_clips(
+        recording.recording_id,
+        [
+            (
+                window.t_start,
+                window.t_end,
+                "+".join(window.types),
+                window.score,
+                str(path) if path else None,
+                str(vertical_dir / _clip_name(window))
+                if (vertical_dir / _clip_name(window)).exists()
+                else None,
+            )
+            for window, path in clip_records
+        ],
+    )
+    db.save_recording_meta(
+        recording.recording_id,
+        profile.name,
+        profile.rotation,
+        start_utc,
+        date_label,
+        recording.duration,
+        [
+            {"path": str(ch.path), "offset": ch.offset, "duration": ch.duration}
+            for ch in recording.chapters
         ],
     )
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=True)
