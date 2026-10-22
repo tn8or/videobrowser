@@ -12,6 +12,8 @@ overtake apart from a rider merely closing in:
 - **catching_up**: a sustained front ``approaching`` that is not an overtake
 - **kneepuck**: ``kneepuck_visible``
 - **crash**: own crash from GoPro telemetry (hard jolt, then stopped on track)
+- **crash_other**: ``rider_down`` (another rider off the bike, see incidents.py)
+- **off_track**: ``off_track`` (a rider out on grass or gravel)
 - **action**: any other clip-worthy event, for the mixed "dagens action" shorts
 """
 
@@ -30,10 +32,14 @@ LABELS = {
     "catching_up": "INDHENTER",
     "kneepuck": "KNÆ I ASFALTEN",
     "crash": "STYRT",
+    "crash_other": "MULIGT STYRT",
+    "off_track": "UDE I GRUSET",
     "action": "ACTION",
 }
 # Order themed shorts are written in.
-THEME_ORDER = ("overtake", "overtaken", "catching_up", "kneepuck", "crash")
+THEME_ORDER = (
+    "overtake", "overtaken", "catching_up", "kneepuck", "crash", "crash_other", "off_track",
+)
 
 # Rear camera must pick the rider up within this window around the front
 # camera losing them (seconds, relative to the end of the first event).
@@ -164,6 +170,13 @@ def find_moments(events: list[CamEvent]) -> list[Moment]:
     for ev in events:
         if ev.type == "kneepuck_visible":
             moments.append(_single("kneepuck", ev, 1.5, 1.5))
+            used.add(id(ev))
+    for ev in events:
+        if ev.type == "rider_down":
+            moments.append(_single("crash_other", ev, 4.0, 3.0, 5.0 * ev.score))
+            used.add(id(ev))
+        elif ev.type == "off_track":
+            moments.append(_single("off_track", ev, 2.0, 2.0, 2.0 * ev.score))
             used.add(id(ev))
     for ev in events:
         if id(ev) in used or ev.type == "kneepuck_visible":

@@ -208,6 +208,8 @@ shorts/2026-08-01/
   indhentninger-01.mp4
   knae-01.mp4
   styrt-01.mp4             # own crash, from GoPro telemetry
+  mulige-styrt-01.mp4      # other riders: possible crashes to check
+  grus-01.mp4              # riders out on grass or gravel
   index.html               # the shorts + every clip of the day, by type
   moments.json             # what was found and how each camera was synced
 ```
@@ -229,10 +231,12 @@ profiles: `rear`, `rear_right`, `rear_rotated`; everything else is front):
 | Indhenter | front `approaching` for 1.5 s+ that is not an overtake | good |
 | Knæ i asfalten | `kneepuck_visible` | as the puck detector |
 | Styrt (own) | accelerometer jolt >= 3x gravity, moving >= 30 km/h before, stopped after | needs real crash data to tune |
+| Muligt styrt (others) | `rider_down`: a bike box loses its rider while a person box appears beside it, or the bike box turns low and wide while out on grass/gravel | candidates to check by hand |
+| Ude i gruset | `off_track`: the ground under a rider's box turns from grey asphalt to green grass or pale gravel for 0.6 s+ | candidates to check by hand |
 | Action | any other event, for the mixed shorts | |
 
-Crashes of other riders are not detected; the detector has no notion of a
-fall. Each piece is taken from the vertical clip that covers it (crop + HUD);
+`rider_down` and `off_track` are found during the scan (`incidents.py`), so
+footage scanned before they existed needs `scan --force` to get them. Each piece is taken from the vertical clip that covers it (crop + HUD);
 a piece no clip covers (e.g. the rear half of an overtake) is cut from the
 source with a centred crop. A label with the theme and time opens each moment.
 

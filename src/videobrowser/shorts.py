@@ -58,9 +58,12 @@ FILE_NAMES = {
     "catching_up": "indhentninger",
     "kneepuck": "knae",
     "crash": "styrt",
+    "crash_other": "mulige-styrt",
+    "off_track": "grus",
 }
-# Themes need this many moments for a short of their own (a crash needs one).
-MIN_THEME_MOMENTS = {"crash": 1}
+# Themes need this many moments for a short of their own (a crash or an
+# off-track excursion needs one).
+MIN_THEME_MOMENTS = {"crash": 1, "crash_other": 1, "off_track": 1}
 _TZ = ZoneInfo("Europe/Copenhagen")
 
 
@@ -516,6 +519,8 @@ def write_index(
         "receding_rider": "Rytter fjerner sig",
         "nearby_rider": "Rytter tæt på",
         "kneepuck_visible": "Knæ i asfalten",
+        "rider_down": "Muligt styrt",
+        "off_track": "Ude i gruset",
     }
     for kind, clips in by_type.items():
         parts.append(f"<h2>Alle klip: {html.escape(names.get(kind, kind))}</h2><div class=grid>")

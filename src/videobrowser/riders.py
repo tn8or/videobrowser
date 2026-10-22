@@ -19,6 +19,8 @@ class TrackPoint:
     track_id: int
     frame_w: int
     frame_h: int
+    # Share of grass/gravel pixels just below the box (see incidents.py).
+    offtrack: float = 0.0
 
     @property
     def area(self) -> float:

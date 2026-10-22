@@ -76,3 +76,12 @@ def test_crash_needs_jolt_and_stop():
     assert detect_crashes(*_telemetry(stop=True, jolt=5.0)) == [pytest.approx(29.9)]
     assert detect_crashes(*_telemetry(stop=False, jolt=5.0)) == []  # kerb strike
     assert detect_crashes(*_telemetry(stop=True, jolt=1.2)) == []  # braking to a stop
+
+
+def test_incident_events_become_their_own_themes():
+    events = [
+        _ev("F", "front", "rider_down", 100, 102, 2.0),
+        _ev("F", "front", "off_track", 300, 302, 1.0),
+    ]
+    themes = sorted(m.theme for m in find_moments(events))
+    assert themes == ["crash_other", "off_track"]

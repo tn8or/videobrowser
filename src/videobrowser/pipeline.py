@@ -11,6 +11,7 @@ from videobrowser.db import ScanDB
 from videobrowser.decode import FrameDecoder, decode_one_frame
 from videobrowser.events import ClipWindow, Event, clip_windows, dumps_extra, merge_same_type
 from videobrowser.gopro import Recording
+from videobrowser.incidents import offtrack_fraction, score_incidents
 from videobrowser.motion import DEFAULT_THRESHOLD, event_is_moving, scene_motion
 from videobrowser.preview import write_previews
 from videobrowser.profiles import CameraMap, Profile, Rect, apply_ego_mask, guess_profile_from_samples, resolve_profile
@@ -324,6 +325,7 @@ def scan_recording(
                     points = tracker.update(masked)
                     for point in points:
                         point.t = global_t
+                        point.offtrack = offtrack_fraction(frame.image, point)
                         # The puck ROI is where the camera rider's own knee
                         # shows, so boxes centred there do not count as other
                         # riders. They are not blacked out before tracking
@@ -349,6 +351,7 @@ def scan_recording(
     events = []
     if "riders" in profile.pipelines:
         events.extend(score_tracks(tracks, recording.recording_id))
+        events.extend(score_incidents(tracks, recording.recording_id))
     if "puck" in profile.pipelines:
         events.extend(_puck_events(puck_hits, recording.recording_id))
     events = merge_same_type(events)
