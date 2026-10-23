@@ -54,3 +54,40 @@ def test_scan_builds_each_days_shorts_as_soon_as_the_day_is_done(tmp_path, monke
     log.clear()
     assert cli.scan_cmd(args) == 0
     assert [entry for entry in log if entry[0] == "shorts"] == []
+
+
+def test_failed_shorts_are_retried_by_the_next_scan(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    import videobrowser.cli as cli
+    import videobrowser.shorts as shorts
+    from videobrowser.gopro import Chapter, Recording
+    from videobrowser.probe import VideoInfo, local_date_label
+
+    info = VideoInfo(Path("R.mp4"), 60.0, 1920, 1080, 30.0, 0, "h264", False, None, 1785571200.0)
+    rec = Recording("R", "GX", "R")
+    rec.chapters.append(Chapter(info.path, "GX", 1, "R", 60.0, 0.0, info))
+    monkeypatch.setattr(cli, "iter_video_paths", lambda *a, **k: [Path("x.mp4")])
+    monkeypatch.setattr(cli, "group_recordings", lambda *a, **k: [rec])
+
+    def fake_scan(recording, config, db, tracker):
+        if not db.is_processed("R"):
+            utc = info.creation_utc
+            db.save_recording_meta("R", "cockpit", 0, utc, local_date_label(utc), 60.0, [])
+            db.mark_recording("R", "cockpit", 60.0, processed=True)
+        return []
+
+    calls = []
+
+    def flaky(out, sessions_dir=None, dates=None):
+        calls.append(dates)
+        if len(calls) == 1:
+            raise RuntimeError("ffmpeg died")
+
+    monkeypatch.setattr(cli, "scan_recording", fake_scan)
+    monkeypatch.setattr(shorts, "build_shorts", flaky)
+    args = build_parser().parse_args(["scan", "in", "-o", str(tmp_path / "out"), "--no-overlay"])
+    assert cli.scan_cmd(args) == 1
+    assert cli.scan_cmd(args) == 0  # nothing new, but the failed day is retried
+    assert cli.scan_cmd(args) == 0  # and then left alone
+    assert calls == [["2026-08-01"], ["2026-08-01"]]

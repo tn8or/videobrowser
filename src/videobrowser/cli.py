@@ -167,7 +167,7 @@ def shorts_cmd(args: argparse.Namespace) -> int:
     if not (out / "scan.sqlite").exists():
         print(f"no scan.sqlite in {out}", file=sys.stderr)
         return 1
-    build_shorts(
+    built = build_shorts(
         out,
         inputs=[p.expanduser() for p in args.inputs],
         sessions_dir=(args.sessions_dir or (out / "sessions")).expanduser(),
@@ -178,6 +178,12 @@ def shorts_cmd(args: argparse.Namespace) -> int:
         crashes=not args.no_crash,
         render=not args.dry_run,
     )
+    if built and not args.dry_run:
+        db = ScanDB.open(out / "scan.sqlite")
+        try:
+            db.clear_shorts_pending(list(built))
+        finally:
+            db.close()
     return 0
 
 
@@ -256,20 +262,28 @@ def scan_cmd(args: argparse.Namespace) -> int:
     sessions_dir = (args.sessions_dir or (out / "sessions")).expanduser()
     shorts_failed = False
 
-    def shorts_for(scanned: list[str]) -> None:
-        """Build shorts for the days the just-finished recordings landed on."""
+    def build_days(dates: list[str]) -> None:
+        """Build shorts for *dates*; a day stays pending until its build finishes."""
         nonlocal shorts_failed
-        dates = db.date_labels(scanned) if shorts_on and scanned else []
-        if not dates:
+        if not (shorts_on and dates):
             return
         try:
             from videobrowser.shorts import build_shorts
 
             build_shorts(out, sessions_dir=sessions_dir, dates=dates)
         except Exception as exc:
-            # Detection is already saved in scan.sqlite; flag it and go on.
+            # Detection is already saved in scan.sqlite; the day stays pending
+            # so the next scan retries it.
             print(f"shorts failed: {exc}", file=sys.stderr)
             shorts_failed = True
+            return
+        db.clear_shorts_pending(dates)
+
+    def shorts_for(scanned: list[str]) -> None:
+        """Build shorts for the days the just-finished recordings landed on."""
+        dates = db.date_labels(scanned)
+        db.add_shorts_pending(dates)
+        build_days(dates)
 
     all_events = []
     try:
@@ -285,6 +299,8 @@ def scan_cmd(args: argparse.Namespace) -> int:
             if not skipped:
                 scanned.append(recording.recording_id)
         shorts_for(scanned)
+        # Days left over from an earlier scan whose shorts failed or were off.
+        build_days(db.shorts_pending())
     finally:
         db.close()
 
