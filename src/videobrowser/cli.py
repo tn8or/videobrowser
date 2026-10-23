@@ -18,7 +18,7 @@ from videobrowser.motion import DEFAULT_THRESHOLD
 from videobrowser.pipeline import ScanConfig, pick_device, scan_recording
 from videobrowser.profiles import CameraMap
 from videobrowser.riders import RiderTracker
-from videobrowser.telemetry import DEFAULT_MIN_TRACK_KMH
+from videobrowser.telemetry import DEFAULT_MIN_TRACK_KMH, STOPPED_KMH
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -92,8 +92,8 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--min-speed",
         type=float,
-        default=DEFAULT_MIN_TRACK_KMH,
-        help="Drop events below this GoPro GPS speed in km/h, e.g. paddock and pit lane (0 disables). Default 40.",
+        default=STOPPED_KMH,
+        help="Drop events below this GoPro GPS speed in km/h, i.e. standing still (0 disables). Default 10.",
     )
     scan.add_argument(
         "--max-clip-seconds",
@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-speed",
         type=float,
         default=DEFAULT_MIN_TRACK_KMH,
-        help="Leave out moments below this GPS speed in km/h (0 disables). Default 40.",
+        help="Track speed in km/h: slower moments (paddock, pit lane) get at most one per action short and none in theme shorts (0 disables). Default 40.",
     )
     shorts.add_argument("--labels", action="store_true", help="Put a theme/time label on each moment")
     shorts.add_argument("--dry-run", action="store_true", help="Write moments.json and index.html only")
@@ -303,7 +303,9 @@ def scan_cmd(args: argparse.Namespace) -> int:
         try:
             from videobrowser.shorts import build_shorts
 
-            build_shorts(out, sessions_dir=sessions_dir, dates=dates, min_speed=args.min_speed)
+            # --min-speed 0 turns the speed checks off in the shorts too.
+            track = DEFAULT_MIN_TRACK_KMH if args.min_speed > 0 else 0.0
+            build_shorts(out, sessions_dir=sessions_dir, dates=dates, min_speed=track)
         except Exception as exc:
             # Detection is already saved in scan.sqlite; the day stays pending
             # so the next scan retries it.

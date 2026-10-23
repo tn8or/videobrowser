@@ -3,8 +3,11 @@
 Each clip window gets a 9:16 crop that pans sideways to keep the rider the
 scan flagged in frame. The crop path comes from the tracker boxes collected
 during the scan (5 fps by default): the event's own tracks first, then any
-other rider in view, then the kneepuck position. The clip opens centred (or
-on the subject when it is already in view) and glides over to the action. The
+other rider in view. With nobody in view the crop looks into the corner the
+way a rider would, steered by the turn rate from the GoPro GPS track (left in
+a left-hander on a front camera, mirrored on a rear one). The clip opens
+centred (or on the subject when it is already in view) and glides over to the
+action. The
 path is interpolated to the clip frame rate, smoothed and speed-limited so the
 virtual camera glides instead of jumping, then applied by ffmpeg's ``crop``
 filter via ``sendcmd``.
@@ -29,6 +32,7 @@ from videobrowser.events import ClipWindow
 from videobrowser.gopro import Recording
 from videobrowser.probe import ProbeError, probe
 from videobrowser.riders import TrackPoint
+from videobrowser.telemetry import TurnSample
 
 OUT_W = 1080
 OUT_H = 1920
@@ -45,6 +49,14 @@ MAX_PAN_PER_S = 0.6
 # starts at the fallback (centre) and pans over this long before it appears,
 # instead of opening on wherever the subject will be seconds later.
 LEAD_IN_S = 1.0
+# Turn rate (deg/s) at which the crop looks fully into the corner.
+FULL_TURN_DEG_S = 25.0
+# Largest look-into-the-corner shift from the centre, fraction of frame width.
+MAX_TURN_SHIFT = 0.35
+# A front camera looks this far ahead into the coming corner, seconds.
+TURN_LOOK_AHEAD_S = 0.7
+# A turn sample this close to a rider sample yields to the rider.
+TURN_RIDER_GAP_S = 0.3
 # Vertical output bitrate (the landscape exports use 60M for full-res frames).
 _BITRATE = "20M"
 
@@ -55,19 +67,41 @@ class FocusSample:
     cx: float  # horizontal centre of interest, 0..1 of the frame width
 
 
+def turn_focus(
+    turns: list[TurnSample], t_start: float, t_end: float, facing: str = "front"
+) -> list[FocusSample]:
+    """Crop centres looking into the corner, from the GPS turn rate.
+
+    A rear camera sees the inside of a left-hander on the right of its frame,
+    so the shift is mirrored, and it gets no look-ahead (it shows where the
+    bike has been).
+    """
+    if not turns:
+        return []
+    ts = np.array([s.t for s in turns], dtype=np.float64)
+    yaw = np.array([s.yaw_rate for s in turns], dtype=np.float64)
+    sign, ahead = (1.0, TURN_LOOK_AHEAD_S) if facing == "front" else (-1.0, 0.0)
+    out: list[FocusSample] = []
+    for t in ts[(ts >= t_start) & (ts <= t_end)]:
+        rate = float(np.interp(t + ahead, ts, yaw))
+        frac = min(max(rate / FULL_TURN_DEG_S, -1.0), 1.0)
+        out.append(FocusSample(float(t), 0.5 + sign * MAX_TURN_SHIFT * frac))
+    return out
+
+
 def focus_samples(
     window: ClipWindow,
     tracks: dict[int, list[TrackPoint]],
-    puck_positions: list[tuple[float, float]] | None = None,
+    turns: list[TurnSample] | None = None,
+    facing: str = "front",
 ) -> list[FocusSample]:
     """Where the action is over *window*, one sample per analysed frame.
 
     Priority per frame: tracks named by the window's events, then any other
-    rider big enough to matter, then the kneepuck. The puck is the camera
-    rider's own knee, so it only steers the crop when nobody else is in view
-    (riders ahead, e.g. a corner exit, are the action). Among candidates the largest box
-    wins, but the current target is kept while it stays reasonably large so the
-    crop does not flick between two riders side by side.
+    rider big enough to matter, then the corner ahead (*turns*). Among
+    candidates the largest box wins, but the current target is kept while it
+    stays reasonably large so the crop does not flick between two riders side
+    by side.
     """
     event_ids: set[int] = set()
     for event in window.events:
@@ -84,31 +118,26 @@ def focus_samples(
             if point.height_frac < MIN_FOLLOW_HEIGHT_FRAC:
                 continue
             by_t.setdefault(point.t, []).append(point)
-    puck_by_t = {
-        t: cx for t, cx in (puck_positions or []) if window.t_start <= t <= window.t_end
-    }
 
     samples: list[FocusSample] = []
     current: int | None = None
-    for t in sorted(set(by_t) | set(puck_by_t)):
-        points = by_t.get(t, [])
+    for t in sorted(by_t):
+        points = by_t[t]
         primary = [p for p in points if p.track_id in event_ids]
-        if primary:
-            candidates = primary
-        elif points:
-            candidates = points
-        elif t in puck_by_t:
-            samples.append(FocusSample(t, puck_by_t[t]))
-            current = None
-            continue
-        else:
-            continue
+        candidates = primary or points
         best = max(candidates, key=lambda p: p.area)
         kept = next((p for p in candidates if p.track_id == current), None)
         chosen = kept if kept is not None and kept.area >= SWITCH_RATIO * best.area else best
         current = chosen.track_id
         cx = 0.5 * (chosen.x1 + chosen.x2) / max(1, chosen.frame_w)
         samples.append(FocusSample(t, float(cx)))
+
+    rider_ts = np.array([s.t for s in samples], dtype=np.float64)
+    for sample in turn_focus(turns or [], window.t_start, window.t_end, facing):
+        if len(rider_ts) and np.min(np.abs(rider_ts - sample.t)) < TURN_RIDER_GAP_S:
+            continue
+        samples.append(sample)
+    samples.sort(key=lambda s: s.t)
     return samples
 
 

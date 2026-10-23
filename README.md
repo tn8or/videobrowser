@@ -96,8 +96,10 @@ RaceBox session date. Recordings with no timestamp go under `unknown/`.
 
 - **Vertical** (`vertical/`): the compact elements laid out for 9:16 phone
   video, kept clear of the Reels / TikTok / Shorts UI. The 9:16 crop pans to
-  follow the rider that triggered the clip (else any rider in view, else the
-  kneepuck). It opens centred unless the subject is already in view. Without RaceBox sessions the overlay uses GoPro telemetry or
+  follow the rider that triggered the clip (else any rider in view). With
+  nobody in view it looks into the corner like a rider would, from the GoPro
+  GPS turn rate (left in a left-hander on a front camera, mirrored on a rear
+  one). It opens centred unless the subject is already in view. Without RaceBox sessions the overlay uses GoPro telemetry or
   date/time; `--no-overlay` leaves it off entirely.
 
 Corner entry/exit speeds are disabled in all variants.
@@ -191,7 +193,7 @@ track days.
 | `--font` | Arial | TTF font for overlay text |
 | `--stats` | `<out>/stats.sqlite` | Lap-bests SQLite |
 | `--no-shorts` | off | Do not build `shorts/` after the scan |
-| `--min-speed` | 40 | Drop events below this GoPro GPS speed in km/h (paddock, pit lane); 0 disables |
+| `--min-speed` | 10 | Drop events below this GoPro GPS speed in km/h (standing still); 0 disables, also in the shorts |
 
 Run `videobrowser scan --help` for the complete list.
 
@@ -246,12 +248,14 @@ profiles: `rear`, `rear_right`, `rear_rotated`; everything else is front):
 `rider_down` and `off_track` are found during the scan (`incidents.py`), so
 footage scanned before they existed needs `scan --force` to get them. Each piece is taken from the vertical clip that covers it (crop + HUD);
 a piece no clip covers (e.g. the rear half of an overtake) is cut from the
-source with a centred crop. Shorts carry no overlay of their own (`--labels` adds a theme/time label per
+source with a crop that looks into the corner. Shorts carry no overlay of their own (`--labels` adds a theme/time label per
 moment); for verticals without the telemetry HUD scan with `--no-overlay`.
-Events below 40 km/h GoPro GPS speed (paddock, pit lane) are dropped during
-the scan and left out of the shorts (`--min-speed`, 0 disables; possible
-crashes and off-track excursions are kept regardless). Footage without GPS
-is not filtered.
+The scan drops events where the bike stands still (below 10 km/h GoPro GPS
+speed, `scan --min-speed`). In the shorts, moments where the bike stands
+still are left out, and moments below 40 km/h (paddock, pit lane;
+`shorts --min-speed`) get at most one per action short and none in the
+theme shorts. Possible crashes and off-track excursions are kept regardless,
+and footage without GPS is not filtered. `--min-speed 0` turns the checks off.
 
 Outputs scanned before this feature have no per-recording metadata yet; pass
 the source folders once: `videobrowser shorts -o output inputclips`.
@@ -263,7 +267,7 @@ the source folders once: `videobrowser shorts -o output inputclips`.
 | `--max-action` | 6 | Max mixed action shorts per day |
 | `--no-audio-sync` | off | Sync cameras by GPS only |
 | `--no-crash` | off | Skip crash detection |
-| `--min-speed` | 40 | Leave out moments below this GPS speed (km/h) |
+| `--min-speed` | 40 | Track speed (km/h): slower moments get at most one per action short, none in theme shorts |
 | `--labels` | off | Theme/time label on each moment |
 | `--dry-run` | off | Only write `moments.json` and `index.html` |
 
