@@ -199,3 +199,22 @@ def test_sort_by_start_and_day():
     ordered = sort_by_start([undated, day2, day1])
     assert [r.recording_id for r in ordered] == ["C", "B", "A"]
     assert [recording_day(r) for r in ordered] == ["2026-08-01", "2026-08-02", "unknown"]
+
+
+def test_drop_duplicates_keeps_one_copy(tmp_path):
+    from videobrowser.gopro import drop_duplicates
+
+    def rec(folder: str, utc: float, size: int) -> Recording:
+        path = tmp_path / folder / "GX010001.MP4"
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b"x" * size)
+        info = VideoInfo(path, 60.0, 1920, 1080, 30.0, 0, "h264", False, None, utc)
+        r = Recording(f"{folder}_GX-0001", "GX", "0001")
+        r.chapters.append(Chapter(path, "GX", 1, "0001", 60.0, 0.0, info))
+        return r
+
+    original = rec("card", 1785571200.0, 100)
+    copy = rec("backup", 1785571200.0, 100)
+    other_camera = rec("rear", 1785571200.0, 120)  # started the same second
+    kept = drop_duplicates([original, copy, other_camera])
+    assert [r.recording_id for r in kept] == ["card_GX-0001", "rear_GX-0001"]

@@ -317,3 +317,36 @@ def sort_by_start(recordings: list[Recording]) -> list[Recording]:
 def recording_day(recording: Recording) -> str:
     """Local calendar day from the file's creation time (no GPS read needed)."""
     return local_date_label(_start_utc(recording))
+
+
+def _fingerprint(recording: Recording) -> tuple | None:
+    if not recording.chapters or _start_utc(recording) is None:
+        return None
+    try:
+        sizes = tuple(ch.path.stat().st_size for ch in recording.chapters)
+    except OSError:
+        return None
+    return (round(_start_utc(recording), 1), round(recording.duration, 1), sizes)
+
+
+def drop_duplicates(recordings: list[Recording]) -> list[Recording]:
+    """Skip copies of the same recording found in more than one folder.
+
+    Same start time, length and chapter file sizes means the same footage;
+    two cameras started together still differ in file size. The first copy
+    in the given order is kept.
+    """
+    kept: list[Recording] = []
+    seen: dict[tuple, Recording] = {}
+    for recording in recordings:
+        key = _fingerprint(recording)
+        if key is not None and key in seen:
+            print(
+                f"skip duplicate {recording.chapters[0].path} "
+                f"(same as {seen[key].chapters[0].path})"
+            )
+            continue
+        if key is not None:
+            seen[key] = recording
+        kept.append(recording)
+    return kept

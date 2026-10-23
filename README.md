@@ -200,7 +200,9 @@ Run `videobrowser scan --help` for the complete list.
 `scan` works through the recordings oldest first (by file creation time) and
 builds a day's shorts as soon as that day's last recording is scanned, so the
 first days are ready while the rest of a library is still running. Days with
-no newly scanned recordings are left as they are. `videobrowser shorts -o
+no newly scanned recordings are left as they are, and a day whose shorts
+failed is retried by the next scan. Copies of the same recording in several
+folders (same start time, length and file sizes) are scanned once. `videobrowser shorts -o
 output` rebuilds them on its own. The day's vertical clips are cut into
 near-finished 9:16 shorts:
 

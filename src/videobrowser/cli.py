@@ -7,7 +7,13 @@ from pathlib import Path
 
 from videobrowser.db import ScanDB
 from videobrowser.events import events_to_json
-from videobrowser.gopro import group_recordings, iter_video_paths, recording_day, sort_by_start
+from videobrowser.gopro import (
+    drop_duplicates,
+    group_recordings,
+    iter_video_paths,
+    recording_day,
+    sort_by_start,
+)
 from videobrowser.motion import DEFAULT_THRESHOLD
 from videobrowser.pipeline import ScanConfig, pick_device, scan_recording
 from videobrowser.profiles import CameraMap
@@ -200,7 +206,7 @@ def scan_cmd(args: argparse.Namespace) -> int:
         return 1
     # Oldest first, so each day's shorts can be built as soon as its last
     # recording is scanned instead of after the whole library.
-    recordings = sort_by_start(group_recordings(paths, input_roots=inputs))
+    recordings = drop_duplicates(sort_by_start(group_recordings(paths, input_roots=inputs)))
     camera_map = CameraMap.load(args.map) if args.map else CameraMap({}, {})
     if args.map:
         print(f"camera map override: {args.map}")
