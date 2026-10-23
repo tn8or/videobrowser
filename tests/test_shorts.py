@@ -115,3 +115,22 @@ def test_failed_render_keeps_previous_short_and_drops_stale_ones(tmp_path, monke
     assert (day / "action-01.mp4").read_bytes() == b"previous"
     assert not (day / "overhalinger-03.mp4").exists()
     assert not list(day.glob(".*partial*"))
+
+
+def test_day_moments_leave_out_paddock_riding(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+    from videobrowser.telemetry import SpeedSample
+
+    day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 100.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    day.events = [
+        {"recording_id": "F", "type": "nearby_rider", "t_start": 20.0, "t_end": 22.0, "score": 0.5},
+        {"recording_id": "F", "type": "approaching_rider", "t_start": 60.0, "t_end": 63.0, "score": 0.9},
+        {"recording_id": "F", "type": "rider_down", "t_start": 8.0, "t_end": 9.0, "score": 2.0},
+    ]
+    speeds = [SpeedSample(t, 15.0 if t < 30 else 110.0) for t in range(100)]
+    monkeypatch.setattr(shorts, "_recording_speeds", lambda clock: speeds)
+    themes = sorted(m.theme for m in shorts.day_moments(day, crashes=False))
+    assert themes == ["catching_up", "crash_other"]
+    themes = sorted(m.theme for m in shorts.day_moments(day, crashes=False, min_speed=0))
+    assert themes == ["action", "catching_up", "crash_other"]

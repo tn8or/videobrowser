@@ -499,3 +499,25 @@ def leaned(samples: list[LeanSample], t: float, gate_deg: float) -> bool:
     if value is None:
         return True
     return value >= gate_deg
+
+
+# Paddock and pit-lane riding stays well under this; on track it is above it
+# almost everywhere except the slowest hairpins.
+DEFAULT_MIN_TRACK_KMH = 40.0
+
+
+def on_track(samples: list[SpeedSample], t0: float, t1: float, min_kmh: float) -> bool:
+    """True when the median GPS speed over ``[t0, t1]`` is at least *min_kmh*.
+
+    Also True without speed data (no GPS fix, no GPMD) or when *min_kmh* <= 0,
+    so footage without telemetry is not thrown away.
+    """
+    if min_kmh <= 0 or not samples:
+        return True
+    vals = [s.speed_kmh for s in samples if t0 - 0.5 <= s.t <= t1 + 0.5]
+    if not vals:
+        nearest = min(samples, key=lambda s: abs(s.t - 0.5 * (t0 + t1)))
+        if abs(nearest.t - 0.5 * (t0 + t1)) > 5.0:
+            return True
+        vals = [nearest.speed_kmh]
+    return float(np.median(vals)) >= min_kmh

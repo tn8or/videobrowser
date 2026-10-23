@@ -18,6 +18,7 @@ from videobrowser.motion import DEFAULT_THRESHOLD
 from videobrowser.pipeline import ScanConfig, pick_device, scan_recording
 from videobrowser.profiles import CameraMap
 from videobrowser.riders import RiderTracker
+from videobrowser.telemetry import DEFAULT_MIN_TRACK_KMH
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -87,6 +88,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_THRESHOLD,
         help="Drop events while the camera is parked (0 disables). Default 4.",
+    )
+    scan.add_argument(
+        "--min-speed",
+        type=float,
+        default=DEFAULT_MIN_TRACK_KMH,
+        help="Drop events below this GoPro GPS speed in km/h, e.g. paddock and pit lane (0 disables). Default 40.",
     )
     scan.add_argument(
         "--max-clip-seconds",
@@ -161,6 +168,13 @@ def build_parser() -> argparse.ArgumentParser:
     shorts.add_argument("--max-action", type=int, default=6, help="Max mixed action shorts per day (default 6)")
     shorts.add_argument("--no-audio-sync", action="store_true", help="Sync cameras by GPS only")
     shorts.add_argument("--no-crash", action="store_true", help="Skip crash detection from telemetry")
+    shorts.add_argument(
+        "--min-speed",
+        type=float,
+        default=DEFAULT_MIN_TRACK_KMH,
+        help="Leave out moments below this GPS speed in km/h (0 disables). Default 40.",
+    )
+    shorts.add_argument("--labels", action="store_true", help="Put a theme/time label on each moment")
     shorts.add_argument("--dry-run", action="store_true", help="Write moments.json and index.html only")
     shorts.add_argument(
         "--sessions-dir",
@@ -188,6 +202,8 @@ def shorts_cmd(args: argparse.Namespace) -> int:
         audio_sync=not args.no_audio_sync,
         crashes=not args.no_crash,
         render=not args.dry_run,
+        min_speed=args.min_speed,
+        labels=args.labels,
     )
     if built and not args.dry_run:
         db = ScanDB.open(out / "scan.sqlite")
@@ -246,6 +262,7 @@ def scan_cmd(args: argparse.Namespace) -> int:
         lean_gate=args.lean_gate,
         max_seconds=args.max_seconds,
         min_motion=args.min_motion,
+        min_speed=args.min_speed,
         max_clip_seconds=args.max_clip_seconds,
         max_clips=args.max_clips,
         vertical=not args.no_vertical,
@@ -286,7 +303,7 @@ def scan_cmd(args: argparse.Namespace) -> int:
         try:
             from videobrowser.shorts import build_shorts
 
-            build_shorts(out, sessions_dir=sessions_dir, dates=dates)
+            build_shorts(out, sessions_dir=sessions_dir, dates=dates, min_speed=args.min_speed)
         except Exception as exc:
             # Detection is already saved in scan.sqlite; the day stays pending
             # so the next scan retries it.

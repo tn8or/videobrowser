@@ -13,7 +13,10 @@ day on one clock (``sync.py``), groups events into themed moments
 Each moment is cut from the vertical follow-cam clip that covers it (crop and
 HUD included). A moment no vertical clip covers (a rear-camera hand-over that
 did not make the clip list, an own crash) is cut from the source with a
-centred 9:16 crop instead. A short label names the theme on each piece.
+centred 9:16 crop instead. Moments below ``--min-speed`` (GoPro GPS) are left
+out, so riding around the paddock or pit lane does not end up in a short.
+With ``--labels`` a short label names the theme on each piece; by default the
+shorts carry no overlay of their own.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from videobrowser.db import ScanDB
 from videobrowser.events import ClipWindow
 from videobrowser.probe import ProbeError, ffprobe_json, local_date_label, probe
 from videobrowser.sync import CameraClock, ChapterRef, align
+from videobrowser.telemetry import DEFAULT_MIN_TRACK_KMH
 from videobrowser.themes import (
     LABELS,
     THEME_ORDER,
@@ -271,7 +275,41 @@ def _crash_moments(day: DayData) -> list[Moment]:
     return merged
 
 
-def day_moments(day: DayData, crashes: bool = True) -> list[Moment]:
+def _recording_speeds(clock: CameraClock) -> list:
+    from videobrowser.telemetry import SpeedSample, extract_gpmd_bytes, speed_series
+
+    samples: list[SpeedSample] = []
+    for chapter in clock.chapters:
+        try:
+            info = probe(chapter.path)
+        except (ProbeError, OSError):
+            continue
+        if not info.has_gpmd or info.gpmd_index is None:
+            continue
+        blob = extract_gpmd_bytes(chapter.path, info.gpmd_index)
+        for sample in speed_series(info, blob) if blob else []:
+            samples.append(SpeedSample(sample.t + chapter.offset, sample.speed_kmh))
+    return samples
+
+
+def day_moments(
+    day: DayData, crashes: bool = True, min_speed: float = DEFAULT_MIN_TRACK_KMH
+) -> list[Moment]:
+    from videobrowser.events import SPEED_EXEMPT
+    from videobrowser.telemetry import on_track
+
+    rows = day.events
+    if min_speed > 0 and rows:
+        speeds = {rid: _recording_speeds(clock) for rid, clock in day.clocks.items()}
+        kept = [
+            row
+            for row in rows
+            if row["type"] in SPEED_EXEMPT
+            or on_track(speeds[row["recording_id"]], row["t_start"], row["t_end"], min_speed)
+        ]
+        if len(kept) < len(rows):
+            print(f"  left out {len(rows) - len(kept)} event(s) below {min_speed:g} km/h")
+        rows = kept
     events = [
         CamEvent(
             recording_id=row["recording_id"],
@@ -282,7 +320,7 @@ def day_moments(day: DayData, crashes: bool = True) -> list[Moment]:
             score=float(row["score"]),
             utc_offset=float(day.clocks[row["recording_id"]].start_utc or 0.0),
         )
-        for row in day.events
+        for row in rows
     ]
     moments = find_moments(events)
     if crashes:
@@ -409,7 +447,7 @@ def _encode_piece(src: Path, start: float, duration: float, label_png: Path, des
     raise last if last is not None else RuntimeError("no encode pipeline available")
 
 
-def render_short(plan: ShortPlan, day: DayData, dest: Path) -> Path | None:
+def render_short(plan: ShortPlan, day: DayData, dest: Path, labels: bool = False) -> Path | None:
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
         pieces: list[Path] = []
@@ -419,7 +457,9 @@ def render_short(plan: ShortPlan, day: DayData, dest: Path) -> Path | None:
             sub = _clock_label(moment.utc_start)
             if plan.theme != "action":
                 sub = f"{i}/{total}  ·  {sub}"
-            label = render_label(moment.label, sub, work / f"label{i:02d}.png")
+            label = (
+                render_label(moment.label, sub, work / f"label{i:02d}.png") if labels else blank
+            )
             for j, segment in enumerate(moment.segments):
                 piece = work / f"p{i:02d}_{j}.mp4"
                 found = _source_for(segment, day.clips)
@@ -573,6 +613,8 @@ def build_shorts(
     audio_sync: bool = True,
     crashes: bool = True,
     render: bool = True,
+    min_speed: float = DEFAULT_MIN_TRACK_KMH,
+    labels: bool = False,
 ) -> dict[str, list[Path]]:
     db = ScanDB.open(out_dir / "scan.sqlite")
     try:
@@ -591,7 +633,7 @@ def build_shorts(
             continue
         print(f"shorts {label}: {len(day.clocks)} camera recording(s), {len(day.events)} events")
         align(list(day.clocks.values()), racebox_offset=rb_offset, use_audio=audio_sync)
-        moments = day_moments(day, crashes=crashes)
+        moments = day_moments(day, crashes=crashes, min_speed=min_speed)
         plans = plan_shorts(moments, max_seconds, max_action_shorts)
         day_dir = out_dir / "shorts" / label
         day_dir.mkdir(parents=True, exist_ok=True)
@@ -628,7 +670,7 @@ def build_shorts(
                 final = day_dir / f"{plan.name}.mp4"
                 partial = day_dir / f".{plan.name}.partial.mp4"
                 try:
-                    path = render_short(plan, day, partial)
+                    path = render_short(plan, day, partial, labels=labels)
                 except Exception as exc:
                     print(f"  short {plan.name} failed: {exc}")
                     partial.unlink(missing_ok=True)
