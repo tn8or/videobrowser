@@ -128,14 +128,23 @@ def motion_start_utc(
         return None
     x = np.where(known, (x - np.nanmean(x)) / np.nanstd(x), 0.0)
 
+    # Only the part of the log the search can reach (the sessions dir holds
+    # every day ever logged).
+    utc, kmh = track.utc, track.speed_kmh
+    if guesses:
+        keep = (utc >= min(guesses) - search_s - 10.0) & (utc <= max(guesses) + search_s + n + 10.0)
+        utc, kmh = utc[keep], kmh[keep]
+        if len(utc) < 10:
+            return None
+
     # RaceBox speed on a 1 s grid, padded by the recording length on both
     # sides so a recording may run past either end of the log.
-    g0 = float(np.floor(track.utc[0])) - n
-    grid = g0 + np.arange(int(np.ceil(track.utc[-1] - g0)) + n + 1)
-    speed = np.interp(grid, track.utc, np.minimum(track.speed_kmh, SPEED_CLIP_KMH), left=0.0, right=0.0)
+    g0 = float(np.floor(utc[0])) - n
+    grid = g0 + np.arange(int(np.ceil(utc[-1] - g0)) + n + 1)
+    speed = np.interp(grid, utc, np.minimum(kmh, SPEED_CLIP_KMH), left=0.0, right=0.0)
     # Between sessions (no sample within 5 s) the bike is in.
-    i = np.clip(np.searchsorted(track.utc, grid), 1, len(track.utc) - 1)
-    nearest = np.minimum(np.abs(grid - track.utc[i - 1]), np.abs(track.utc[i] - grid))
+    i = np.clip(np.searchsorted(utc, grid), 1, len(utc) - 1)
+    nearest = np.minimum(np.abs(grid - utc[i - 1]), np.abs(utc[i] - grid))
     speed[nearest > 5.0] = 0.0
     if len(speed) < n + 2:
         return None
