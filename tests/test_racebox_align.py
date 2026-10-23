@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from videobrowser.racebox_align import RaceboxTrack, clock_guesses, motion_start_utc
+from videobrowser.racebox_align import RaceboxTrack, clock_guesses, motion_start_utc, track_from_sessions
 
 T0 = 1_785_000_000.0
 
@@ -51,3 +51,21 @@ def test_clock_guesses_try_local_and_utc_readings():
     summer = 1_785_485_689.0  # 2026-07-31, CEST
     assert clock_guesses(summer) == [summer, summer + 7200]
     assert clock_guesses(None) == []
+
+
+def test_track_from_overlapping_sessions_is_strictly_increasing():
+    class Session:
+        def __init__(self, t0, n):
+            t = T0 + t0 + np.arange(n) * 0.1
+            self.data = {
+                "time": t,
+                "lat": 55.0 + np.arange(n) * 1e-5,
+                "lng": np.full(n, 10.0),
+                "velocity": np.full(n, 100.0),
+            }
+
+    # Second session starts before the first ends, and is listed first.
+    track = track_from_sessions([Session(50, 1000), Session(0, 1000)])
+    assert track is not None
+    assert np.all(np.diff(track.utc) > 0)
+    assert track.utc[0] == pytest.approx(T0) and track.utc[-1] == pytest.approx(T0 + 50 + 99.9)

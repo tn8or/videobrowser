@@ -445,7 +445,10 @@ def scan_recording(
     start_utc = (
         creation_utc_prefer_gps(recording.chapters[0].info) if recording.chapters else None
     )
+    clock_utc = start_utc
     speeds, turns, start_utc = gps_for_recording(recording, config, motion_samples, start_utc)
+    # Placed on the RaceBox log by scene motion: overlays use that start too.
+    rb_start_utc = start_utc if start_utc != clock_utc else None
     if config.min_speed > 0 and events:
         before_speed = len(events)
         events = [
@@ -483,13 +486,13 @@ def scan_recording(
                 print(f"  clip failed {dest.name}: {exc}")
         clip_records.append((window, path))
 
-    rec_start_utc: float | None = None
+    rec_start_utc: float | None = rb_start_utc
     if config.racebox is not None and write_landscape:
         try:
             from videobrowser.racebox_stage import run_for_recording
 
             rec_start_utc = run_for_recording(
-                recording, windows, profile.rotation, config.racebox
+                recording, windows, profile.rotation, config.racebox, rb_start_utc
             )
         except Exception as exc:
             print(f"  racebox overlays failed: {exc}")

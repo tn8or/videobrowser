@@ -76,8 +76,14 @@ def track_from_sessions(sessions: list) -> RaceboxTrack | None:
         parts.append((utc, speed, yaw_rates(utc, lat, lon, speed)))
     if not parts:
         return None
-    parts.sort(key=lambda p: p[0][0])
-    return RaceboxTrack(*(np.concatenate([p[i] for p in parts]) for i in range(3)))
+    utc, speed, yaw = (np.concatenate([p[i] for p in parts]) for i in range(3))
+    # Sessions may overlap or step back: keep one strictly increasing series.
+    order = np.argsort(utc, kind="stable")
+    utc, speed, yaw = utc[order], speed[order], yaw[order]
+    keep = np.r_[True, np.diff(utc) > 0] & np.isfinite(utc) & np.isfinite(speed)
+    if keep.sum() < 10:
+        return None
+    return RaceboxTrack(utc[keep], speed[keep], yaw[keep])
 
 
 def load_track(sessions_dir: Path | None) -> RaceboxTrack | None:
@@ -134,8 +140,8 @@ def motion_start_utc(
     if guesses:
         keep = (utc >= min(guesses) - search_s - 10.0) & (utc <= max(guesses) + search_s + n + 10.0)
         utc, kmh = utc[keep], kmh[keep]
-        if len(utc) < 10:
-            return None
+    if len(utc) < 10 or utc[-1] - utc[0] > 3 * 86400.0:
+        return None
 
     # RaceBox speed on a 1 s grid, padded by the recording length on both
     # sides so a recording may run past either end of the log.
