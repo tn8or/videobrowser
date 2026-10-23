@@ -168,3 +168,23 @@ def test_day_moments_fall_back_to_scene_motion_without_gps(monkeypatch):
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
     found = {(m.theme, m.slow) for m in shorts.day_moments(day, crashes=False)}
     assert found == {("action", True), ("catching_up", False)}
+
+
+def test_recording_without_gps_takes_racebox_time_speed_and_turns(monkeypatch):
+    import numpy as np
+
+    import videobrowser.racebox_align as ra
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    day = shorts.DayData("2026-08-03", {"M": CameraClock("M", 1000.0, 100.0, [])}, {"M": "cockpit"}, {"M": 0}, [], [])
+    day.motion["M"] = [(t + 0.5, 10.0) for t in range(100)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    monkeypatch.setattr(ra, "motion_start_utc", lambda motion, track, guesses: 1012.0)
+    utc = np.arange(900.0, 1300.0, 0.1)
+    track = ra.RaceboxTrack(utc, np.full(len(utc), 120.0), np.full(len(utc), -20.0))
+    shorts.place_without_gps(day, track)
+    assert day.clocks["M"].start_utc == 1012.0
+    speeds, turns = day.gps["M"]
+    assert speeds[0].t == pytest.approx(0.0, abs=0.1) and speeds[0].speed_kmh == 120.0
+    assert turns[-1].t <= 100.0 and turns[0].yaw_rate == -20.0

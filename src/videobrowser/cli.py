@@ -291,6 +291,13 @@ def scan_cmd(args: argparse.Namespace) -> int:
 
     shorts_on = not (args.no_shorts or args.no_vertical or args.no_clips)
     sessions_dir = (args.sessions_dir or (out / "sessions")).expanduser()
+    # RaceBox speed and turns stand in for footage without GoPro GPS, also
+    # with overlays off.
+    from videobrowser.racebox_align import load_track, track_from_sessions
+
+    config.racebox_track = (
+        track_from_sessions(config.racebox.sessions) if config.racebox else load_track(sessions_dir)
+    )
     shorts_failed = False
     attempted: set[str] = set()
 

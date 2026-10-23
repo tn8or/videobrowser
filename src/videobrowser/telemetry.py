@@ -264,8 +264,14 @@ def turn_series(info: VideoInfo, blob: bytes | None = None) -> list[TurnSample]:
     if fix.sum() < 10:
         return []
     t, lat, lon, kmh = times[fix], arr[fix, 0], arr[fix, 1], arr[fix, 2]
-    if t[-1] - t[0] <= 0:
-        return []
+    yaw = yaw_rates(t, lat, lon, kmh)
+    return [TurnSample(t=float(a), yaw_rate=float(b)) for a, b in zip(t, yaw)]
+
+
+def yaw_rates(t: np.ndarray, lat: np.ndarray, lon: np.ndarray, kmh: np.ndarray) -> np.ndarray:
+    """Turn rate (deg/s, positive right) along a GPS track sampled at times *t*."""
+    if len(t) < 3 or t[-1] - t[0] <= 0:
+        return np.zeros(len(t))
     k = max(1, int(round(_TURN_SMOOTH_S * len(t) / (t[-1] - t[0]))))
     lat0 = float(np.median(lat))
     north = _moving_average((lat - lat0) * 111_320.0, k)
@@ -273,8 +279,7 @@ def turn_series(info: VideoInfo, blob: bytes | None = None) -> list[TurnSample]:
     heading = np.unwrap(np.arctan2(np.gradient(east, t), np.gradient(north, t)))
     yaw = np.degrees(np.gradient(heading, t))
     yaw[kmh < _TURN_MIN_KMH] = 0.0
-    yaw = _moving_average(yaw, k)
-    return [TurnSample(t=float(a), yaw_rate=float(b)) for a, b in zip(t, yaw)]
+    return _moving_average(yaw, k)
 
 
 def _parse_gpsu(raw: str) -> datetime | None:

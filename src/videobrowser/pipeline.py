@@ -63,6 +63,9 @@ class ScanConfig:
     max_clips: int = 12
     # Optional RaceboxContext; when set, overlay clips are produced after cuts.
     racebox: Any = None
+    # RaceBox speed/turn track (racebox_align.RaceboxTrack) for footage
+    # without GoPro GPS; loaded even with overlays off.
+    racebox_track: Any = None
     # 1080x1920 follow-cam copies of each clip under ``vertical/``.
     vertical: bool = True
     # Landscape clips under ``clips/`` plus the RaceBox overlay renders.
@@ -150,6 +153,35 @@ def turns_for_recording(recording: Recording) -> list[TurnSample]:
             samples.append(TurnSample(t=sample.t + chapter.offset, yaw_rate=sample.yaw_rate))
     samples.sort(key=lambda s: s.t)
     return samples
+
+
+def gps_for_recording(
+    recording: Recording,
+    config: ScanConfig,
+    motion_samples: list[tuple[float, float]],
+    start_utc: float | None,
+) -> tuple[list[SpeedSample], list[TurnSample], float | None]:
+    """Speed and turn samples from the GoPro GPS, else from RaceBox, plus the
+    recording's start (UTC), corrected when it was found on the RaceBox log.
+
+    Without GoPro telemetry the recording is laid on the RaceBox log by its
+    scene motion (``racebox_align``); without a clear match there is none.
+    """
+    speeds = speed_for_recording(recording)
+    if speeds or config.racebox_track is None:
+        return speeds, turns_for_recording(recording) if speeds else [], start_utc
+    from videobrowser.racebox_align import clock_guesses, motion_start_utc
+
+    found = motion_start_utc(
+        per_second(motion_samples), config.racebox_track, clock_guesses(start_utc)
+    )
+    if found is None:
+        print("  no GPS; no clear RaceBox match from scene motion")
+        return [], [], start_utc
+    shift = found - start_utc if start_utc is not None else 0.0
+    print(f"  no GPS; laid on RaceBox by scene motion (camera clock {shift:+.1f} s)")
+    track = config.racebox_track
+    return track.speeds(found, recording.duration), track.turns(found, recording.duration), found
 
 
 def _puck_events(hits: list[tuple[float, float]], recording_id: str) -> list[Event]:
@@ -410,8 +442,11 @@ def scan_recording(
     before_motion = len(events)
     events = [e for e in events if event_is_moving(e, motion_samples, config.min_motion)]
     dropped = before_motion - len(events)
+    start_utc = (
+        creation_utc_prefer_gps(recording.chapters[0].info) if recording.chapters else None
+    )
+    speeds, turns, start_utc = gps_for_recording(recording, config, motion_samples, start_utc)
     if config.min_speed > 0 and events:
-        speeds = speed_for_recording(recording)
         before_speed = len(events)
         events = [
             e
@@ -431,9 +466,6 @@ def scan_recording(
         duration=duration,
         max_len=config.max_clip_seconds,
         max_clips=config.max_clips,
-    )
-    start_utc = (
-        creation_utc_prefer_gps(recording.chapters[0].info) if recording.chapters else None
     )
     date_label = local_date_label(start_utc)
     clip_dir = config.out_dir / "clips" / date_label
@@ -469,7 +501,7 @@ def scan_recording(
             profile,
             config,
             _merge_tracks(tracks, focus_tracks),
-            turns_for_recording(recording),
+            turns,
             rec_start_utc,
             config.out_dir / "vertical" / date_label,
         )

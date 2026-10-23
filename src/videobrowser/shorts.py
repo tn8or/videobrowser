@@ -376,6 +376,28 @@ def _moment_pace(m: Moment, day: DayData, min_speed: float) -> str | None:
     return "slow" if motion < TRACK_MOTION else "track"
 
 
+def place_without_gps(day: DayData, track) -> None:
+    """Lay recordings without GoPro GPS on the RaceBox log by scene motion.
+
+    Sets their start time and takes speed and turn rate from RaceBox.
+    """
+    from videobrowser.racebox_align import clock_guesses, motion_start_utc
+
+    if track is None:
+        return
+    for rid, clock in day.clocks.items():
+        if rid not in day.motion or _day_gps(day, rid)[0]:
+            continue
+        found = motion_start_utc(day.motion[rid], track, clock_guesses(clock.start_utc))
+        if found is None:
+            print(f"  {rid}: no GPS, no clear RaceBox match")
+            continue
+        print(f"  {rid}: no GPS, laid on RaceBox by scene motion ({found - (clock.start_utc or found):+.1f} s)")
+        clock.start_utc = found
+        clock.source = "racebox-motion"
+        day.gps[rid] = (track.speeds(found, clock.duration), track.turns(found, clock.duration))
+
+
 def day_moments(
     day: DayData, crashes: bool = True, min_speed: float = DEFAULT_MIN_TRACK_KMH
 ) -> list[Moment]:
@@ -714,11 +736,15 @@ def build_shorts(
         print("shorts: nothing scanned yet (or scanned before this version; pass the input folders)")
         return {}
     rb_offset = _racebox_offsets(sessions_dir)
+    from videobrowser.racebox_align import load_track
+
+    track = load_track(sessions_dir)
     results: dict[str, list[Path]] = {}
     for label, day in sorted(days.items()):
         if dates and label not in dates:
             continue
         print(f"shorts {label}: {len(day.clocks)} camera recording(s), {len(day.events)} events")
+        place_without_gps(day, track)
         align(list(day.clocks.values()), racebox_offset=rb_offset, use_audio=audio_sync)
         moments = day_moments(day, crashes=crashes, min_speed=min_speed)
         plans = plan_shorts(moments, max_seconds, max_action_shorts)
