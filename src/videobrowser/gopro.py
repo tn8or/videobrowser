@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from videobrowser.probe import ProbeError, VideoInfo, probe
+from videobrowser.probe import ProbeError, VideoInfo, local_date_label, probe
 
 VIDEO_EXTS = {".mp4", ".mov", ".m4v"}
 GOPRO_RE = re.compile(
@@ -300,3 +300,20 @@ def chapter_at(recording: Recording, global_t: float) -> Chapter | None:
     if recording.chapters and global_t < 0:
         return recording.chapters[0]
     return None
+
+
+def _start_utc(recording: Recording) -> float | None:
+    return recording.chapters[0].info.creation_utc if recording.chapters else None
+
+
+def sort_by_start(recordings: list[Recording]) -> list[Recording]:
+    """Oldest recording first (file creation time); undated ones last."""
+    return sorted(
+        recordings,
+        key=lambda r: (_start_utc(r) is None, _start_utc(r) or 0.0, r.recording_id),
+    )
+
+
+def recording_day(recording: Recording) -> str:
+    """Local calendar day from the file's creation time (no GPS read needed)."""
+    return local_date_label(_start_utc(recording))

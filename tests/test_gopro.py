@@ -181,3 +181,21 @@ def test_group_recordings_separates_same_id_in_different_folders(
         "2025-06-06_100GOPRO_GX-0510",
     ]
 
+
+
+def _rec(rid: str, utc: float | None) -> Recording:
+    info = VideoInfo(Path(f"{rid}.mp4"), 60.0, 1920, 1080, 30.0, 0, "h264", False, None, utc)
+    rec = Recording(rid, "GX", rid)
+    rec.chapters.append(Chapter(info.path, "GX", 1, rid, 60.0, 0.0, info))
+    return rec
+
+
+def test_sort_by_start_and_day():
+    from videobrowser.gopro import recording_day, sort_by_start
+
+    day2 = _rec("B", 1785657600.0)  # 2026-08-02 10:00 Copenhagen
+    day1 = _rec("C", 1785571200.0)  # 2026-08-01 10:00
+    undated = _rec("A", None)
+    ordered = sort_by_start([undated, day2, day1])
+    assert [r.recording_id for r in ordered] == ["C", "B", "A"]
+    assert [recording_day(r) for r in ordered] == ["2026-08-01", "2026-08-02", "unknown"]

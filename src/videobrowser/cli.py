@@ -7,7 +7,7 @@ from pathlib import Path
 
 from videobrowser.db import ScanDB
 from videobrowser.events import events_to_json
-from videobrowser.gopro import group_recordings, iter_video_paths
+from videobrowser.gopro import group_recordings, iter_video_paths, recording_day, sort_by_start
 from videobrowser.motion import DEFAULT_THRESHOLD
 from videobrowser.pipeline import ScanConfig, pick_device, scan_recording
 from videobrowser.profiles import CameraMap
@@ -192,12 +192,18 @@ def scan_cmd(args: argparse.Namespace) -> int:
     if not paths:
         print("no video files found", file=sys.stderr)
         return 1
-    recordings = group_recordings(paths, input_roots=inputs)
+    # Oldest first, so each day's shorts can be built as soon as its last
+    # recording is scanned instead of after the whole library.
+    recordings = sort_by_start(group_recordings(paths, input_roots=inputs))
     camera_map = CameraMap.load(args.map) if args.map else CameraMap({}, {})
     if args.map:
         print(f"camera map override: {args.map}")
 
-    print(f"found {len(paths)} video(s) in {len(recordings)} recording(s)")
+    days = {recording_day(r) for r in recordings}
+    print(
+        f"found {len(paths)} video(s) in {len(recordings)} recording(s) "
+        f"over {len(days)} day(s), oldest first"
+    )
     out.mkdir(parents=True, exist_ok=True)
     db = ScanDB.open(out / "scan.sqlite")
     device = pick_device(args.device)
@@ -246,10 +252,39 @@ def scan_cmd(args: argparse.Namespace) -> int:
             print(f"racebox setup failed, continuing without overlays: {exc}")
             config.racebox = None
 
+    shorts_on = not (args.no_shorts or args.no_vertical or args.no_clips)
+    sessions_dir = (args.sessions_dir or (out / "sessions")).expanduser()
+    shorts_failed = False
+
+    def shorts_for(scanned: list[str]) -> None:
+        """Build shorts for the days the just-finished recordings landed on."""
+        nonlocal shorts_failed
+        dates = db.date_labels(scanned) if shorts_on and scanned else []
+        if not dates:
+            return
+        try:
+            from videobrowser.shorts import build_shorts
+
+            build_shorts(out, sessions_dir=sessions_dir, dates=dates)
+        except Exception as exc:
+            # Detection is already saved in scan.sqlite; flag it and go on.
+            print(f"shorts failed: {exc}", file=sys.stderr)
+            shorts_failed = True
+
     all_events = []
     try:
+        current_day: str | None = None
+        scanned: list[str] = []
         for recording in recordings:
+            day = recording_day(recording)
+            if day != current_day:
+                shorts_for(scanned)
+                current_day, scanned = day, []
+            skipped = db.is_processed(recording.recording_id) and not config.force
             all_events.extend(scan_recording(recording, config, db, tracker))
+            if not skipped:
+                scanned.append(recording.recording_id)
+        shorts_for(scanned)
     finally:
         db.close()
 
@@ -264,17 +299,7 @@ def scan_cmd(args: argparse.Namespace) -> int:
     )
     (out / "events.json").write_text(json.dumps(payload, indent=2))
     print(f"wrote {out / 'events.json'}  ({len(all_events)} events)")
-
-    if not (args.no_shorts or args.no_vertical or args.no_clips):
-        try:
-            from videobrowser.shorts import build_shorts
-
-            build_shorts(out, sessions_dir=(args.sessions_dir or (out / "sessions")).expanduser())
-        except Exception as exc:
-            # Detection is already saved in scan.sqlite; just flag the failure.
-            print(f"shorts failed: {exc}", file=sys.stderr)
-            return 1
-    return 0
+    return 1 if shorts_failed else 0
 
 
 def main(argv: list[str] | None = None) -> int:

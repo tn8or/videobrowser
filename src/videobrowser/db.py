@@ -171,3 +171,14 @@ class ScanDB:
 
     def all_clips(self) -> list[sqlite3.Row]:
         return list(self.conn.execute("SELECT * FROM clips ORDER BY recording_id, t_start"))
+
+    def date_labels(self, recording_ids: list[str]) -> list[str]:
+        """Output days (``recording_meta.date_label``) of *recording_ids*."""
+        if not recording_ids:
+            return []
+        marks = ",".join("?" * len(recording_ids))
+        rows = self.conn.execute(
+            f"SELECT DISTINCT date_label FROM recording_meta WHERE recording_id IN ({marks})",
+            recording_ids,
+        )
+        return sorted(row["date_label"] for row in rows)
