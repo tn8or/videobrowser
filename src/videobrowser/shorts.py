@@ -4,22 +4,23 @@
 day on one clock (``sync.py``), groups events into themed moments
 (``themes.py``) and writes:
 
-- ``shorts/YYYY-MM-DD/action-01.mp4`` ...: the day's best moments, several
+- ``shorts/YYYY-MM-DD/action-01/`` ...: the day's best moments, several
   shorts of up to ``--short-seconds`` each, best moments first
-- ``shorts/YYYY-MM-DD/overhalinger-01.mp4`` etc.: one series per theme
+- ``shorts/YYYY-MM-DD/overhalinger-01/`` etc.: one series per theme
 - ``shorts/YYYY-MM-DD/index.html``: the shorts plus every clip, by theme
 - ``shorts/YYYY-MM-DD/moments.json``: what was found, for checking by hand
 
-Each moment is cut from the vertical follow-cam clip that covers it (crop and
-HUD included). A moment no vertical clip covers (a rear-camera hand-over that
-did not make the clip list, an own crash) is cut from the source with a
-9:16 crop instead, which looks into the corner like the scan's clips do.
+A short is a folder of its source clips, numbered in order, to put together
+in an editor (joining them with ffmpeg clicks in the sound). ``klip.txt``
+lists which part of each clip the moment covers. Each piece is the vertical
+follow-cam clip that covers it (crop and HUD included), copied whole. A piece
+no vertical clip covers (a rear-camera hand-over that did not make the clip
+list, an own crash) is cut from the source with a 9:16 crop instead, which
+looks into the corner like the scan's clips do.
 Moments where the bike stands still are left out. Moments below
 ``--min-speed`` (GoPro GPS; paddock, pit lane) get at most one per action
 short and none in the theme shorts. Without GPS the scan's scene motion
 stands in for speed.
-With ``--labels`` a short label names the theme on each piece; by default the
-shorts carry no overlay of their own.
 """
 
 from __future__ import annotations
@@ -28,8 +29,7 @@ import html
 import json
 import os
 import re
-import subprocess
-import tempfile
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,11 +37,10 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from videobrowser.clips import _REENCODE_PIPELINES
 from videobrowser.db import ScanDB
 from videobrowser.events import ClipWindow
 from videobrowser.motion import DEFAULT_THRESHOLD, TRACK_MOTION
-from videobrowser.probe import ProbeError, ffprobe_json, local_date_label, probe
+from videobrowser.probe import ProbeError, local_date_label, probe
 from videobrowser.sync import CameraClock, ChapterRef, align
 from videobrowser.telemetry import DEFAULT_MIN_TRACK_KMH, STOPPED_KMH
 from videobrowser.themes import (
@@ -56,7 +55,6 @@ from videobrowser.themes import (
     find_moments,
 )
 
-OUT_W, OUT_H, OUT_FPS = 1080, 1920, 30
 # Label shown at the start of each piece, seconds.
 LABEL_S = 1.8
 FILE_NAMES = {
@@ -381,18 +379,22 @@ def place_without_gps(day: DayData, track) -> None:
 
     Sets their start time and takes speed and turn rate from RaceBox.
     """
-    from videobrowser.racebox_align import clock_guesses, motion_start_utc
+    from videobrowser.racebox_align import clock_guesses, motion_match
 
     if track is None:
         return
     for rid, clock in day.clocks.items():
         if rid not in day.motion or _day_gps(day, rid)[0]:
             continue
-        found = motion_start_utc(day.motion[rid], track, clock_guesses(clock.start_utc))
+        match = motion_match(day.motion[rid], track, clock_guesses(clock.start_utc))
+        found = match.start_utc
         if found is None:
-            print(f"  {rid}: no GPS, no clear RaceBox match")
+            print(f"  {rid}: no GPS, no clear RaceBox match: {match.reason}")
             continue
-        print(f"  {rid}: no GPS, laid on RaceBox by scene motion ({found - (clock.start_utc or found):+.1f} s)")
+        print(
+            f"  {rid}: no GPS, laid on RaceBox by scene motion "
+            f"({found - (clock.start_utc or found):+.1f} s, {match.reason})"
+        )
         clock.start_utc = found
         clock.source = "racebox-motion"
         day.gps[rid] = (track.speeds(found, clock.duration), track.turns(found, clock.duration))
@@ -441,49 +443,8 @@ def _clock_label(utc: float) -> str:
     return datetime.fromtimestamp(utc, tz=timezone.utc).astimezone(_TZ).strftime("%H:%M")
 
 
-def render_label(text: str, sub: str, dest: Path) -> Path:
-    """Transparent 1080x1920 PNG with a pill-shaped label below the HUD top row."""
-    import cairo
-
-    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, OUT_W, OUT_H)
-    ctx = cairo.Context(surface)
-    ctx.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
-    ctx.set_font_size(78)
-    ext = ctx.text_extents(text)
-    ctx.set_font_size(44)
-    sub_ext = ctx.text_extents(sub)
-    width = max(ext.width, sub_ext.width) + 120
-    height = 210
-    x = (OUT_W - width) / 2
-    y = OUT_H * 0.25
-    r = 40
-    ctx.new_sub_path()
-    ctx.arc(x + width - r, y + r, r, -np.pi / 2, 0)
-    ctx.arc(x + width - r, y + height - r, r, 0, np.pi / 2)
-    ctx.arc(x + r, y + height - r, r, np.pi / 2, np.pi)
-    ctx.arc(x + r, y + r, r, np.pi, 3 * np.pi / 2)
-    ctx.close_path()
-    ctx.set_source_rgba(0, 0, 0, 0.6)
-    ctx.fill()
-    ctx.set_source_rgb(1, 1, 1)
-    ctx.set_font_size(78)
-    ctx.move_to((OUT_W - ext.width) / 2 - ext.x_bearing, y + 105)
-    ctx.show_text(text)
-    ctx.set_font_size(44)
-    ctx.set_source_rgba(1, 1, 1, 0.8)
-    ctx.move_to((OUT_W - sub_ext.width) / 2 - sub_ext.x_bearing, y + 175)
-    ctx.show_text(sub)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    surface.write_to_png(str(dest))
-    return dest
-
-
-def _has_audio(path: Path) -> bool:
-    try:
-        data = ffprobe_json(path)
-    except Exception:
-        return False
-    return any(s.get("codec_type") == "audio" for s in data.get("streams", []))
+def _file_time(utc: float) -> str:
+    return datetime.fromtimestamp(utc, tz=timezone.utc).astimezone(_TZ).strftime("%H%M%S")
 
 
 def _source_for(segment: Segment, clips: list[ClipRow]) -> tuple[Path, float, float] | None:
@@ -524,85 +485,42 @@ def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
     return export_vertical(recording, window, dest, day.rotations[segment.recording_id], focus)
 
 
-def _encode_piece(src: Path, start: float, duration: float, label_png: Path, dest: Path) -> None:
-    audio = _has_audio(src)
-    inputs = ["-ss", f"{start:.3f}", "-t", f"{duration:.3f}", "-i", str(src), "-loop", "1", "-i", str(label_png)]
-    if not audio:
-        inputs += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
-    graph = (
-        f"[0:v]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=decrease,"
-        f"pad={OUT_W}:{OUT_H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={OUT_FPS}[base];"
-        f"[1:v]format=rgba[lab];"
-        f"[base][lab]overlay=0:0:enable='lt(t,{LABEL_S})':shortest=1,format=yuv420p[vout]"
-    )
-    audio_map = ["-map", "0:a:0"] if audio else ["-map", "2:a:0"]
-    last: RuntimeError | None = None
-    for decode_args, encode_args in _REENCODE_PIPELINES:
-        enc = ["20M" if a == "60M" else a for a in encode_args]
-        cmd = (
-            ["ffmpeg", "-hide_banner", "-y", "-loglevel", "error", *decode_args]
-            + inputs
-            + ["-filter_complex", graph, "-map", "[vout]", *audio_map]
-            + ["-t", f"{duration:.3f}", *enc]
-            + ["-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2"]
-            + ["-movflags", "+faststart", str(dest)]
-        )
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode == 0:
-            return
-        last = RuntimeError(proc.stderr.strip() or "ffmpeg failed")
-        dest.unlink(missing_ok=True)
-    raise last if last is not None else RuntimeError("no encode pipeline available")
+def collect_short(plan: ShortPlan, day: DayData, dest: Path) -> Path | None:
+    """Folder with the source clips of *plan*, in order, for editing by hand.
 
-
-def render_short(plan: ShortPlan, day: DayData, dest: Path, labels: bool = False) -> Path | None:
-    with tempfile.TemporaryDirectory() as tmp:
-        work = Path(tmp)
-        pieces: list[Path] = []
-        blank = render_label_blank(work / "blank.png")
-        total = len(plan.moments)
-        for i, moment in enumerate(plan.moments, start=1):
-            sub = _clock_label(moment.utc_start)
-            if plan.theme != "action":
-                sub = f"{i}/{total}  ·  {sub}"
-            label = (
-                render_label(moment.label, sub, work / f"label{i:02d}.png") if labels else blank
-            )
-            for j, segment in enumerate(moment.segments):
-                piece = work / f"p{i:02d}_{j}.mp4"
-                found = _source_for(segment, day.clips)
-                try:
-                    if found is None:
-                        src = _from_source(day, segment, work / f"src{i:02d}_{j}.mp4")
-                        found = (src, 0.0, probe(src).duration)
-                    path, start, duration = found
-                    if duration < 0.5:
-                        continue
-                    # Label only on the first camera of a moment.
-                    _encode_piece(path, start, duration, label if j == 0 else blank, piece)
-                    pieces.append(piece)
-                except Exception as exc:
-                    print(f"  short {plan.name}: skip {segment.recording_id}@{segment.t_start:.0f}s ({exc})")
-        if not pieces:
-            return None
-        listing = work / "list.txt"
-        listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in pieces))
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        proc = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
-             "-i", str(listing), "-c", "copy", "-movflags", "+faststart", str(dest)],
-            capture_output=True, text=True,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or "concat failed")
-    return dest
-
-
-def render_label_blank(dest: Path) -> Path:
-    import cairo
-
-    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, OUT_W, OUT_H)
-    surface.write_to_png(str(dest))
+    Each moment's camera pieces are copied whole from the scan's vertical
+    clips (no cuts, so no audio clicks at the joins); a piece no clip covers
+    is cut from the GoPro files. ``klip.txt`` lists each file with the part
+    the plan would use.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    lines = [f"{plan.name}: {len(plan.moments)} moments, {plan.duration:.0f} s", ""]
+    copied: dict[Path, str] = {}
+    for i, moment in enumerate(plan.moments, start=1):
+        for j, segment in enumerate(moment.segments):
+            cam = facing(day.profiles[segment.recording_id])
+            stem = f"{i:02d}{'abcdefgh'[j] if len(moment.segments) > 1 else ''}"
+            stem += f"_{_file_time(moment.utc_start)}_{moment.theme}_{cam}"
+            found = _source_for(segment, day.clips)
+            try:
+                if found is None:
+                    name = f"{stem}.mp4"
+                    _from_source(day, segment, dest / name)
+                    use = "whole file"
+                else:
+                    src, start, duration = found
+                    name = copied.get(src) or f"{stem}_{src.name}"
+                    if src not in copied:
+                        shutil.copy2(src, dest / name)
+                        copied[src] = name
+                    use = f"{start:.1f}-{start + duration:.1f} s"
+            except Exception as exc:
+                # All or nothing: an incomplete folder must not replace a whole one.
+                raise RuntimeError(f"{segment.recording_id}@{segment.t_start:.0f}s: {exc}") from exc
+            lines.append(f"{name}  ({moment.label}, {_clock_label(moment.utc_start)}, use {use})")
+    if len(lines) == 2:
+        return None
+    (dest / "klip.txt").write_text("\n".join(lines) + "\n")
     return dest
 
 
@@ -652,12 +570,14 @@ def write_index(
         "figcaption{font-size:13px;opacity:.8;margin-top:4px}</style>",
         f"<h1>{html.escape(day.date_label)}</h1>",
     ]
-    if written:
-        parts.append("<h2>Shorts</h2><div class=grid>")
-        for plan in plans:
-            if plan.name in written:
-                caption = f"{plan.name} · {len(plan.moments)} øjeblikke · {plan.duration:.0f}s"
-                parts.append(video(written[plan.name], caption))
+    for plan in plans:
+        folder = written.get(plan.name)
+        if folder is None:
+            continue
+        title = f"{plan.name} · {len(plan.moments)} øjeblikke · {plan.duration:.0f}s"
+        parts.append(f'<h2><a href="{rel(folder)}/">{html.escape(title)}</a></h2><div class=grid>')
+        for clip in sorted(folder.glob("*.mp4")):
+            parts.append(video(clip, clip.name))
         parts.append("</div>")
     by_type: dict[str, list[ClipRow]] = {}
     for clip in sorted(day.clips, key=lambda c: (c.recording_id, c.t_start)):
@@ -723,7 +643,6 @@ def build_shorts(
     crashes: bool = True,
     render: bool = True,
     min_speed: float = DEFAULT_MIN_TRACK_KMH,
-    labels: bool = False,
 ) -> dict[str, list[Path]]:
     db = ScanDB.open(out_dir / "scan.sqlite")
     try:
@@ -778,25 +697,38 @@ def build_shorts(
         written: dict[str, Path] = {}
         if render:
             for plan in plans:
-                # Render beside the old file and swap it in only once complete,
-                # so a failed or interrupted run keeps the previous short.
-                final = day_dir / f"{plan.name}.mp4"
-                partial = day_dir / f".{plan.name}.partial.mp4"
+                # Fill a folder beside the old one and swap it in only once
+                # complete, so a failed or interrupted run keeps the previous one.
+                final = day_dir / plan.name
+                partial = day_dir / f".{plan.name}.partial"
+                shutil.rmtree(partial, ignore_errors=True)
                 try:
-                    path = render_short(plan, day, partial, labels=labels)
+                    path = collect_short(plan, day, partial)
                 except Exception as exc:
                     print(f"  short {plan.name} failed: {exc}")
-                    partial.unlink(missing_ok=True)
+                    shutil.rmtree(partial, ignore_errors=True)
                     continue
-                if path is not None:
-                    os.replace(partial, final)
-                    written[plan.name] = final
-                    print(f"  wrote {final.relative_to(out_dir)} ({plan.duration:.0f}s)")
-            # Shorts this plan no longer produces (fewer moments than last run).
+                if path is None:
+                    shutil.rmtree(partial, ignore_errors=True)
+                    continue
+                # A folder cannot be renamed over a full one: move the old one
+                # aside first, so it is never gone before the new one is in.
+                aside = day_dir / f".{plan.name}.old"
+                shutil.rmtree(aside, ignore_errors=True)
+                if final.exists():
+                    os.replace(final, aside)
+                os.replace(partial, final)
+                shutil.rmtree(aside, ignore_errors=True)
+                written[plan.name] = final
+                print(f"  wrote {final.relative_to(out_dir)}/ ({plan.duration:.0f}s)")
+            # Shorts this plan no longer produces (fewer moments than last
+            # run), and finished .mp4 shorts from before the folders.
             names = {plan.name for plan in plans}
             for old in day_dir.glob("*.mp4"):
-                if old.stem not in names and not old.name.startswith("."):
-                    old.unlink()
+                old.unlink()
+            for old in day_dir.iterdir():
+                if old.is_dir() and old.name not in names and (old / "klip.txt").exists():
+                    shutil.rmtree(old)
         write_index(day_dir, day, plans, written)
         results[label] = list(written.values())
     return results

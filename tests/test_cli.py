@@ -136,13 +136,12 @@ def test_shorts_that_keep_failing_are_tried_once_per_scan(tmp_path, monkeypatch)
         assert calls == [["2026-08-01"]]
 
 
-def test_min_speed_and_labels_flags():
+def test_min_speed_flags():
     parse = build_parser().parse_args
     assert parse(["scan", "in", "-o", "out"]).min_speed == 10.0
     assert parse(["scan", "in", "-o", "out", "--min-speed", "0"]).min_speed == 0.0
     args = parse(["shorts", "-o", "out"])
-    assert args.min_speed == 40.0 and not args.labels
-    assert parse(["shorts", "-o", "out", "--labels"]).labels
+    assert args.min_speed == 40.0
 
 
 def test_no_overlay_still_fetches_racebox_sessions_unless_no_fetch(tmp_path, monkeypatch):

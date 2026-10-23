@@ -174,7 +174,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MIN_TRACK_KMH,
         help="Track speed in km/h: slower moments (paddock, pit lane) get at most one per action short and none in theme shorts (0 disables). Default 40.",
     )
-    shorts.add_argument("--labels", action="store_true", help="Put a theme/time label on each moment")
     shorts.add_argument("--dry-run", action="store_true", help="Write moments.json and index.html only")
     shorts.add_argument(
         "--sessions-dir",
@@ -203,7 +202,6 @@ def shorts_cmd(args: argparse.Namespace) -> int:
         crashes=not args.no_crash,
         render=not args.dry_run,
         min_speed=args.min_speed,
-        labels=args.labels,
     )
     if built and not args.dry_run:
         db = ScanDB.open(out / "scan.sqlite")

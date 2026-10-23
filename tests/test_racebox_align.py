@@ -1,7 +1,13 @@
 import numpy as np
 import pytest
 
-from videobrowser.racebox_align import RaceboxTrack, clock_guesses, motion_start_utc, track_from_sessions
+from videobrowser.racebox_align import (
+    RaceboxTrack,
+    clock_guesses,
+    motion_match,
+    motion_start_utc,
+    track_from_sessions,
+)
 
 T0 = 1_785_000_000.0
 
@@ -45,6 +51,17 @@ def test_no_match_when_sessions_are_indistinguishable_and_no_clock():
     track = _track([0, 3000, 6000])
     motion = _motion(track, T0 + 3000 - 300.4, 1800)
     assert motion_start_utc(motion, track, []) is None
+
+
+def test_match_says_why_a_recording_was_not_placed():
+    track = _track([0, 2700])
+    motion = _motion(track, T0 + 2700 - 300.4, 1800)
+    far = motion_match(motion, track, [T0 + 86400.0])
+    assert far.start_utc is None and far.reason.startswith("no RaceBox log near the camera clock")
+    short = motion_match(motion[:60], track, [T0])
+    assert short.start_utc is None and "only 60 s" in short.reason
+    ok = motion_match(motion, track, [T0 + 2700 - 300.4 + 40])
+    assert ok.start_utc is not None and ok.reason.startswith("r=")
 
 
 def test_clock_guesses_try_local_and_utc_readings():
