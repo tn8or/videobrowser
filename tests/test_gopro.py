@@ -122,6 +122,39 @@ def test_iter_video_paths_skips_symlinks_outside_input(tmp_path: Path):
     assert names == {"keep.mp4"}
 
 
+def test_iter_video_paths_lists_skipped_links(tmp_path: Path, capsys):
+    library = tmp_path / "library"
+    outside = tmp_path / "elsewhere"
+    library.mkdir()
+    outside.mkdir()
+    target = outside / "secret.mp4"
+    target.write_bytes(b"x")
+    (library / "GX010001.mp4").symlink_to(target)
+    (library / "GX010002.mp4").symlink_to(outside / "missing.mp4")
+
+    iter_video_paths([library])
+    out = capsys.readouterr().out
+    assert "skipped 2 linked file(s)" in out
+    assert f"GX010001.mp4 -> {target} (points outside the input folders)" in out
+    assert "GX010002.mp4" in out and "(broken link)" in out
+    assert "--follow-links" in out
+
+
+def test_iter_video_paths_follow_links_includes_outside(tmp_path: Path):
+    library = tmp_path / "library"
+    outside = tmp_path / "elsewhere"
+    library.mkdir()
+    outside.mkdir()
+    (library / "keep.mp4").write_bytes(b"x")
+    target = outside / "secret.mp4"
+    target.write_bytes(b"x")
+    (library / "GX010001.mp4").symlink_to(target)
+    (library / "GX010002.mp4").symlink_to(outside / "missing.mp4")
+
+    found = iter_video_paths([library], follow_links=True)
+    assert {p.name for p in found} == {"keep.mp4", "secret.mp4"}
+
+
 def test_iter_video_paths_skips_broken_symlinks(tmp_path: Path):
     (tmp_path / "keep.mp4").write_bytes(b"x")
     (tmp_path / "GX010001.mp4").symlink_to(tmp_path / "missing.mp4")

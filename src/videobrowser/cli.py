@@ -45,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
             "(repeatable, case-insensitive substring)"
         ),
     )
+    scan.add_argument(
+        "--follow-links",
+        action="store_true",
+        help="Include linked files that point outside the input folders",
+    )
     scan.add_argument("--fps", type=float, default=5.0, help="Analysis frame rate (default 5)")
     scan.add_argument("--size", type=int, default=640, help="Max analysis side in pixels")
     scan.add_argument("--pad", type=float, default=10.0, help="Seconds of pad around each event")
@@ -197,7 +202,10 @@ def scan_cmd(args: argparse.Namespace) -> int:
     inputs = [p.expanduser() for p in args.inputs]
     out = args.out.expanduser().resolve()
     paths = iter_video_paths(
-        inputs, exclude_roots=[out], exclude_substrings=args.exclude
+        inputs,
+        exclude_roots=[out],
+        exclude_substrings=args.exclude,
+        follow_links=args.follow_links,
     )
     if args.exclude:
         print("exclude: " + ", ".join(args.exclude))
