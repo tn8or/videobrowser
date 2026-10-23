@@ -10,6 +10,7 @@ on:
     paths:
       - Dockerfile.ci
       - .python-version
+      - pyproject.toml
       - .github/workflows/ci-image.yml
 
 concurrency:
@@ -23,6 +24,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      PIP_INDEX_URL: http://pypi-proxy.github-arc.svc.cluster.local:8080/simple/
+      PIP_TRUSTED_HOST: pypi-proxy.github-arc.svc.cluster.local
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -31,15 +35,18 @@ jobs:
         run: |
           set -euo pipefail
           PY="$(tr -d '[:space:]' < .python-version)"
-          CI_IMAGE="ghcr.io/tn8or/videobrowser/ci:${PY}-bookworm"
           if ! grep -qE "^FROM python:${PY}-bookworm@" Dockerfile.ci; then
             echo "Dockerfile.ci FROM does not match .python-version (${PY})" >&2
             exit 1
           fi
+          # Must match the tag computed in ci.yml.
+          HASH="$(sha256sum Dockerfile.ci .python-version pyproject.toml | sha256sum | cut -c1-12)"
+          CI_IMAGE="ghcr.io/tn8or/videobrowser/ci:${PY}-bookworm-${HASH}"
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          HASH="$(sha256sum Dockerfile.ci .python-version | sha256sum | awk '{print $1}')"
           docker build --pull --no-cache \
             --build-arg "DOCKERFILE_HASH=$HASH" \
+            --build-arg PIP_INDEX_URL \
+            --build-arg PIP_TRUSTED_HOST \
             -f Dockerfile.ci \
             -t "$CI_IMAGE" .
           docker run --rm "$CI_IMAGE" python -c "import sys; v=f'{sys.version_info.major}.{sys.version_info.minor}'; assert v == '${PY}', v"
