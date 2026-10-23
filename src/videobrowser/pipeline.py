@@ -10,7 +10,7 @@ from videobrowser.clips import export_clip
 from videobrowser.db import ScanDB
 from videobrowser.decode import FrameDecoder, decode_one_frame
 from videobrowser.events import ClipWindow, Event, clip_windows, dumps_extra, merge_same_type
-from videobrowser.gopro import Recording
+from videobrowser.gopro import Chapter, Recording, chapter_at
 from videobrowser.incidents import offtrack_fraction, score_incidents
 from videobrowser.motion import DEFAULT_THRESHOLD, event_is_moving, scene_motion
 from videobrowser.preview import write_previews
@@ -64,16 +64,33 @@ def pick_device(requested: str) -> str:
     return "cpu"
 
 
-def _sample_frames(recording: Recording, max_side: int, rotation: int = 0) -> list:
-    chapter = recording.chapters[0]
-    duration = recording.duration or chapter.duration or 0.0
-    # Odd count so rotation and mount votes cannot tie.
-    fractions = (0.12, 0.31, 0.5, 0.69, 0.88)
-    frames = []
+def _sample_times(recording: Recording) -> list[tuple[Chapter, float]]:
+    """(chapter, local time) spread over the whole recording, all chapters.
+
+    Times used to be taken from the recording's total duration but decoded from
+    the first chapter, so on chaptered recordings the later samples fell past
+    its end and only the first minutes (often the pits) decided the rotation.
+    """
+    duration = recording.duration or recording.chapters[0].duration or 0.0
+    # Odd count so rotation and mount votes cannot tie; several so frames from
+    # straights outvote ones leaned deep into a corner.
+    fractions = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+    picks = []
     for frac in fractions:
         t = duration * frac
-        if duration > 8:
-            t = min(max(t, 4.0), duration - 2.0)
+        chapter = chapter_at(recording, t)
+        if chapter is None:
+            continue
+        local = t - chapter.offset
+        if chapter.duration > 8:
+            local = min(max(local, 4.0), chapter.duration - 2.0)
+        picks.append((chapter, local))
+    return picks
+
+
+def _sample_frames(recording: Recording, max_side: int, rotation: int = 0) -> list:
+    frames = []
+    for chapter, t in _sample_times(recording):
         image = decode_one_frame(
             chapter.path,
             t,
