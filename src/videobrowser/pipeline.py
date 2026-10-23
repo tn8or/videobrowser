@@ -26,14 +26,16 @@ from videobrowser.probe import local_date_label
 from videobrowser.puck import detect_puck
 from videobrowser.riders import RiderTracker, TrackPoint, score_tracks
 from videobrowser.telemetry import (
-    DEFAULT_MIN_TRACK_KMH,
+    STOPPED_KMH,
     LeanSample,
     SpeedSample,
+    TurnSample,
     creation_utc_prefer_gps,
     lean_series,
     leaned,
     on_track,
     speed_series,
+    turn_series,
 )
 
 
@@ -54,8 +56,9 @@ class ScanConfig:
     lean_gate: float = 20.0
     max_seconds: float | None = None
     min_motion: float = DEFAULT_THRESHOLD
-    # Drop events below this GPS speed (paddock, pit lane); 0 disables.
-    min_speed: float = DEFAULT_MIN_TRACK_KMH
+    # Drop events below this GPS speed (standing still); 0 disables. The
+    # shorts apply the stricter track speed, so paddock clips stay available.
+    min_speed: float = STOPPED_KMH
     max_clip_seconds: float = 24.0
     max_clips: int = 12
     # Optional RaceboxContext; when set, overlay clips are produced after cuts.
@@ -136,6 +139,15 @@ def speed_for_recording(recording: Recording) -> list[SpeedSample]:
     for chapter in recording.chapters:
         for sample in speed_series(chapter.info):
             samples.append(SpeedSample(t=sample.t + chapter.offset, speed_kmh=sample.speed_kmh))
+    samples.sort(key=lambda s: s.t)
+    return samples
+
+
+def turns_for_recording(recording: Recording) -> list[TurnSample]:
+    samples: list[TurnSample] = []
+    for chapter in recording.chapters:
+        for sample in turn_series(chapter.info):
+            samples.append(TurnSample(t=sample.t + chapter.offset, yaw_rate=sample.yaw_rate))
     samples.sort(key=lambda s: s.t)
     return samples
 
@@ -224,10 +236,11 @@ def _export_verticals(
     profile: Profile,
     config: ScanConfig,
     tracks: dict[int, list[TrackPoint]],
-    puck_positions: list[tuple[float, float]],
+    turns: list[TurnSample],
     rec_start_utc: float | None,
     out_dir: Path,
 ) -> None:
+    from videobrowser.themes import facing
     from videobrowser.vertical import export_vertical, focus_samples
 
     overlay_factory = None
@@ -259,7 +272,7 @@ def _export_verticals(
                 window,
                 dest,
                 profile.rotation,
-                focus_samples(window, tracks, puck_positions),
+                focus_samples(window, tracks, turns, facing(profile.name)),
                 overlay_factory=overlay_factory,
             )
         except Exception as exc:
@@ -315,8 +328,6 @@ def scan_recording(
     # Boxes inside the puck ROI: followed by the vertical crop, not scored.
     focus_tracks: dict[int, list[TrackPoint]] = {}
     puck_hits: list[tuple[float, float]] = []
-    # (t, x centre as a fraction of frame width) for the vertical crop.
-    puck_positions: list[tuple[float, float]] = []
     motion_samples: list[tuple[float, float]] = []
     prev_image = None
     lean_samples = _lean_for_recording(recording) if "puck" in profile.pipelines else []
@@ -386,9 +397,6 @@ def scan_recording(
                         hit = detect_puck(frame.image, profile.puck_roi)
                         if hit:
                             puck_hits.append((global_t, hit.score))
-                            puck_positions.append(
-                                (global_t, hit.cx / max(1, frame.image.shape[1]))
-                            )
         if remaining is not None:
             remaining -= chapter.duration
 
@@ -412,7 +420,7 @@ def scan_recording(
         ]
         slow = before_speed - len(events)
         if slow:
-            print(f"  dropped {slow} below {config.min_speed:g} km/h (paddock/pit lane)")
+            print(f"  dropped {slow} below {config.min_speed:g} km/h (standing still)")
 
     duration = recording.duration if config.max_seconds is None else min(
         recording.duration, config.max_seconds
@@ -461,7 +469,7 @@ def scan_recording(
             profile,
             config,
             _merge_tracks(tracks, focus_tracks),
-            puck_positions,
+            turns_for_recording(recording),
             rec_start_utc,
             config.out_dir / "vertical" / date_label,
         )

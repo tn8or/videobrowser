@@ -13,8 +13,10 @@ day on one clock (``sync.py``), groups events into themed moments
 Each moment is cut from the vertical follow-cam clip that covers it (crop and
 HUD included). A moment no vertical clip covers (a rear-camera hand-over that
 did not make the clip list, an own crash) is cut from the source with a
-centred 9:16 crop instead. Moments below ``--min-speed`` (GoPro GPS) are left
-out, so riding around the paddock or pit lane does not end up in a short.
+9:16 crop instead, which looks into the corner like the scan's clips do.
+Moments where the bike stands still are left out. Moments below
+``--min-speed`` (GoPro GPS; paddock, pit lane) get at most one per action
+short and none in the theme shorts.
 With ``--labels`` a short label names the theme on each piece; by default the
 shorts carry no overlay of their own.
 """
@@ -27,7 +29,7 @@ import os
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -39,7 +41,7 @@ from videobrowser.db import ScanDB
 from videobrowser.events import ClipWindow
 from videobrowser.probe import ProbeError, ffprobe_json, local_date_label, probe
 from videobrowser.sync import CameraClock, ChapterRef, align
-from videobrowser.telemetry import DEFAULT_MIN_TRACK_KMH
+from videobrowser.telemetry import DEFAULT_MIN_TRACK_KMH, STOPPED_KMH
 from videobrowser.themes import (
     LABELS,
     THEME_ORDER,
@@ -68,6 +70,11 @@ FILE_NAMES = {
 # Themes need this many moments for a short of their own (a crash or an
 # off-track excursion needs one).
 MIN_THEME_MOMENTS = {"crash": 1, "crash_other": 1, "off_track": 1}
+# Slow (paddock, pit lane) moments allowed in one action short.
+MAX_SLOW_PER_SHORT = 1
+# Themes whose moments keep their place whatever the speed: a crash ends
+# stopped, and another rider's fall is worth showing whatever we were doing.
+SPEED_EXEMPT_THEMES = frozenset({"crash", "crash_other", "off_track"})
 _TZ = ZoneInfo("Europe/Copenhagen")
 
 
@@ -95,8 +102,14 @@ class ClipRow:
 # --- planning --------------------------------------------------------------
 
 
-def _pack(moments: list[Moment], max_seconds: float) -> list[list[Moment]]:
-    """Greedy fill, in the given order, into lists of at most *max_seconds*."""
+def _pack(
+    moments: list[Moment], max_seconds: float, max_slow: int | None = None
+) -> list[list[Moment]]:
+    """Greedy fill, in the given order, into lists of at most *max_seconds*.
+
+    With *max_slow*, a slow moment that would go over that many in its list
+    is left out.
+    """
     shorts: list[list[Moment]] = []
     current: list[Moment] = []
     length = 0.0
@@ -104,6 +117,8 @@ def _pack(moments: list[Moment], max_seconds: float) -> list[list[Moment]]:
         if current and length + m.duration > max_seconds:
             shorts.append(current)
             current, length = [], 0.0
+        if max_slow is not None and m.slow and sum(c.slow for c in current) >= max_slow:
+            continue
         current.append(m)
         length += m.duration
     if current:
@@ -115,12 +130,16 @@ def plan_shorts(
     moments: list[Moment], max_seconds: float = 50.0, max_action_shorts: int = 6
 ) -> list[ShortPlan]:
     plans: list[ShortPlan] = []
-    best_first = sorted(moments, key=lambda m: -m.score)
-    for i, group in enumerate(_pack(best_first, max_seconds)[:max_action_shorts], start=1):
+    # Slow moments rank lower, so paddock riding fills in rather than leads.
+    best_first = sorted(moments, key=lambda m: -m.score * (0.5 if m.slow else 1.0))
+    packed = _pack(best_first, max_seconds, MAX_SLOW_PER_SHORT)
+    for i, group in enumerate(packed[:max_action_shorts], start=1):
         group.sort(key=lambda m: m.utc_start)
         plans.append(ShortPlan(f"{FILE_NAMES['action']}-{i:02d}", "action", group))
     for theme in THEME_ORDER:
-        themed = sorted((m for m in moments if m.theme == theme), key=lambda m: m.utc_start)
+        themed = sorted(
+            (m for m in moments if m.theme == theme and not m.slow), key=lambda m: m.utc_start
+        )
         if len(themed) < MIN_THEME_MOMENTS.get(theme, 2):
             continue
         for i, group in enumerate(_pack(themed, max_seconds), start=1):
@@ -195,6 +214,8 @@ class DayData:
     rotations: dict[str, int]
     events: list
     clips: list[ClipRow]
+    # recording id -> (speed samples, turn samples), filled on first use.
+    gps: dict = field(default_factory=dict)
 
 
 def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
@@ -275,10 +296,18 @@ def _crash_moments(day: DayData) -> list[Moment]:
     return merged
 
 
-def _recording_speeds(clock: CameraClock) -> list:
-    from videobrowser.telemetry import SpeedSample, extract_gpmd_bytes, speed_series
+def _recording_gps(clock: CameraClock) -> tuple[list, list]:
+    """GoPro GPS speed and turn-rate samples of a recording, on recording time."""
+    from videobrowser.telemetry import (
+        SpeedSample,
+        TurnSample,
+        extract_gpmd_bytes,
+        speed_series,
+        turn_series,
+    )
 
-    samples: list[SpeedSample] = []
+    speeds: list[SpeedSample] = []
+    turns: list[TurnSample] = []
     for chapter in clock.chapters:
         try:
             info = probe(chapter.path)
@@ -287,29 +316,33 @@ def _recording_speeds(clock: CameraClock) -> list:
         if not info.has_gpmd or info.gpmd_index is None:
             continue
         blob = extract_gpmd_bytes(chapter.path, info.gpmd_index)
-        for sample in speed_series(info, blob) if blob else []:
-            samples.append(SpeedSample(sample.t + chapter.offset, sample.speed_kmh))
-    return samples
+        if not blob:
+            continue
+        for sample in speed_series(info, blob):
+            speeds.append(SpeedSample(sample.t + chapter.offset, sample.speed_kmh))
+        for sample in turn_series(info, blob):
+            turns.append(TurnSample(sample.t + chapter.offset, sample.yaw_rate))
+    return speeds, turns
+
+
+def _day_gps(day: DayData, rid: str) -> tuple[list, list]:
+    if rid not in day.gps:
+        day.gps[rid] = _recording_gps(day.clocks[rid])
+    return day.gps[rid]
+
+
+def _moment_speed(m: Moment, day: DayData) -> float | None:
+    """Median GPS speed over the moment's pieces, None without GPS there."""
+    vals: list[float] = []
+    for seg in m.segments:
+        speeds, _turns = _day_gps(day, seg.recording_id)
+        vals.extend(s.speed_kmh for s in speeds if seg.t_start <= s.t <= seg.t_end)
+    return float(np.median(vals)) if vals else None
 
 
 def day_moments(
     day: DayData, crashes: bool = True, min_speed: float = DEFAULT_MIN_TRACK_KMH
 ) -> list[Moment]:
-    from videobrowser.events import SPEED_EXEMPT
-    from videobrowser.telemetry import on_track
-
-    rows = day.events
-    if min_speed > 0 and rows:
-        speeds = {rid: _recording_speeds(clock) for rid, clock in day.clocks.items()}
-        kept = [
-            row
-            for row in rows
-            if row["type"] in SPEED_EXEMPT
-            or on_track(speeds[row["recording_id"]], row["t_start"], row["t_end"], min_speed)
-        ]
-        if len(kept) < len(rows):
-            print(f"  left out {len(rows) - len(kept)} event(s) below {min_speed:g} km/h")
-        rows = kept
     events = [
         CamEvent(
             recording_id=row["recording_id"],
@@ -320,12 +353,27 @@ def day_moments(
             score=float(row["score"]),
             utc_offset=float(day.clocks[row["recording_id"]].start_utc or 0.0),
         )
-        for row in rows
+        for row in day.events
     ]
     moments = find_moments(events)
     if crashes:
         moments.extend(_crash_moments(day))
-    return moments
+    if min_speed <= 0:
+        return moments
+    kept: list[Moment] = []
+    stopped = slow = 0
+    for m in moments:
+        speed = None if m.theme in SPEED_EXEMPT_THEMES else _moment_speed(m, day)
+        if speed is not None and speed < min(STOPPED_KMH, min_speed):
+            stopped += 1
+            continue
+        if speed is not None and speed < min_speed:
+            m.slow = True
+            slow += 1
+        kept.append(m)
+    if stopped or slow:
+        print(f"  {stopped} moment(s) standing still left out, {slow} below {min_speed:g} km/h")
+    return kept
 
 
 # --- rendering -------------------------------------------------------------
@@ -400,9 +448,9 @@ def _source_for(segment: Segment, clips: list[ClipRow]) -> tuple[Path, float, fl
 
 
 def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
-    """Centred 9:16 cut straight from the GoPro files (no HUD)."""
+    """9:16 cut straight from the GoPro files (no HUD), looking into corners."""
     from videobrowser.gopro import Chapter, Recording
-    from videobrowser.vertical import export_vertical
+    from videobrowser.vertical import export_vertical, turn_focus
 
     clock = day.clocks[segment.recording_id]
     recording = Recording(segment.recording_id, "", segment.recording_id)
@@ -413,7 +461,9 @@ def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
         )
     end = min(segment.t_end, clock.duration)
     window = ClipWindow(segment.t_start, end, segment.recording_id, [], 0.0, [])
-    return export_vertical(recording, window, dest, day.rotations[segment.recording_id], [])
+    _speeds, turns = _day_gps(day, segment.recording_id)
+    focus = turn_focus(turns, segment.t_start, end, facing(day.profiles[segment.recording_id]))
+    return export_vertical(recording, window, dest, day.rotations[segment.recording_id], focus)
 
 
 def _encode_piece(src: Path, start: float, duration: float, label_png: Path, dest: Path) -> None:
@@ -508,6 +558,7 @@ def _moment_json(m: Moment, day: DayData) -> dict:
         "time": _clock_label(m.utc_start),
         "utc_start": round(m.utc_start, 2),
         "score": round(m.score, 3),
+        "slow": m.slow,
         "segments": [
             {
                 "recording_id": s.recording_id,

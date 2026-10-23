@@ -98,6 +98,8 @@ class Moment:
     utc_end: float
     score: float
     segments: list[Segment] = field(default_factory=list)
+    # Ridden below track speed (paddock, pit lane); see shorts.plan_shorts.
+    slow: bool = False
 
     @property
     def duration(self) -> float:
@@ -250,7 +252,8 @@ def detect_crashes(
         after = speed_kmh[(speed_t >= t + 3.0) & (speed_t <= t + 10.0)]
         if len(before) == 0 or len(after) < 3:
             continue
-        if float(before.max()) >= CRASH_MIN_SPEED_KMH and float(np.median(after)) <= CRASH_STOPPED_KMH:
+        # Median, not max: a single GPS spike while parked is not "moving".
+        if float(np.median(before)) >= CRASH_MIN_SPEED_KMH and float(np.median(after)) <= CRASH_STOPPED_KMH:
             hits.append(t)
     return hits
 

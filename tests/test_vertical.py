@@ -10,8 +10,10 @@ from videobrowser.gopro import Chapter, Recording
 from videobrowser.overlay_bridge import ensure_on_path
 from videobrowser.probe import probe
 from videobrowser.riders import TrackPoint
+from videobrowser.telemetry import TurnSample
 from videobrowser.vertical import (
     MAX_PAN_PER_S,
+    MAX_TURN_SHIFT,
     FocusSample,
     crop_centers,
     crop_offsets,
@@ -19,6 +21,7 @@ from videobrowser.vertical import (
     export_vertical,
     focus_samples,
     sendcmd_script,
+    turn_focus,
 )
 
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg missing")
@@ -67,14 +70,29 @@ def test_focus_prefers_event_track_over_bigger_bystander():
     assert [round(s.cx, 2) for s in samples] == [0.2]
 
 
-def test_focus_prefers_riders_in_view_over_puck_and_ignores_tiny_boxes():
+def test_focus_prefers_riders_in_view_over_the_corner_and_ignores_tiny_boxes():
     tracks = {
-        5: [_pt(1.0, 5, 0.5)],  # rider ahead, e.g. through a corner exit
+        5: [_pt(1.0, 5, 0.3)],  # rider ahead, e.g. through a corner exit
         6: [_pt(2.0, 6, 0.1, h=0.01)],  # too far away to follow
     }
-    samples = focus_samples(_window(), tracks, puck_positions=[(1.0, 0.85), (2.0, 0.8)])
-    # Rider wins at t=1; at t=2 nobody followable is in view, so the puck steers.
-    assert [(s.t, round(s.cx, 2)) for s in samples] == [(1.0, 0.5), (2.0, 0.8)]
+    left_hander = [TurnSample(t / 10, -30.0) for t in range(0, 40)]
+    samples = focus_samples(_window(), tracks, left_hander)
+    # Rider wins around t=1; elsewhere nobody followable is in view, so the
+    # crop looks left into the corner.
+    near_rider = [s for s in samples if abs(s.t - 1.0) < 0.3]
+    assert [(s.t, round(s.cx, 2)) for s in near_rider] == [(1.0, 0.3)]
+    at_two = next(s for s in samples if s.t == pytest.approx(2.0))
+    assert at_two.cx == pytest.approx(0.5 - MAX_TURN_SHIFT)
+
+
+def test_turn_focus_looks_into_the_corner_mirrored_on_rear_camera():
+    right_hander = [TurnSample(t / 10, 12.5) for t in range(0, 30)]
+    front = turn_focus(right_hander, 0.0, 2.0, "front")
+    rear = turn_focus(right_hander, 0.0, 2.0, "rear")
+    assert all(s.cx == pytest.approx(0.5 + 0.5 * MAX_TURN_SHIFT) for s in front)
+    assert all(s.cx == pytest.approx(0.5 - 0.5 * MAX_TURN_SHIFT) for s in rear)
+    straight = [TurnSample(t / 10, 0.0) for t in range(0, 30)]
+    assert all(s.cx == pytest.approx(0.5) for s in turn_focus(straight, 0.0, 2.0))
 
 
 def test_focus_keeps_current_target_until_clearly_smaller():

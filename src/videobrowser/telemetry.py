@@ -26,6 +26,12 @@ class SpeedSample:
     speed_kmh: float
 
 
+@dataclass(frozen=True)
+class TurnSample:
+    t: float
+    yaw_rate: float  # heading change in deg/s, positive turning right
+
+
 def _klv_iter(data: bytes, start: int = 0, end: int | None = None):
     offset = start
     limit = len(data) if end is None else end
@@ -117,41 +123,42 @@ def _walk_grav_accl(data: bytes) -> tuple[list[tuple[float, ...]], list[tuple[fl
     return grav, accl, stamps
 
 
-def _walk_gps5(data: bytes) -> list[float]:
-    """Return per-sample 2D ground speed in km/h from GPS5 payloads.
+def _walk_gps5_rows(data: bytes) -> list[tuple[float, float, float]]:
+    """Every GPS5 sample as ``(lat_deg, lon_deg, speed_2d_kmh)``.
 
     GPS5 samples are ``[lat, lon, alt, speed_2d, speed_3d]`` int32 values
-    divided by the sibling ``SCAL`` divisors. Only the 2D speed (index 3),
-    converted from m/s to km/h, is returned.
+    divided by the sibling ``SCAL`` divisors; speed is converted from m/s.
+    Rows without a fix are kept (lat/lon near 0) so the sample count still
+    spans the clip evenly.
     """
-    speeds: list[float] = []
+    rows: list[tuple[float, float, float]] = []
 
     def walk(blob: bytes) -> None:
         items = list(_klv_iter(blob))
         scal: list[float] | None = None
         for key, type_, size, repeat, payload in items:
             if key == b"SCAL" and payload:
-                if type_ == ord("s"):
-                    scal = [float(v) for v in _parse_int16(payload)]
-                elif type_ == ord("S"):
-                    n = len(payload) // 2
-                    scal = [float(v) for v in struct.unpack(">" + "H" * n, payload[: n * 2])]
-                elif type_ in (ord("l"), ord("L")):
-                    scal = [float(v) for v in _parse_int32(payload, signed=type_ == ord("l"))]
-                elif type_ == ord("f"):
-                    scal = _parse_floats(payload)
+                scal = _parse_scal(type_, payload)
         for key, type_, size, repeat, payload in items:
             if type_ == 0:
                 walk(payload)
                 continue
             if key == b"GPS5" and payload:
                 vals = _parse_int32(payload, signed=True)
-                div = scal[3] if scal and len(scal) > 3 and scal[3] else 1.0
+                div = [d or 1.0 for d in (scal or [])[:4]]
+                div += [1.0] * (4 - len(div))
                 for i in range(0, len(vals) - 4, 5):
-                    speeds.append((vals[i + 3] / div) * 3.6)
+                    rows.append(
+                        (vals[i] / div[0], vals[i + 1] / div[1], (vals[i + 3] / div[3]) * 3.6)
+                    )
 
     walk(data)
-    return speeds
+    return rows
+
+
+def _walk_gps5(data: bytes) -> list[float]:
+    """Per-sample 2D ground speed in km/h from GPS5 payloads."""
+    return [row[2] for row in _walk_gps5_rows(data)]
 
 
 def _angles_from_vectors(vectors: list[tuple[float, ...]]) -> np.ndarray:
@@ -217,6 +224,57 @@ def speed_series(info: VideoInfo, blob: bytes | None = None) -> list[SpeedSample
     duration = info.duration if info.duration and info.duration > 0 else float(n)
     times = np.linspace(0.0, duration, n)
     return [SpeedSample(t=float(t), speed_kmh=float(s)) for t, s in zip(times, speeds)]
+
+
+# Turn rate is only read above this speed; GPS heading wanders when slow.
+_TURN_MIN_KMH = 15.0
+# Smoothing span for position and turn rate, seconds.
+_TURN_SMOOTH_S = 1.0
+
+
+def _moving_average(values: np.ndarray, k: int) -> np.ndarray:
+    if k <= 1:
+        return values
+    kernel = np.ones(k)
+    return np.convolve(values, kernel, mode="same") / np.convolve(
+        np.ones(len(values)), kernel, mode="same"
+    )
+
+
+def turn_series(info: VideoInfo, blob: bytes | None = None) -> list[TurnSample]:
+    """Turn rate from the GoPro GPS track, on the same time base as :func:`speed_series`.
+
+    Positive is a right-hand turn. Zero below walking-pace speeds, where GPS
+    heading is noise.
+    """
+    if not info.has_gpmd or info.gpmd_index is None:
+        return []
+    if blob is None:
+        blob = extract_gpmd_bytes(info.path, info.gpmd_index)
+    if not blob:
+        return []
+    rows = _walk_gps5_rows(blob)
+    n = len(rows)
+    if n < 10:
+        return []
+    duration = info.duration if info.duration and info.duration > 0 else float(n)
+    arr = np.asarray(rows, dtype=np.float64)
+    times = np.linspace(0.0, duration, n)
+    fix = (np.abs(arr[:, 0]) >= 1.0) & (np.abs(arr[:, 1]) >= 0.01)
+    if fix.sum() < 10:
+        return []
+    t, lat, lon, kmh = times[fix], arr[fix, 0], arr[fix, 1], arr[fix, 2]
+    if t[-1] - t[0] <= 0:
+        return []
+    k = max(1, int(round(_TURN_SMOOTH_S * len(t) / (t[-1] - t[0]))))
+    lat0 = float(np.median(lat))
+    north = _moving_average((lat - lat0) * 111_320.0, k)
+    east = _moving_average((lon - float(np.median(lon))) * 111_320.0 * np.cos(np.radians(lat0)), k)
+    heading = np.unwrap(np.arctan2(np.gradient(east, t), np.gradient(north, t)))
+    yaw = np.degrees(np.gradient(heading, t))
+    yaw[kmh < _TURN_MIN_KMH] = 0.0
+    yaw = _moving_average(yaw, k)
+    return [TurnSample(t=float(a), yaw_rate=float(b)) for a, b in zip(t, yaw)]
 
 
 def _parse_gpsu(raw: str) -> datetime | None:
@@ -504,6 +562,8 @@ def leaned(samples: list[LeanSample], t: float, gate_deg: float) -> bool:
 # Paddock and pit-lane riding stays well under this; on track it is above it
 # almost everywhere except the slowest hairpins.
 DEFAULT_MIN_TRACK_KMH = 40.0
+# Below this the bike is standing still (GPS drift included).
+STOPPED_KMH = 10.0
 
 
 def on_track(samples: list[SpeedSample], t0: float, t1: float, min_kmh: float) -> bool:
@@ -521,3 +581,9 @@ def on_track(samples: list[SpeedSample], t0: float, t1: float, min_kmh: float) -
             return True
         vals = [nearest.speed_kmh]
     return float(np.median(vals)) >= min_kmh
+
+
+def median_speed(samples: list[SpeedSample], t0: float, t1: float) -> float | None:
+    """Median GPS speed over ``[t0, t1]``, or None without samples there."""
+    vals = [s.speed_kmh for s in samples if t0 <= s.t <= t1]
+    return float(np.median(vals)) if vals else None

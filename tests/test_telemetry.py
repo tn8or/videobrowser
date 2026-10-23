@@ -143,3 +143,30 @@ def test_on_track_by_gps_speed():
     assert on_track(speeds, 25, 28, 40)
     assert on_track(speeds, 5, 8, 0)  # disabled
     assert on_track([], 5, 8, 40)  # no GPS: keep
+
+
+def test_turn_series_sign_follows_the_turn(monkeypatch):
+    from pathlib import Path
+
+    import pytest
+
+    from videobrowser import telemetry
+    from videobrowser.probe import VideoInfo
+
+    def circle(clockwise: bool):
+        # 60 m radius at ~80 km/h, 18 Hz GPS, starting northbound.
+        t = np.arange(0, 20, 1 / 18)
+        ang = (22.2 / 60.0) * t * (1 if clockwise else -1)
+        east = 60.0 * (1 - np.cos(ang)) * (1 if clockwise else -1)
+        north = 60.0 * np.sin(np.abs(ang))
+        lat = 55.0 + north / 111_320.0
+        lon = 10.0 + east / (111_320.0 * np.cos(np.radians(55.0)))
+        return [(a, b, 80.0) for a, b in zip(lat, lon)]
+
+    info = VideoInfo(Path("x.mp4"), 20.0, 1920, 1080, 30.0, 0, "h264", True, 3)
+    for clockwise, sign in ((True, 1), (False, -1)):
+        monkeypatch.setattr(telemetry, "_walk_gps5_rows", lambda blob, c=clockwise: circle(c))
+        turns = telemetry.turn_series(info, b"x")
+        mid = [s.yaw_rate for s in turns if 5 < s.t < 15]
+        # v / r = 0.37 rad/s, about 21 deg/s.
+        assert np.median(mid) == pytest.approx(sign * 21.2, abs=1.5)
