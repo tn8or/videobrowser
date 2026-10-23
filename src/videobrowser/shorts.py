@@ -16,7 +16,8 @@ did not make the clip list, an own crash) is cut from the source with a
 9:16 crop instead, which looks into the corner like the scan's clips do.
 Moments where the bike stands still are left out. Moments below
 ``--min-speed`` (GoPro GPS; paddock, pit lane) get at most one per action
-short and none in the theme shorts.
+short and none in the theme shorts. Without GPS the scan's scene motion
+stands in for speed.
 With ``--labels`` a short label names the theme on each piece; by default the
 shorts carry no overlay of their own.
 """
@@ -39,6 +40,7 @@ import numpy as np
 from videobrowser.clips import _REENCODE_PIPELINES
 from videobrowser.db import ScanDB
 from videobrowser.events import ClipWindow
+from videobrowser.motion import DEFAULT_THRESHOLD, TRACK_MOTION
 from videobrowser.probe import ProbeError, ffprobe_json, local_date_label, probe
 from videobrowser.sync import CameraClock, ChapterRef, align
 from videobrowser.telemetry import DEFAULT_MIN_TRACK_KMH, STOPPED_KMH
@@ -72,9 +74,9 @@ FILE_NAMES = {
 MIN_THEME_MOMENTS = {"crash": 1, "crash_other": 1, "off_track": 1}
 # Slow (paddock, pit lane) moments allowed in one action short.
 MAX_SLOW_PER_SHORT = 1
-# Themes whose moments keep their place whatever the speed: a crash ends
-# stopped, and another rider's fall is worth showing whatever we were doing.
-SPEED_EXEMPT_THEMES = frozenset({"crash", "crash_other", "off_track"})
+# Own crashes end stopped, so they skip the pace check. Other riders "down"
+# while we stand still are almost always people beside bikes in the paddock.
+SPEED_EXEMPT_THEMES = frozenset({"crash"})
 _TZ = ZoneInfo("Europe/Copenhagen")
 
 
@@ -216,6 +218,8 @@ class DayData:
     clips: list[ClipRow]
     # recording id -> (speed samples, turn samples), filled on first use.
     gps: dict = field(default_factory=dict)
+    # recording id -> per-second scene motion from the scan.
+    motion: dict = field(default_factory=dict)
 
 
 def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
@@ -231,6 +235,9 @@ def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
         day.profiles[rid] = row["profile"]
         day.rotations[rid] = int(row["rotation"])
     owner = {rid: day for day in days.values() for rid in day.clocks}
+    for rid, samples in db.motion().items():
+        if rid in owner:
+            owner[rid].motion[rid] = samples
     for row in db.all_events():
         if row["recording_id"] in owner:
             owner[row["recording_id"]].events.append(row)
@@ -340,6 +347,35 @@ def _moment_speed(m: Moment, day: DayData) -> float | None:
     return float(np.median(vals)) if vals else None
 
 
+def _moment_motion(m: Moment, day: DayData) -> float | None:
+    """Median scene motion over the moment's pieces, None if not stored."""
+    vals: list[float] = []
+    for seg in m.segments:
+        vals.extend(
+            v for t, v in day.motion.get(seg.recording_id, []) if seg.t_start <= t <= seg.t_end
+        )
+    return float(np.median(vals)) if vals else None
+
+
+def _moment_pace(m: Moment, day: DayData, min_speed: float) -> str | None:
+    """"stopped", "slow" (paddock, pit lane) or "track"; None when unknown.
+
+    GPS speed decides; footage without GPS (e.g. files re-wrapped without
+    the GoPro telemetry track) falls back to the scene motion from the scan.
+    """
+    speed = _moment_speed(m, day)
+    if speed is not None:
+        if speed < min(STOPPED_KMH, min_speed):
+            return "stopped"
+        return "slow" if speed < min_speed else "track"
+    motion = _moment_motion(m, day)
+    if motion is None:
+        return None
+    if motion < DEFAULT_THRESHOLD:
+        return "stopped"
+    return "slow" if motion < TRACK_MOTION else "track"
+
+
 def day_moments(
     day: DayData, crashes: bool = True, min_speed: float = DEFAULT_MIN_TRACK_KMH
 ) -> list[Moment]:
@@ -363,11 +399,11 @@ def day_moments(
     kept: list[Moment] = []
     stopped = slow = 0
     for m in moments:
-        speed = None if m.theme in SPEED_EXEMPT_THEMES else _moment_speed(m, day)
-        if speed is not None and speed < min(STOPPED_KMH, min_speed):
+        pace = None if m.theme in SPEED_EXEMPT_THEMES else _moment_pace(m, day, min_speed)
+        if pace == "stopped":
             stopped += 1
             continue
-        if speed is not None and speed < min_speed:
+        if pace == "slow":
             m.slow = True
             slow += 1
         kept.append(m)

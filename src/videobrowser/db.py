@@ -47,6 +47,13 @@ CREATE TABLE IF NOT EXISTS recording_meta (
     chapters TEXT NOT NULL
 );
 
+-- Scene motion per second (JSON [[t, motion], ...]): tells the shorts when
+-- the bike stands still on footage without GPS.
+CREATE TABLE IF NOT EXISTS motion (
+    recording_id TEXT PRIMARY KEY,
+    samples TEXT NOT NULL
+);
+
 -- Days whose shorts still need (re)building; cleared once a build finishes.
 CREATE TABLE IF NOT EXISTS shorts_pending (
     date_label TEXT PRIMARY KEY
@@ -167,6 +174,19 @@ class ScanDB:
             [(recording_id, *row) for row in clips],
         )
         self.conn.commit()
+
+    def save_motion(self, recording_id: str, samples: list[tuple[float, float]]) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO motion(recording_id, samples) VALUES (?, ?)",
+            (recording_id, json.dumps([[round(t, 1), round(m, 2)] for t, m in samples])),
+        )
+        self.conn.commit()
+
+    def motion(self) -> dict[str, list[tuple[float, float]]]:
+        return {
+            row["recording_id"]: [(float(t), float(m)) for t, m in json.loads(row["samples"])]
+            for row in self.conn.execute("SELECT * FROM motion")
+        }
 
     def recording_metas(self) -> list[sqlite3.Row]:
         return list(self.conn.execute("SELECT * FROM recording_meta ORDER BY start_utc"))

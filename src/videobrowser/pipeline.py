@@ -19,7 +19,7 @@ from videobrowser.events import (
 )
 from videobrowser.gopro import Chapter, Recording, chapter_at
 from videobrowser.incidents import offtrack_fraction, score_incidents
-from videobrowser.motion import DEFAULT_THRESHOLD, event_is_moving, scene_motion
+from videobrowser.motion import DEFAULT_THRESHOLD, event_is_moving, per_second, scene_motion
 from videobrowser.preview import write_previews
 from videobrowser.profiles import CameraMap, Profile, Rect, apply_ego_mask, guess_profile_from_samples, resolve_profile
 from videobrowser.probe import local_date_label
@@ -541,6 +541,7 @@ def scan_recording(
             for ch in recording.chapters
         ],
     )
+    db.save_motion(recording.recording_id, per_second(motion_samples))
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=True)
     extra = f"  dropped {dropped} stationary" if dropped else ""
     print(
