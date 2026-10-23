@@ -153,36 +153,59 @@ def apply_ego_mask(image: np.ndarray, profile: Profile) -> np.ndarray:
     return masked
 
 
+def _sky_weights(bgr: np.ndarray) -> np.ndarray:
+    """Per-pixel sky likelihood: 1 for blue sky, 0.65 for overcast white."""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    hue, sat, val = cv2.split(hsv)
+    blue = (hue > 85) & (hue < 140) & (sat > 25) & (val > 90)
+    overcast = (val > 175) & (sat < 55)
+    return np.maximum(blue.astype(np.float32), overcast.astype(np.float32) * 0.65)
+
+
 def _sky_score(bgr: np.ndarray) -> float:
     if bgr.size == 0:
         return 0.0
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    hue, sat, val = cv2.split(hsv)
-    blue = ((hue > 85) & (hue < 140) & (sat > 25) & (val > 90)).mean()
-    overcast = ((val > 175) & (sat < 55)).mean()
-    return float(max(blue, overcast * 0.65))
+    return float(_sky_weights(bgr).mean())
+
+
+def _sky_direction(image: np.ndarray) -> float | None:
+    """Angle in degrees (90 = up, 0 = right) from ground towards a visible sky.
+
+    Taken from the summed gradient of the sky mask, which points across the
+    horizon whatever the frame's shape, so a horizon tilted by lean still gives
+    the right side. None when there is no coherent sky.
+    """
+    h, w = image.shape[:2]
+    if h < 8 or w < 8:
+        return None
+    sky = _sky_weights(image)
+    frac = float(sky.mean())
+    if frac < 0.04 or frac > 0.9:
+        return None
+    sky = cv2.GaussianBlur(sky, (0, 0), max(1.0, min(h, w) / 60))
+    gx = cv2.Sobel(sky, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(sky, cv2.CV_32F, 0, 1, ksize=3)
+    sx, sy = float(gx.sum()), float(gy.sum())
+    total = float(np.hypot(gx, gy).sum())
+    # Scattered patches (glare, white fairing, sunlit concrete) cancel out;
+    # only a horizon running across the frame gives a coherent direction.
+    if total <= 0 or np.hypot(sx, sy) / total < 0.15:
+        return None
+    return float(np.degrees(np.arctan2(-sy, sx)) % 360)
+
+
+def _rotation_for(angle: float) -> int | None:
+    """Rotation putting a sky at *angle* on top; None near a diagonal."""
+    side = int(((angle + 45) % 360) // 90)  # 0 right, 1 top, 2 left, 3 bottom
+    if abs((angle - side * 90 + 180) % 360 - 180) > 30:
+        return None
+    return (270, 0, 90, 180)[side]
 
 
 def _sky_rotation(image: np.ndarray) -> int | None:
     """Rotation that puts a clearly visible sky on top, or None without one."""
-    h, w = image.shape[:2]
-    band_h, band_w = max(1, h // 4), max(1, w // 4)
-    scores = {
-        "top": _sky_score(image[:band_h, :]),
-        "bottom": _sky_score(image[h - band_h :, :]),
-        "left": _sky_score(image[:, :band_w]),
-        "right": _sky_score(image[:, w - band_w :]),
-    }
-    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-    best_name, best = ranked[0]
-    second = ranked[1][1]
-    # Need a clear winner so glare on a footpeg/side cam is not treated as sky.
-    if best < 0.08 or best < second + 0.06:
-        return None
-    # A sideways sky with sky also along the top is usually glare on an upright mount.
-    if best_name in {"left", "right"} and scores["top"] >= 0.10:
-        return 0
-    return {"top": 0, "right": 270, "bottom": 180, "left": 90}[best_name]
+    angle = _sky_direction(image)
+    return None if angle is None else _rotation_for(angle)
 
 
 def infer_rotation(image: np.ndarray) -> int:
@@ -197,15 +220,18 @@ def infer_rotation_from_samples(images: list[np.ndarray]) -> int:
     Frames without a clear sky abstain. Turning the footage sideways needs a
     majority of all frames: one frame with a bright fairing, white bridge or
     sunlit tarmac along an edge must not rotate a landscape mount by 90.
+    Upright vs upside down is the sign of the summed vertical sky direction,
+    so frames leaned into left and right corners still count.
     """
-    votes = [r for r in (_sky_rotation(image) for image in images) if r is not None]
-    if not votes:
+    angles = [a for a in (_sky_direction(image) for image in images) if a is not None]
+    if not angles:
         return 0
-    counts = Counter(votes)
+    counts = Counter(_rotation_for(a) for a in angles)
     sideways = max((90, 270), key=lambda r: counts[r])
     if counts[sideways] * 2 > len(images):
         return sideways
-    return 180 if counts[180] > counts[0] else 0
+    vertical = sum(np.sin(np.radians(a)) for a in angles)
+    return 180 if vertical < -0.5 else 0
 
 
 def _has_gauge(gray: np.ndarray) -> bool:

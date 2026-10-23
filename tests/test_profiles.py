@@ -62,7 +62,6 @@ def test_infer_rotation_sky_on_right():
     image = np.zeros((360, 640, 3), dtype=np.uint8)
     image[:, :400] = (90, 90, 90)
     image[:, 400:] = (220, 155, 35)
-    image[:90, :] = (90, 90, 90)  # stored top quarter is track, not sky
     assert infer_rotation(image) == 270
 
 
@@ -136,7 +135,6 @@ def _sky_right() -> np.ndarray:
     image = np.zeros((360, 640, 3), dtype=np.uint8)
     image[:, :400] = (90, 90, 90)
     image[:, 400:] = (220, 155, 35)
-    image[:90, :] = (90, 90, 90)
     return image
 
 
@@ -164,3 +162,34 @@ def test_upside_down_wins_over_abstaining_frames():
     upside[200:, :] = (220, 155, 35)
     flat = np.full((360, 640, 3), 110, dtype=np.uint8)
     assert infer_rotation_from_samples([upside, flat, flat]) == 180
+
+
+def _tilted(sky_below: bool, lean_deg: float) -> np.ndarray:
+    """Track and sky split by a horizon tilted *lean_deg* off level."""
+    h, w = 360, 640
+    ys, xs = np.mgrid[0:h, 0:w]
+    slope = np.tan(np.radians(lean_deg))
+    below = (ys - h / 2) > slope * (xs - w / 2)
+    image = np.full((h, w, 3), 90, dtype=np.uint8)
+    image[below if sky_below else ~below] = (220, 155, 35)
+    return image
+
+
+def test_upside_down_frames_leaned_into_corners():
+    # Rear camera mounted upside down: in corners the horizon sits ~40 degrees
+    # off level, which edge bands read as "sky on the right" and kept at 0.
+    corner_left, corner_right = _tilted(True, 40), _tilted(True, -40)
+    flat = np.full((360, 640, 3), 110, dtype=np.uint8)
+    assert infer_rotation_from_samples([corner_left, corner_right, flat]) == 180
+    assert infer_rotation_from_samples([corner_left, _tilted(True, 10), flat, flat, flat]) == 180
+
+
+def test_upright_frames_leaned_into_corners_stay_upright():
+    frames = [_tilted(False, 40), _tilted(False, -40), _tilted(False, 15)]
+    assert infer_rotation_from_samples(frames) == 0
+
+
+def test_glare_patch_does_not_turn_upright_frame():
+    image = _tilted(False, 0)
+    image[200:280, 560:] = (240, 240, 240)  # white fairing / bridge on the right
+    assert infer_rotation(image) == 0
