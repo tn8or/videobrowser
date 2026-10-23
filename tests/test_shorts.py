@@ -194,3 +194,18 @@ def test_recording_without_gps_takes_racebox_time_speed_and_turns(monkeypatch):
     speeds, turns = day.gps["M"]
     assert speeds[0].t == pytest.approx(0.0, abs=0.1) and speeds[0].speed_kmh == 120.0
     assert turns[-1].t <= 100.0 and turns[0].yaw_rate == -20.0
+
+
+def test_collect_short_fails_whole_when_a_piece_fails(tmp_path, monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    day = shorts.DayData("2026-08-01", {"A": CameraClock("A", 1000.0, 100.0, [])}, {"A": "cockpit"}, {"A": 0}, [], [])
+
+    def broken(*a, **k):
+        raise RuntimeError("ffmpeg died")
+
+    monkeypatch.setattr(shorts, "_from_source", broken)
+    plan = shorts.ShortPlan("action-01", "action", [_moment("action", 10, 5, 1.0)])
+    with pytest.raises(RuntimeError, match="A@10s"):
+        shorts.collect_short(plan, day, tmp_path / "action-01")

@@ -515,8 +515,8 @@ def collect_short(plan: ShortPlan, day: DayData, dest: Path) -> Path | None:
                         copied[src] = name
                     use = f"{start:.1f}-{start + duration:.1f} s"
             except Exception as exc:
-                print(f"  short {plan.name}: skip {segment.recording_id}@{segment.t_start:.0f}s ({exc})")
-                continue
+                # All or nothing: an incomplete folder must not replace a whole one.
+                raise RuntimeError(f"{segment.recording_id}@{segment.t_start:.0f}s: {exc}") from exc
             lines.append(f"{name}  ({moment.label}, {_clock_label(moment.utc_start)}, use {use})")
     if len(lines) == 2:
         return None
@@ -711,8 +711,14 @@ def build_shorts(
                 if path is None:
                     shutil.rmtree(partial, ignore_errors=True)
                     continue
-                shutil.rmtree(final, ignore_errors=True)
+                # A folder cannot be renamed over a full one: move the old one
+                # aside first, so it is never gone before the new one is in.
+                aside = day_dir / f".{plan.name}.old"
+                shutil.rmtree(aside, ignore_errors=True)
+                if final.exists():
+                    os.replace(final, aside)
                 os.replace(partial, final)
+                shutil.rmtree(aside, ignore_errors=True)
                 written[plan.name] = final
                 print(f"  wrote {final.relative_to(out_dir)}/ ({plan.duration:.0f}s)")
             # Shorts this plan no longer produces (fewer moments than last
