@@ -191,6 +191,7 @@ track days.
 | `--font` | Arial | TTF font for overlay text |
 | `--stats` | `<out>/stats.sqlite` | Lap-bests SQLite |
 | `--no-shorts` | off | Do not build `shorts/` after the scan |
+| `--min-speed` | 40 | Drop events below this GoPro GPS speed in km/h (paddock, pit lane); 0 disables |
 
 Run `videobrowser scan --help` for the complete list.
 
@@ -245,7 +246,12 @@ profiles: `rear`, `rear_right`, `rear_rotated`; everything else is front):
 `rider_down` and `off_track` are found during the scan (`incidents.py`), so
 footage scanned before they existed needs `scan --force` to get them. Each piece is taken from the vertical clip that covers it (crop + HUD);
 a piece no clip covers (e.g. the rear half of an overtake) is cut from the
-source with a centred crop. A label with the theme and time opens each moment.
+source with a centred crop. Shorts carry no overlay of their own (`--labels` adds a theme/time label per
+moment); for verticals without the telemetry HUD scan with `--no-overlay`.
+Events below 40 km/h GoPro GPS speed (paddock, pit lane) are dropped during
+the scan and left out of the shorts (`--min-speed`, 0 disables; possible
+crashes and off-track excursions are kept regardless). Footage without GPS
+is not filtered.
 
 Outputs scanned before this feature have no per-recording metadata yet; pass
 the source folders once: `videobrowser shorts -o output inputclips`.
@@ -257,6 +263,8 @@ the source folders once: `videobrowser shorts -o output inputclips`.
 | `--max-action` | 6 | Max mixed action shorts per day |
 | `--no-audio-sync` | off | Sync cameras by GPS only |
 | `--no-crash` | off | Skip crash detection |
+| `--min-speed` | 40 | Leave out moments below this GPS speed (km/h) |
+| `--labels` | off | Theme/time label on each moment |
 | `--dry-run` | off | Only write `moments.json` and `index.html` |
 
 ---

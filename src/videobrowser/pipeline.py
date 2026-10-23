@@ -9,7 +9,14 @@ from tqdm import tqdm
 from videobrowser.clips import export_clip
 from videobrowser.db import ScanDB
 from videobrowser.decode import FrameDecoder, decode_one_frame
-from videobrowser.events import ClipWindow, Event, clip_windows, dumps_extra, merge_same_type
+from videobrowser.events import (
+    SPEED_EXEMPT,
+    ClipWindow,
+    Event,
+    clip_windows,
+    dumps_extra,
+    merge_same_type,
+)
 from videobrowser.gopro import Chapter, Recording, chapter_at
 from videobrowser.incidents import offtrack_fraction, score_incidents
 from videobrowser.motion import DEFAULT_THRESHOLD, event_is_moving, scene_motion
@@ -18,7 +25,16 @@ from videobrowser.profiles import CameraMap, Profile, Rect, apply_ego_mask, gues
 from videobrowser.probe import local_date_label
 from videobrowser.puck import detect_puck
 from videobrowser.riders import RiderTracker, TrackPoint, score_tracks
-from videobrowser.telemetry import LeanSample, creation_utc_prefer_gps, lean_series, leaned
+from videobrowser.telemetry import (
+    DEFAULT_MIN_TRACK_KMH,
+    LeanSample,
+    SpeedSample,
+    creation_utc_prefer_gps,
+    lean_series,
+    leaned,
+    on_track,
+    speed_series,
+)
 
 
 @dataclass
@@ -38,6 +54,8 @@ class ScanConfig:
     lean_gate: float = 20.0
     max_seconds: float | None = None
     min_motion: float = DEFAULT_THRESHOLD
+    # Drop events below this GPS speed (paddock, pit lane); 0 disables.
+    min_speed: float = DEFAULT_MIN_TRACK_KMH
     max_clip_seconds: float = 24.0
     max_clips: int = 12
     # Optional RaceboxContext; when set, overlay clips are produced after cuts.
@@ -109,6 +127,15 @@ def _lean_for_recording(recording: Recording) -> list[LeanSample]:
     for chapter in recording.chapters:
         for sample in lean_series(chapter.info):
             samples.append(LeanSample(t=sample.t + chapter.offset, lean_deg=sample.lean_deg))
+    samples.sort(key=lambda s: s.t)
+    return samples
+
+
+def speed_for_recording(recording: Recording) -> list[SpeedSample]:
+    samples: list[SpeedSample] = []
+    for chapter in recording.chapters:
+        for sample in speed_series(chapter.info):
+            samples.append(SpeedSample(t=sample.t + chapter.offset, speed_kmh=sample.speed_kmh))
     samples.sort(key=lambda s: s.t)
     return samples
 
@@ -375,6 +402,17 @@ def scan_recording(
     before_motion = len(events)
     events = [e for e in events if event_is_moving(e, motion_samples, config.min_motion)]
     dropped = before_motion - len(events)
+    if config.min_speed > 0 and events:
+        speeds = speed_for_recording(recording)
+        before_speed = len(events)
+        events = [
+            e
+            for e in events
+            if e.type in SPEED_EXEMPT or on_track(speeds, e.t_start, e.t_end, config.min_speed)
+        ]
+        slow = before_speed - len(events)
+        if slow:
+            print(f"  dropped {slow} below {config.min_speed:g} km/h (paddock/pit lane)")
 
     duration = recording.duration if config.max_seconds is None else min(
         recording.duration, config.max_seconds

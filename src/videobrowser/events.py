@@ -5,6 +5,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# A crash or an excursion slows the bike down by itself, so these event types
+# are kept whatever the GPS speed.
+SPEED_EXEMPT = frozenset({"rider_down", "off_track"})
+
+
 @dataclass
 class Event:
     type: str

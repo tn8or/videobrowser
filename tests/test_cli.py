@@ -42,7 +42,7 @@ def test_scan_builds_each_days_shorts_as_soon_as_the_day_is_done(tmp_path, monke
         return []
 
     monkeypatch.setattr(cli, "scan_recording", fake_scan)
-    monkeypatch.setattr(shorts, "build_shorts", lambda out, sessions_dir=None, dates=None: log.append(("shorts", dates)))
+    monkeypatch.setattr(shorts, "build_shorts", lambda out, sessions_dir=None, dates=None, **kw: log.append(("shorts", dates)))
     args = build_parser().parse_args(["scan", "in", "-o", str(tmp_path / "out"), "--no-overlay"])
     assert cli.scan_cmd(args) == 0
     assert log == [
@@ -80,7 +80,7 @@ def test_failed_shorts_are_retried_by_the_next_scan(tmp_path, monkeypatch):
     calls = []
     fail_on = set()
 
-    def build(out, sessions_dir=None, dates=None):
+    def build(out, sessions_dir=None, dates=None, **kw):
         calls.append(dates)
         if len(calls) in fail_on:
             raise RuntimeError("ffmpeg died")
@@ -123,7 +123,7 @@ def test_shorts_that_keep_failing_are_tried_once_per_scan(tmp_path, monkeypatch)
 
     calls = []
 
-    def broken(out, sessions_dir=None, dates=None):
+    def broken(out, sessions_dir=None, dates=None, **kw):
         calls.append(dates)
         raise RuntimeError("ffmpeg died")
 
@@ -134,3 +134,12 @@ def test_shorts_that_keep_failing_are_tried_once_per_scan(tmp_path, monkeypatch)
         calls.clear()
         assert cli.scan_cmd(args) == 1
         assert calls == [["2026-08-01"]]
+
+
+def test_min_speed_and_labels_flags():
+    parse = build_parser().parse_args
+    assert parse(["scan", "in", "-o", "out"]).min_speed == 40.0
+    assert parse(["scan", "in", "-o", "out", "--min-speed", "0"]).min_speed == 0.0
+    args = parse(["shorts", "-o", "out"])
+    assert args.min_speed == 40.0 and not args.labels
+    assert parse(["shorts", "-o", "out", "--labels"]).labels

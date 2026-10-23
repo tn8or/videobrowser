@@ -131,3 +131,15 @@ def test_gps_fixes_reads_scaled_position_and_gpsu():
     assert fixes[0, 1] == 55.5
     assert fixes[0, 2] == 13.2
     assert abs(fixes[0, 0] - datetime(2026, 8, 15, 9, 43, 15, tzinfo=timezone.utc).timestamp()) < 0.01
+
+
+def test_on_track_by_gps_speed():
+    from videobrowser.telemetry import SpeedSample, on_track
+
+    pit = [SpeedSample(t * 0.5, 25.0) for t in range(40)]  # 20 s at 25 km/h
+    track = [SpeedSample(20 + t * 0.5, 120.0) for t in range(40)]
+    speeds = pit + track
+    assert not on_track(speeds, 5, 8, 40)
+    assert on_track(speeds, 25, 28, 40)
+    assert on_track(speeds, 5, 8, 0)  # disabled
+    assert on_track([], 5, 8, 40)  # no GPS: keep
