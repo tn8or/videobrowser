@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import signal
 import sqlite3
 import sys
 import time
@@ -252,7 +254,13 @@ def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
             auth_state.chmod(0o600)
             print(f"Saved login session to {auth_state}")
     finally:
-        proc.terminate()
+        _restore_tty(tty)
+        # Chrome runs in its own session: stop the whole group, the terminal
+        # closing no longer does.
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
 
 
 def try_enable_bike_mode(page) -> None:
