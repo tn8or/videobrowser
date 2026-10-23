@@ -254,8 +254,18 @@ The scan drops events where the bike stands still (below 10 km/h GoPro GPS
 speed, `scan --min-speed`). In the shorts, moments where the bike stands
 still are left out, and moments below 40 km/h (paddock, pit lane;
 `shorts --min-speed`) get at most one per action short and none in the
-theme shorts. Possible crashes and off-track excursions are kept regardless,
-and footage without GPS is not filtered. `--min-speed 0` turns the checks off.
+theme shorts. Only own crashes skip this check. Footage without GPS (e.g.
+`.mov` files re-wrapped by Final Cut, which drop the GoPro telemetry track)
+falls back to the scene motion measured during the scan (stored from this
+version on, so rescan with `--force`). `--min-speed 0` turns the checks off.
+
+With RaceBox sessions in `--sessions-dir` (default `<out>/sessions`; also used
+with `--no-overlay`), footage without GoPro GPS is laid on the RaceBox log by
+matching its scene motion against the RaceBox speed (pit stops and out-laps
+make the pattern), searched within a few minutes of the camera clock. A clear
+match gives it RaceBox speed and turn rate, so the speed checks and the
+look-into-the-corner crop work as with GoPro GPS, and its start time is
+corrected for the shorts. Without a clear match it keeps the motion fallback.
 
 Outputs scanned before this feature have no per-recording metadata yet; pass
 the source folders once: `videobrowser shorts -o output inputclips`.

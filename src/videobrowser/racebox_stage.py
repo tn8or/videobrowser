@@ -682,8 +682,13 @@ def run_for_recording(
     windows: list[ClipWindow],
     rotation: int,
     ctx: RaceboxContext,
+    start_utc: Optional[float] = None,
 ) -> Optional[float]:
-    """Render the overlay sets for *recording*; returns its aligned UTC start."""
+    """Render the overlay sets for *recording*; returns its aligned UTC start.
+
+    *start_utc*, when given, is a start already placed on the RaceBox clock
+    (e.g. by ``racebox_align`` for footage without GoPro GPS).
+    """
     if ctx is None or not ctx.enabled:
         return None
     if not recording.chapters:
@@ -691,7 +696,7 @@ def run_for_recording(
 
     out_dir = Path(ctx.out_dir)
 
-    rec_start_utc = recording_start_utc(recording, ctx)
+    rec_start_utc = start_utc if start_utc is not None else recording_start_utc(recording, ctx)
     rec_end_utc = rec_start_utc + recording.duration if rec_start_utc is not None else None
     date_label = local_date_label(rec_start_utc)
 

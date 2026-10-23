@@ -8,6 +8,9 @@ from videobrowser.profiles import Rect
 
 # Paddock / parked: block-median absdiff ~0.3–2. On-track at 5 fps: ~12–20.
 DEFAULT_THRESHOLD = 4.0
+# Below this (and above DEFAULT_THRESHOLD) the bike is most likely rolling
+# slowly (paddock, pit lane); used only when there is no GPS speed.
+TRACK_MOTION = 10.0
 
 
 def scene_motion(
@@ -61,3 +64,11 @@ def event_is_moving(
         nearest = min(samples, key=lambda item: abs(item[0] - event.t_peak))
         return nearest[1] >= threshold
     return float(np.median(vals)) >= threshold
+
+
+def per_second(samples: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Median motion per whole second, for storage."""
+    buckets: dict[int, list[float]] = {}
+    for t, mag in samples:
+        buckets.setdefault(int(t), []).append(mag)
+    return [(k + 0.5, float(np.median(v))) for k, v in sorted(buckets.items())]

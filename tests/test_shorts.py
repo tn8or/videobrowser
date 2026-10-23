@@ -133,7 +133,7 @@ def test_day_moments_drop_standing_still_and_mark_paddock_riding(monkeypatch):
     speeds = [SpeedSample(t, 25.0 if t < 30 else 110.0 if t < 140 else 2.0) for t in range(200)]
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: (speeds, []))
     found = {(m.theme, m.slow) for m in shorts.day_moments(day, crashes=False)}
-    assert found == {("action", True), ("catching_up", False), ("crash_other", False)}
+    assert found == {("action", True), ("catching_up", False), ("crash_other", True)}
     day.gps.clear()
     themes = sorted(m.theme for m in shorts.day_moments(day, crashes=False, min_speed=0))
     assert themes == ["action", "action", "catching_up", "crash_other"]
@@ -151,3 +151,40 @@ def test_plan_takes_one_slow_moment_per_action_short_and_none_in_themes():
     assert sum(m.slow for p in actions for m in p.moments) >= 1
     assert not any(p.theme == "overtake" for p in plans)
 
+
+
+def test_day_moments_fall_back_to_scene_motion_without_gps(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 200.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    day.events = [
+        {"recording_id": "F", "type": "rider_down", "t_start": 20.0, "t_end": 21.0, "score": 2.0},
+        {"recording_id": "F", "type": "nearby_rider", "t_start": 60.0, "t_end": 62.0, "score": 0.5},
+        {"recording_id": "F", "type": "approaching_rider", "t_start": 120.0, "t_end": 123.0, "score": 0.9},
+    ]
+    # Parked until 40 s, rolling slowly until 100 s, then on track.
+    day.motion["F"] = [(t + 0.5, 1.0 if t < 40 else 6.0 if t < 100 else 15.0) for t in range(200)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    found = {(m.theme, m.slow) for m in shorts.day_moments(day, crashes=False)}
+    assert found == {("action", True), ("catching_up", False)}
+
+
+def test_recording_without_gps_takes_racebox_time_speed_and_turns(monkeypatch):
+    import numpy as np
+
+    import videobrowser.racebox_align as ra
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    day = shorts.DayData("2026-08-03", {"M": CameraClock("M", 1000.0, 100.0, [])}, {"M": "cockpit"}, {"M": 0}, [], [])
+    day.motion["M"] = [(t + 0.5, 10.0) for t in range(100)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    monkeypatch.setattr(ra, "motion_start_utc", lambda motion, track, guesses: 1012.0)
+    utc = np.arange(900.0, 1300.0, 0.1)
+    track = ra.RaceboxTrack(utc, np.full(len(utc), 120.0), np.full(len(utc), -20.0))
+    shorts.place_without_gps(day, track)
+    assert day.clocks["M"].start_utc == 1012.0
+    speeds, turns = day.gps["M"]
+    assert speeds[0].t == pytest.approx(0.0, abs=0.1) and speeds[0].speed_kmh == 120.0
+    assert turns[-1].t <= 100.0 and turns[0].yaw_rate == -20.0
