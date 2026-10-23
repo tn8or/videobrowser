@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS recording_meta (
     chapters TEXT NOT NULL
 );
 
+-- Days whose shorts still need (re)building; cleared once a build finishes.
+CREATE TABLE IF NOT EXISTS shorts_pending (
+    date_label TEXT PRIMARY KEY
+);
+
 CREATE TABLE IF NOT EXISTS clips (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recording_id TEXT NOT NULL,
@@ -171,3 +176,29 @@ class ScanDB:
 
     def all_clips(self) -> list[sqlite3.Row]:
         return list(self.conn.execute("SELECT * FROM clips ORDER BY recording_id, t_start"))
+
+    def date_labels(self, recording_ids: list[str]) -> list[str]:
+        """Output days (``recording_meta.date_label``) of *recording_ids*."""
+        if not recording_ids:
+            return []
+        marks = ",".join("?" * len(recording_ids))
+        rows = self.conn.execute(
+            f"SELECT DISTINCT date_label FROM recording_meta WHERE recording_id IN ({marks})",
+            recording_ids,
+        )
+        return sorted(row["date_label"] for row in rows)
+
+    def add_shorts_pending(self, dates: list[str]) -> None:
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO shorts_pending(date_label) VALUES (?)", [(d,) for d in dates]
+        )
+        self.conn.commit()
+
+    def clear_shorts_pending(self, dates: list[str]) -> None:
+        self.conn.executemany("DELETE FROM shorts_pending WHERE date_label = ?", [(d,) for d in dates])
+        self.conn.commit()
+
+    def shorts_pending(self) -> list[str]:
+        return [row["date_label"] for row in self.conn.execute(
+            "SELECT date_label FROM shorts_pending ORDER BY date_label"
+        )]
