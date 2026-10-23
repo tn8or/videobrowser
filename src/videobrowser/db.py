@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +34,28 @@ CREATE TABLE IF NOT EXISTS events (
     track_id TEXT,
     clip_path TEXT,
     extra TEXT
+);
+
+-- Per-recording facts the ``shorts`` stage needs without re-scanning.
+CREATE TABLE IF NOT EXISTS recording_meta (
+    recording_id TEXT PRIMARY KEY,
+    profile TEXT NOT NULL,
+    rotation INTEGER NOT NULL DEFAULT 0,
+    start_utc REAL,
+    date_label TEXT NOT NULL,
+    duration REAL NOT NULL,
+    chapters TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS clips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recording_id TEXT NOT NULL,
+    t_start REAL NOT NULL,
+    t_end REAL NOT NULL,
+    types TEXT NOT NULL,
+    score REAL NOT NULL,
+    clip_path TEXT,
+    vertical_path TEXT
 );
 """
 
@@ -100,3 +123,51 @@ class ScanDB:
             events,
         )
         self.conn.commit()
+
+    def save_recording_meta(
+        self,
+        recording_id: str,
+        profile: str,
+        rotation: int,
+        start_utc: float | None,
+        date_label: str,
+        duration: float,
+        chapters: list[dict],
+    ) -> None:
+        """*chapters*: ``[{"path", "offset", "duration"}, ...]`` in recording order."""
+        self.conn.execute(
+            """
+            INSERT INTO recording_meta(recording_id, profile, rotation, start_utc, date_label, duration, chapters)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(recording_id) DO UPDATE SET
+                profile=excluded.profile,
+                rotation=excluded.rotation,
+                start_utc=excluded.start_utc,
+                date_label=excluded.date_label,
+                duration=excluded.duration,
+                chapters=excluded.chapters
+            """,
+            (recording_id, profile, rotation, start_utc, date_label, duration, json.dumps(chapters)),
+        )
+        self.conn.commit()
+
+    def replace_clips(self, recording_id: str, clips: list[tuple]) -> None:
+        """*clips*: ``(t_start, t_end, types, score, clip_path, vertical_path)`` rows."""
+        self.conn.execute("DELETE FROM clips WHERE recording_id = ?", (recording_id,))
+        self.conn.executemany(
+            """
+            INSERT INTO clips(recording_id, t_start, t_end, types, score, clip_path, vertical_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [(recording_id, *row) for row in clips],
+        )
+        self.conn.commit()
+
+    def recording_metas(self) -> list[sqlite3.Row]:
+        return list(self.conn.execute("SELECT * FROM recording_meta ORDER BY start_utc"))
+
+    def all_events(self) -> list[sqlite3.Row]:
+        return list(self.conn.execute("SELECT * FROM events ORDER BY recording_id, t_start"))
+
+    def all_clips(self) -> list[sqlite3.Row]:
+        return list(self.conn.execute("SELECT * FROM clips ORDER BY recording_id, t_start"))
