@@ -271,9 +271,21 @@ matching its scene motion against the RaceBox speed (pit stops and out-laps
 make the pattern), searched within a few minutes of the camera clock. A clear
 match gives it RaceBox speed and turn rate, so the speed checks and the
 look-into-the-corner crop work as with GoPro GPS, and its start time is
-corrected for the shorts. Without a clear match it keeps the motion fallback,
-and the scan log says why (e.g. `weak match r=0.31`, `ambiguous r=0.62 vs
-0.58 elsewhere`, `no RaceBox log near the camera clock ...`).
+corrected for the shorts. The scan log says why a recording was not matched
+(e.g. `weak match r=0.31`, `ambiguous r=0.62 vs 0.58 elsewhere`, `no RaceBox
+log near the camera clock ...`). Scene motion is median-filtered over a
+minute and capped first, so a camera picked up in the paddock does not look
+like a session.
+
+The shorts then match each camera's remaining recordings of the day at once
+(one clock error per camera): hours of footage with pit stops between
+sessions match where a single recording does not, paddock-only recordings
+included. That placement is only good to a minute or so at session edges, so
+it supplies speed (paddock or track) but not start time or turn rate. A
+recording still unplaced is checked against the RaceBox log at both readings
+of its camera clock: a moment with the bike in under both is dropped as
+standing still, and one where it may be riding counts as slow (at most one
+per action short), since it is not sure.
 
 Overlays (RaceBox and telemetry HUD) only go on footage whose link to the
 RaceBox log is sure: GoPro GPS time, or a clear scene-motion match. Other

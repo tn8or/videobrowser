@@ -209,3 +209,25 @@ def test_collect_short_fails_whole_when_a_piece_fails(tmp_path, monkeypatch):
     plan = shorts.ShortPlan("action-01", "action", [_moment("action", 10, 5, 1.0)])
     with pytest.raises(RuntimeError, match="A@10s"):
         shorts.collect_short(plan, day, tmp_path / "action-01")
+
+
+def test_unplaced_recording_is_stopped_unless_racebox_rides_at_a_clock_reading(monkeypatch):
+    import numpy as np
+
+    import videobrowser.racebox_align as ra
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    start = 1785571200.0  # 2026-08-01 10:00 Copenhagen (UTC+2)
+    day = shorts.DayData("2026-08-01", {"M": CameraClock("M", start, 600.0, [])}, {"M": "cockpit"}, {"M": 0}, [], [])
+    day.motion["M"] = [(t + 0.5, 12.0) for t in range(600)]  # camera in hand: busy, flat
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    # Riding 7200 s after the clock (its other reading) for the first 200 s only.
+    utc = np.arange(start + 7200 - 100, start + 7200 + 200, 0.1)
+    track = ra.RaceboxTrack(utc, np.full(len(utc), 120.0), np.zeros(len(utc)))
+    shorts.place_without_gps(day, track)
+    assert day.unplaced["M"] == [start, start + 7200]
+    early = Moment("action", start + 50, start + 55, 1.0, [Segment("M", 50, 55)])
+    late = Moment("action", start + 500, start + 505, 1.0, [Segment("M", 500, 505)])
+    assert shorts._moment_pace(early, day, 40.0) == "slow"
+    assert shorts._moment_pace(late, day, 40.0) == "stopped"
