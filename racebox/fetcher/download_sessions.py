@@ -181,6 +181,26 @@ CHROME_PROFILE_DIR = Path(__file__).resolve().parent / "chrome_profile"
 CDP_PORT = 9333
 
 
+def _tty_state():
+    try:
+        import termios
+
+        return termios.tcgetattr(sys.stdin.fileno())
+    except Exception:
+        return None
+
+
+def _restore_tty(state) -> None:
+    if state is None:
+        return
+    try:
+        import termios
+
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, state)
+    except Exception:
+        pass
+
+
 def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
     """Log in by hand in a plain (non-automated) Chrome, then copy its cookies.
 
@@ -192,6 +212,7 @@ def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
     import urllib.request
 
     CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    tty = _tty_state()
     proc = subprocess.Popen(
         [
             CHROME_BIN,
@@ -201,10 +222,15 @@ def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
             "--no-default-browser-check",
             LOGIN_URL,
         ],
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
     try:
+        # Chrome can leave the terminal in raw mode (Enter shows as ^M).
+        time.sleep(1.0)
+        _restore_tty(tty)
         input(
             "Log in to RaceBox in the Chrome window (solve the captcha), "
             "then press Enter here… "
