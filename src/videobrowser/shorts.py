@@ -415,6 +415,9 @@ def place_without_gps(day: DayData, track) -> None:
         clock.source = "racebox-motion"
         day.gps[rid] = (track.speeds(found, clock.duration), track.turns(found, clock.duration))
 
+    # Camera-clock starts, before any recording is moved onto RaceBox time:
+    # the whole-day match needs them all on the same (camera) clock.
+    camera_start = {rid: day.clocks[rid].start_utc for rids in cameras.values() for rid in rids}
     for profile, rids in sorted(cameras.items()):
         unplaced = []
         for rid in rids:
@@ -431,8 +434,8 @@ def place_without_gps(day: DayData, track) -> None:
         # not, but only to within a minute or so at the session edges. Good
         # enough to tell paddock from track; too rough for start time (camera
         # sync) or turn rate, which stay as they are.
-        first = min(day.clocks[rid].start_utc for rid in rids)
-        match = day_match([(day.clocks[rid].start_utc, day.motion[rid]) for rid in rids], track)
+        first = min(camera_start[rid] for rid in rids)
+        match = day_match([(camera_start[rid], day.motion[rid]) for rid in rids], track)
         if match.start_utc is None:
             print(f"  {profile}: whole day not matched to RaceBox either ({match.reason})")
             for rid in unplaced:
@@ -442,7 +445,7 @@ def place_without_gps(day: DayData, track) -> None:
         print(f"  {profile}: whole day on RaceBox ({shift:+.0f} s, {match.reason}); speed only")
         for rid in unplaced:
             clock = day.clocks[rid]
-            day.gps[rid] = (track.speeds(clock.start_utc + shift, clock.duration), [])
+            day.gps[rid] = (track.speeds(camera_start[rid] + shift, clock.duration), [])
 
 
 def _unplaced_pace(m: Moment, day: DayData) -> str | None:
