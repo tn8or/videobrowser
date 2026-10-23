@@ -267,12 +267,14 @@ def scan_cmd(args: argparse.Namespace) -> int:
     shorts_on = not (args.no_shorts or args.no_vertical or args.no_clips)
     sessions_dir = (args.sessions_dir or (out / "sessions")).expanduser()
     shorts_failed = False
+    attempted: set[str] = set()
 
     def build_days(dates: list[str]) -> None:
         """Build shorts for *dates*; a day stays pending until its build finishes."""
         nonlocal shorts_failed
         if not (shorts_on and dates):
             return
+        attempted.update(dates)
         try:
             from videobrowser.shorts import build_shorts
 
@@ -306,7 +308,7 @@ def scan_cmd(args: argparse.Namespace) -> int:
                 scanned.append(recording.recording_id)
         shorts_for(scanned)
         # Days left over from an earlier scan whose shorts failed or were off.
-        build_days(db.shorts_pending())
+        build_days([d for d in db.shorts_pending() if d not in attempted])
     finally:
         db.close()
 
