@@ -295,6 +295,13 @@ def scan_cmd(args: argparse.Namespace) -> int:
     # with overlays off.
     from videobrowser.racebox_align import load_track, track_from_sessions
 
+    if config.racebox is None and args.no_overlay and not args.no_fetch:
+        try:
+            from videobrowser.racebox_stage import fetch_sessions
+
+            fetch_sessions(sessions_dir)
+        except Exception as exc:
+            print(f"racebox: fetch failed ({exc})")
     config.racebox_track = (
         track_from_sessions(config.racebox.sessions) if config.racebox else load_track(sessions_dir)
     )

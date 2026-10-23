@@ -143,3 +143,21 @@ def test_min_speed_and_labels_flags():
     args = parse(["shorts", "-o", "out"])
     assert args.min_speed == 40.0 and not args.labels
     assert parse(["shorts", "-o", "out", "--labels"]).labels
+
+
+def test_no_overlay_still_fetches_racebox_sessions_unless_no_fetch(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    import videobrowser.cli as cli
+    import videobrowser.racebox_stage as rbs
+
+    fetched = []
+    monkeypatch.setattr(rbs, "fetch_sessions", lambda d, **kw: fetched.append(d))
+    monkeypatch.setattr(cli, "iter_video_paths", lambda *a, **k: [Path("x.mp4")])
+    monkeypatch.setattr(cli, "group_recordings", lambda *a, **k: [])
+    out = tmp_path / "out"
+    cli.scan_cmd(build_parser().parse_args(["scan", "in", "-o", str(out), "--no-overlay"]))
+    assert fetched == [out / "sessions"]
+    fetched.clear()
+    cli.scan_cmd(build_parser().parse_args(["scan", "in", "-o", str(out), "--no-overlay", "--no-fetch"]))
+    assert fetched == []
