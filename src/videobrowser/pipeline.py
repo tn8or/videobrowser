@@ -170,16 +170,17 @@ def gps_for_recording(
     speeds = speed_for_recording(recording)
     if speeds or config.racebox_track is None:
         return speeds, turns_for_recording(recording) if speeds else [], start_utc
-    from videobrowser.racebox_align import clock_guesses, motion_start_utc
+    from videobrowser.racebox_align import clock_guesses, motion_match
 
-    found = motion_start_utc(
+    match = motion_match(
         per_second(motion_samples), config.racebox_track, clock_guesses(start_utc)
     )
+    found = match.start_utc
     if found is None:
-        print("  no GPS; no clear RaceBox match from scene motion")
+        print(f"  no GPS; no clear RaceBox match from scene motion: {match.reason}")
         return [], [], start_utc
     shift = found - start_utc if start_utc is not None else 0.0
-    print(f"  no GPS; laid on RaceBox by scene motion (camera clock {shift:+.1f} s)")
+    print(f"  no GPS; laid on RaceBox by scene motion (camera clock {shift:+.1f} s, {match.reason})")
     track = config.racebox_track
     return track.speeds(found, recording.duration), track.turns(found, recording.duration), found
 
@@ -271,13 +272,14 @@ def _export_verticals(
     turns: list[TurnSample],
     rec_start_utc: float | None,
     out_dir: Path,
+    overlay: bool = True,
 ) -> None:
     from videobrowser.themes import facing
     from videobrowser.vertical import export_vertical, focus_samples
 
     overlay_factory = None
     ctx = None
-    if config.overlay:
+    if config.overlay and overlay:
         try:
             from videobrowser import racebox_stage as rbs
 
@@ -449,6 +451,9 @@ def scan_recording(
     speeds, turns, start_utc = gps_for_recording(recording, config, motion_samples, start_utc)
     # Placed on the RaceBox log by scene motion: overlays use that start too.
     rb_start_utc = start_utc if start_utc != clock_utc else None
+    # Overlays only where the RaceBox/camera link is sure: GoPro GPS time, or
+    # a clear scene-motion match. A bare camera clock may be seconds off.
+    overlay_sure = bool(speeds) or rb_start_utc is not None
     if config.min_speed > 0 and events:
         before_speed = len(events)
         events = [
@@ -487,7 +492,9 @@ def scan_recording(
         clip_records.append((window, path))
 
     rec_start_utc: float | None = rb_start_utc
-    if config.racebox is not None and write_landscape:
+    if (config.racebox is not None or config.overlay) and not overlay_sure:
+        print("  overlays skipped: no sure RaceBox match for this recording")
+    if config.racebox is not None and write_landscape and overlay_sure:
         try:
             from videobrowser.racebox_stage import run_for_recording
 
@@ -507,6 +514,7 @@ def scan_recording(
             turns,
             rec_start_utc,
             config.out_dir / "vertical" / date_label,
+            overlay=overlay_sure,
         )
 
     preview_dir = config.out_dir / "previews" / date_label

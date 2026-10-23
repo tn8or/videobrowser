@@ -207,19 +207,24 @@ first days are ready while the rest of a library is still running. Days with
 no newly scanned recordings are left as they are, and a day whose shorts
 failed is retried by the next scan. Copies of the same recording in several
 folders (same start time, length and file sizes) are scanned once. `videobrowser shorts -o
-output` rebuilds them on its own. The day's vertical clips are cut into
-near-finished 9:16 shorts:
+output` rebuilds them on its own. Each short is a folder of the day's 9:16
+source clips, numbered in order, to put together in an editor (joining them
+with ffmpeg gives clicks in the sound):
 
 ```
 shorts/2026-08-01/
-  action-01.mp4 ...        # the day's best moments, several shorts of <= 50 s
-  overhalinger-01.mp4      # one series per theme (needs at least 2 moments)
-  overhalet-01.mp4
-  indhentninger-01.mp4
-  knae-01.mp4
-  styrt-01.mp4             # own crash, from GoPro telemetry
-  mulige-styrt-01.mp4      # other riders: possible crashes to check
-  grus-01.mp4              # riders out on grass or gravel
+  action-01/ ...           # the day's best moments, several shorts of <= 50 s
+    01_103112_action_front_<clip>.mp4
+    02a_104501_overtake_front_<clip>.mp4   # one moment, two cameras
+    02b_104501_overtake_rear.mp4
+    klip.txt               # each file, its moment and the part to use
+  overhalinger-01/         # one series per theme (needs at least 2 moments)
+  overhalet-01/
+  indhentninger-01/
+  knae-01/
+  styrt-01/                # own crash, from GoPro telemetry
+  mulige-styrt-01/         # other riders: possible crashes to check
+  grus-01/                 # riders out on grass or gravel
   index.html               # the shorts + every clip of the day, by type
   moments.json             # what was found and how each camera was synced
 ```
@@ -246,10 +251,11 @@ profiles: `rear`, `rear_right`, `rear_rotated`; everything else is front):
 | Action | any other event, for the mixed shorts | |
 
 `rider_down` and `off_track` are found during the scan (`incidents.py`), so
-footage scanned before they existed needs `scan --force` to get them. Each piece is taken from the vertical clip that covers it (crop + HUD);
-a piece no clip covers (e.g. the rear half of an overtake) is cut from the
-source with a crop that looks into the corner. Shorts carry no overlay of their own (`--labels` adds a theme/time label per
-moment); for verticals without the telemetry HUD scan with `--no-overlay`.
+footage scanned before they existed needs `scan --force` to get them. Each piece is the whole vertical clip that covers it (crop + HUD),
+copied; `klip.txt` says which part the moment is. A piece no clip covers
+(e.g. the rear half of an overtake) is cut from the source with a crop that
+looks into the corner. For verticals without the telemetry HUD scan with
+`--no-overlay`.
 The scan drops events where the bike stands still (below 10 km/h GoPro GPS
 speed, `scan --min-speed`). In the shorts, moments where the bike stands
 still are left out, and moments below 40 km/h (paddock, pit lane;
@@ -265,7 +271,13 @@ matching its scene motion against the RaceBox speed (pit stops and out-laps
 make the pattern), searched within a few minutes of the camera clock. A clear
 match gives it RaceBox speed and turn rate, so the speed checks and the
 look-into-the-corner crop work as with GoPro GPS, and its start time is
-corrected for the shorts. Without a clear match it keeps the motion fallback.
+corrected for the shorts. Without a clear match it keeps the motion fallback,
+and the scan log says why (e.g. `weak match r=0.31`, `ambiguous r=0.62 vs
+0.58 elsewhere`, `no RaceBox log near the camera clock ...`).
+
+Overlays (RaceBox and telemetry HUD) only go on footage whose link to the
+RaceBox log is sure: GoPro GPS time, or a clear scene-motion match. Other
+footage is exported without overlay rather than with one that may be off.
 
 Outputs scanned before this feature have no per-recording metadata yet; pass
 the source folders once: `videobrowser shorts -o output inputclips`.
@@ -278,7 +290,6 @@ the source folders once: `videobrowser shorts -o output inputclips`.
 | `--no-audio-sync` | off | Sync cameras by GPS only |
 | `--no-crash` | off | Skip crash detection |
 | `--min-speed` | 40 | Track speed (km/h): slower moments get at most one per action short, none in theme shorts |
-| `--labels` | off | Theme/time label on each moment |
 | `--dry-run` | off | Only write `moments.json` and `index.html` |
 
 ---

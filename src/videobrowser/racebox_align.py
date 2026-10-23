@@ -112,6 +112,16 @@ def clock_guesses(creation_utc: float | None) -> list[float]:
     return [creation_utc] if abs(shift) < 1.0 else [creation_utc, creation_utc + shift]
 
 
+@dataclass
+class MotionMatch:
+    """Outcome of laying a recording on the RaceBox log; *start_utc* None when unclear."""
+
+    start_utc: float | None
+    reason: str
+    peak: float = float("nan")
+    runner: float = float("nan")
+
+
 def motion_start_utc(
     motion: list[tuple[float, float]],
     track: RaceboxTrack,
@@ -123,15 +133,27 @@ def motion_start_utc(
     None when the match is not clear. Time outside the RaceBox log counts as
     standing still (the logger runs whenever the bike is out).
     """
-    if len(motion) < MIN_OVERLAP_S or len(track.utc) < 10:
-        return None
+    return motion_match(motion, track, guesses, search_s).start_utc
+
+
+def motion_match(
+    motion: list[tuple[float, float]],
+    track: RaceboxTrack,
+    guesses: list[float],
+    search_s: float = SEARCH_S,
+) -> MotionMatch:
+    """Like ``motion_start_utc``, with why a recording was not placed."""
+    if len(motion) < MIN_OVERLAP_S:
+        return MotionMatch(None, f"only {len(motion)} s of scene motion (need {MIN_OVERLAP_S})")
+    if len(track.utc) < 10:
+        return MotionMatch(None, "RaceBox log is empty")
     n = int(max(t for t, _ in motion)) + 1
     x = np.full(n, np.nan)
     for t, mag in motion:
         x[int(t)] = mag
     known = ~np.isnan(x)
     if known.sum() < MIN_OVERLAP_S or float(np.nanstd(x)) < 1e-6:
-        return None
+        return MotionMatch(None, "scene motion too short or flat")
     x = np.where(known, (x - np.nanmean(x)) / np.nanstd(x), 0.0)
 
     # Only the part of the log the search can reach (the sessions dir holds
@@ -140,8 +162,10 @@ def motion_start_utc(
     if guesses:
         keep = (utc >= min(guesses) - search_s - 10.0) & (utc <= max(guesses) + search_s + n + 10.0)
         utc, kmh = utc[keep], kmh[keep]
-    if len(utc) < 10 or utc[-1] - utc[0] > 3 * 86400.0:
-        return None
+    if len(utc) < 10:
+        return MotionMatch(None, "no RaceBox log near the camera clock " + _clock_text(guesses))
+    if utc[-1] - utc[0] > 3 * 86400.0:
+        return MotionMatch(None, "RaceBox log spans more than 3 days")
 
     # RaceBox speed on a 1 s grid, padded by the recording length on both
     # sides so a recording may run past either end of the log.
@@ -153,7 +177,7 @@ def motion_start_utc(
     nearest = np.minimum(np.abs(grid - utc[i - 1]), np.abs(utc[i] - grid))
     speed[nearest > 5.0] = 0.0
     if len(speed) < n + 2:
-        return None
+        return MotionMatch(None, "RaceBox log too short")
 
     # Pearson correlation of x against every window of the speed grid.
     num = np.correlate(speed, x, mode="valid")
@@ -175,7 +199,22 @@ def motion_start_utc(
     peak = float(r[best])
     away = np.abs(starts - starts[best]) >= RIVAL_S
     runner = float(r[away].max()) if away.any() else -1.0
-    if peak < MIN_PEAK or peak < MIN_MARGIN * max(runner, 1e-6):
-        return None
+    if peak < MIN_PEAK:
+        return MotionMatch(None, f"weak match r={peak:.2f} (need {MIN_PEAK})", peak, runner)
+    if peak < MIN_MARGIN * max(runner, 1e-6):
+        return MotionMatch(
+            None, f"ambiguous r={peak:.2f} vs {runner:.2f} elsewhere", peak, runner
+        )
     # Motion sample i covers recording second [i, i + 1).
-    return float(starts[best]) - 0.5
+    start = float(starts[best]) - 0.5
+    return MotionMatch(start, f"r={peak:.2f} (next best {runner:.2f})", peak, runner)
+
+
+def _clock_text(guesses: list[float]) -> str:
+    from datetime import datetime, timezone
+
+    if not guesses:
+        return "(none)"
+    return " / ".join(
+        datetime.fromtimestamp(g, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ") for g in guesses
+    )

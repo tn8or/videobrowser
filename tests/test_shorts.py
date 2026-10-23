@@ -46,7 +46,6 @@ def _video(path: Path, seconds: int, size: str, audio: bool = True) -> None:
 
 @needs_ffmpeg
 def test_build_shorts_end_to_end(tmp_path):
-    pytest.importorskip("cairo")
     out = tmp_path / "out"
     src_dir = tmp_path / "src"
     src_dir.mkdir()
@@ -72,21 +71,24 @@ def test_build_shorts_end_to_end(tmp_path):
     day = out / "shorts" / "2026-08-01"
     data = json.loads((day / "moments.json").read_text())
     assert [m["theme"] for m in data["moments"]] == ["overtake"]
-    names = sorted(p.name for p in result["2026-08-01"])
-    assert names == ["action-01.mp4"]  # one overtake is not a series yet
+    assert [p.name for p in result["2026-08-01"]] == ["action-01"]  # one overtake is not a series yet
+    folder = day / "action-01"
+    files = sorted(p.name for p in folder.glob("*.mp4"))
+    # Front piece: the whole vertical clip, copied. Rear piece: cut from source.
+    assert files == ["01a_100009_overtake_front_F_00005_approaching_rider.mp4", "01b_100009_overtake_rear.mp4"]
+    assert (folder / files[0]).read_bytes() == front_v.read_bytes()
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height",
-         "-show_entries", "format=duration", "-of", "json", str(day / "action-01.mp4")],
+         "-of", "json", str(folder / files[1])],
         capture_output=True, text=True, check=True,
     )
-    info = json.loads(probe.stdout)
-    video = next(s for s in info["streams"] if s["codec_type"] == "video")
+    video = next(s for s in json.loads(probe.stdout)["streams"] if s["codec_type"] == "video")
     assert (video["width"], video["height"]) == (1080, 1920)
-    assert any(s["codec_type"] == "audio" for s in info["streams"])
-    # Front piece (4.5 s from the vertical clip) + rear piece cut from source (3.3 s).
-    assert 7.0 < float(info["format"]["duration"]) < 9.0
+    listing = (folder / "klip.txt").read_text()
+    assert f"{files[0]}  (OVERHALING" in listing and "use 4.0-8.5 s" in listing
+    assert not list(day.glob("*.mp4"))
     page = (day / "index.html").read_text()
-    assert "action-01.mp4" in page and "F_00005_approaching_rider.mp4" in page
+    assert "action-01/" in page and "F_00005_approaching_rider.mp4" in page
 
 
 @needs_ffmpeg
@@ -102,18 +104,22 @@ def test_failed_render_keeps_previous_short_and_drops_stale_ones(tmp_path, monke
     db.replace_events("F", [("F", "nearby_rider", 8.0, 10.0, 0.5, "1", None, "{}")])
     db.close()
     day = out / "shorts" / "2026-08-01"
-    day.mkdir(parents=True)
-    (day / "action-01.mp4").write_bytes(b"previous")
-    (day / "overhalinger-03.mp4").write_bytes(b"stale")
+    (day / "action-01").mkdir(parents=True)
+    (day / "action-01" / "klip.txt").write_text("previous")
+    (day / "overhalinger-03").mkdir()
+    (day / "overhalinger-03" / "klip.txt").write_text("stale")
+    (day / "action-02.mp4").write_bytes(b"old finished short")
 
     def boom(plan, day_data, dest):
-        dest.write_bytes(b"half")
+        dest.mkdir(parents=True)
+        (dest / "half.mp4").write_bytes(b"half")
         raise RuntimeError("ffmpeg died")
 
-    monkeypatch.setattr(shorts, "render_short", boom)
+    monkeypatch.setattr(shorts, "collect_short", boom)
     build_shorts(out, audio_sync=False, crashes=False)
-    assert (day / "action-01.mp4").read_bytes() == b"previous"
-    assert not (day / "overhalinger-03.mp4").exists()
+    assert (day / "action-01" / "klip.txt").read_text() == "previous"
+    assert not (day / "overhalinger-03").exists()
+    assert not (day / "action-02.mp4").exists()
     assert not list(day.glob(".*partial*"))
 
 
@@ -180,7 +186,7 @@ def test_recording_without_gps_takes_racebox_time_speed_and_turns(monkeypatch):
     day = shorts.DayData("2026-08-03", {"M": CameraClock("M", 1000.0, 100.0, [])}, {"M": "cockpit"}, {"M": 0}, [], [])
     day.motion["M"] = [(t + 0.5, 10.0) for t in range(100)]
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
-    monkeypatch.setattr(ra, "motion_start_utc", lambda motion, track, guesses: 1012.0)
+    monkeypatch.setattr(ra, "motion_match", lambda motion, track, guesses: ra.MotionMatch(1012.0, "r=0.90"))
     utc = np.arange(900.0, 1300.0, 0.1)
     track = ra.RaceboxTrack(utc, np.full(len(utc), 120.0), np.full(len(utc), -20.0))
     shorts.place_without_gps(day, track)

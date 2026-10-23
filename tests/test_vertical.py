@@ -301,8 +301,8 @@ def test_export_vertical_composites_overlay(tmp_path: Path):
     assert frame[1800, 540] < 30
 
 
-@pytest.mark.parametrize("overlay", [True, False])
-def test_export_verticals_overlay_follows_config(tmp_path: Path, monkeypatch, overlay):
+@pytest.mark.parametrize("overlay,sure", [(True, True), (False, True), (True, False)])
+def test_export_verticals_overlay_follows_config(tmp_path: Path, monkeypatch, overlay, sure):
     from videobrowser import pipeline, racebox_stage, vertical
     from videobrowser.profiles import UNKNOWN
 
@@ -322,9 +322,11 @@ def test_export_verticals_overlay_follows_config(tmp_path: Path, monkeypatch, ov
         [],
         None,
         tmp_path,
+        overlay=sure,
     )
     assert len(calls) == 1
-    assert (calls[0] is not None) is overlay
+    # No overlay without a sure RaceBox/camera link, whatever the config.
+    assert (calls[0] is not None) is (overlay and sure)
 
 
 def test_tracks_in_puck_roi_are_followed_but_not_scored():
