@@ -28,36 +28,40 @@ jobs:
         run: |
           set -euo pipefail
           PY="$(tr -d '[:space:]' < .python-version)"
-          IMAGE="ghcr.io/tn8or/videobrowser/ci:${PY}-bookworm"
           if ! grep -qE "^FROM python:${PY}-bookworm@" Dockerfile.ci; then
             echo "Dockerfile.ci FROM does not match .python-version (${PY})" >&2
             exit 1
           fi
+          # The tag is keyed on every image input (incl. Python deps), so
+          # branches with different requirements never overwrite each other.
+          # Must match the tag computed in ci-image.yml.
+          HASH="$(sha256sum Dockerfile.ci .python-version pyproject.toml | sha256sum | cut -c1-12)"
+          IMAGE="ghcr.io/tn8or/videobrowser/ci:${PY}-bookworm-${HASH}"
           echo "py=${PY}" >> "${GITHUB_OUTPUT}"
+          echo "hash=${HASH}" >> "${GITHUB_OUTPUT}"
           echo "image=${IMAGE}" >> "${GITHUB_OUTPUT}"
           echo "Using ${IMAGE}"
 
-      - name: Build image if Dockerfile changed
+      - name: Build image if inputs changed
         env:
           CI_IMAGE: ${{ steps.pin.outputs.image }}
+          HASH: ${{ steps.pin.outputs.hash }}
           PY: ${{ steps.pin.outputs.py }}
+          PIP_INDEX_URL: http://pypi-proxy.github-arc.svc.cluster.local:8080/simple/
+          PIP_TRUSTED_HOST: pypi-proxy.github-arc.svc.cluster.local
         run: |
           set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          HASH="$(sha256sum Dockerfile.ci .python-version | sha256sum | awk '{print $1}')"
           if docker pull "$CI_IMAGE"; then
-            CURRENT="$(docker image inspect -f '{{index .Config.Labels "dockerfile.hash"}}' "$CI_IMAGE" 2>/dev/null || true)"
-            if [ "$CURRENT" = "$HASH" ]; then
-              docker run --rm "$CI_IMAGE" python -c "import sys; v=f'{sys.version_info.major}.{sys.version_info.minor}'; assert v == '${PY}', v"
-              echo "Image up to date (hash=$HASH, python=${PY})"
-              exit 0
-            fi
-            echo "CI image inputs changed ($CURRENT -> $HASH); rebuilding"
-          else
-            echo "Image missing; building"
+            docker run --rm "$CI_IMAGE" python -c "import sys; v=f'{sys.version_info.major}.{sys.version_info.minor}'; assert v == '${PY}', v"
+            echo "Image up to date (hash=$HASH, python=${PY})"
+            exit 0
           fi
+          echo "Image missing; building"
           docker build --pull \
             --build-arg "DOCKERFILE_HASH=$HASH" \
+            --build-arg PIP_INDEX_URL \
+            --build-arg PIP_TRUSTED_HOST \
             -f Dockerfile.ci \
             -t "$CI_IMAGE" .
           docker run --rm "$CI_IMAGE" python -c "import sys; v=f'{sys.version_info.major}.{sys.version_info.minor}'; assert v == '${PY}', v"
@@ -72,8 +76,6 @@ jobs:
       packages: read
     env:
       CI_IMAGE: ${{ needs.image.outputs.image }}
-      PIP_INDEX_URL: http://pypi-proxy.github-arc.svc.cluster.local:8080/simple/
-      PIP_TRUSTED_HOST: pypi-proxy.github-arc.svc.cluster.local
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -84,9 +86,8 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker pull "$CI_IMAGE"
           # DinD cannot bind-mount the runner workspace; stream the tree in via tar.
+          # Dependencies are baked into the image; only the package is installed
+          # here, without network (--no-deps, setuptools from the image).
           tar -C "$PWD" --exclude .git -czf - . | docker run --rm -i \
-            -e PIP_INDEX_URL \
-            -e PIP_TRUSTED_HOST \
-            -e PIP_DISABLE_PIP_VERSION_CHECK \
             "$CI_IMAGE" \
-            bash -lc 'mkdir -p /workspace && tar -C /workspace -xzf - && cd /workspace && python -m pip install -U pip && pip install -e ".[dev]" && pytest -q'
+            bash -lc 'mkdir -p /workspace && tar -C /workspace -xzf - && cd /workspace && pip install --no-deps --no-build-isolation -e . && pip check && pytest -q'

@@ -1,12 +1,17 @@
-# CI image for videobrowser: Python + Cairo build deps + ffmpeg + git.
+# CI image for videobrowser: Python + Cairo build deps + ffmpeg + git, plus the
+# project's Python dependencies (runtime + dev extra) from pyproject.toml.
 # Python minor must match /.python-version (CI verifies before build/pull).
-# Rebuild cadence: .github/workflows/ci-image.yml (schedule + Dockerfile changes).
+# Tag: <py>-bookworm-<hash>, where hash covers Dockerfile.ci, .python-version
+# and pyproject.toml, so a dependency change gets its own image and CI only
+# installs the package itself (--no-deps). Rebuild cadence:
+# .github/workflows/ci-image.yml (weekly) and ci.yml (when the hash is missing).
 # Renovate: digest-only updates for this FROM (minor/major disabled); optional
 # "# renovate: datasource=..." ARG/ENV *_VERSION= pins for other tools.
 # Manual:
 #   PY=$(tr -d '[:space:]' < .python-version)
-#   docker buildx build --platform linux/amd64 \
-#     -f Dockerfile.ci -t "ghcr.io/tn8or/videobrowser/ci:${PY}-bookworm" --push .
+#   HASH=$(sha256sum Dockerfile.ci .python-version pyproject.toml | sha256sum | cut -c1-12)
+#   docker buildx build --platform linux/amd64 --build-arg "DOCKERFILE_HASH=$HASH" \
+#     -f Dockerfile.ci -t "ghcr.io/tn8or/videobrowser/ci:${PY}-bookworm-${HASH}" --push .
 # When bumping the minor: update .python-version, this tag, AND this digest
 # together (docker buildx imagetools inspect python:X.Y-bookworm).
 FROM python:3.14-bookworm@sha256:bfb689a7986adc6d5f16722e06c78e755efe4062e56276715fef450cbad09436
@@ -26,3 +31,17 @@ RUN apt-get update \
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1
+
+# Optional, e.g. the in-cluster PyPI proxy; not persisted into the image env.
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+
+# Build requirements + dependencies + dev extra, read from pyproject.toml so the
+# list has one source of truth. The package itself is installed per CI run.
+COPY pyproject.toml /tmp/ci-deps/pyproject.toml
+RUN python -c "import tomllib; d = tomllib.load(open('/tmp/ci-deps/pyproject.toml', 'rb')); p = d['project']; print('\n'.join(d['build-system']['requires'] + p['dependencies'] + p['optional-dependencies']['dev']))" \
+        > /tmp/ci-deps/requirements.txt \
+    && cat /tmp/ci-deps/requirements.txt \
+    && python -m pip install --no-cache-dir -U pip \
+    && python -m pip install --no-cache-dir -r /tmp/ci-deps/requirements.txt \
+    && rm -rf /tmp/ci-deps
