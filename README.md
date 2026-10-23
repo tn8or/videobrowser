@@ -178,6 +178,7 @@ track days.
 | `--device` | `auto` | `auto` / `mps` / `cpu` / `coreml` |
 | `--conf` | 0.25 | YOLO confidence threshold |
 | `--exclude` | none | Repeatable; skip files/folders whose path contains the text |
+| `--follow-links` | off | Include linked files that point outside the input folders (skipped links are listed in the output) |
 | `--no-clips` | off | Detect only; do not cut clips (also skips overlays) |
 | `--previews` | 8 | Annotated preview JPEGs per recording |
 | `--max-clip-seconds` | 24 | Max highlight length |

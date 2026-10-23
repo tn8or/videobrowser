@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass, field
@@ -58,6 +59,8 @@ def qualified_recording_id(path: Path, input_roots: list[Path] | None = None) ->
     Direct children of an input folder stay ``GX-0510``. Nested library layout
     becomes ``2026-08-01_100GOPRO_GX-0510`` so the same card index on two
     different days does not collide in ``scan.sqlite`` or output names.
+    Files outside every input folder (``--follow-links`` targets) get their
+    parent folder name plus a short hash of its path for the same reason.
     """
     base = recording_id_for(path)
     if not input_roots:
@@ -65,6 +68,8 @@ def qualified_recording_id(path: Path, input_roots: list[Path] | None = None) ->
     parent = path.parent.resolve()
     for root in input_roots:
         root = root.expanduser().resolve()
+        if root.is_file():
+            root = root.parent
         try:
             rel = parent.relative_to(root)
         except ValueError:
@@ -72,7 +77,8 @@ def qualified_recording_id(path: Path, input_roots: list[Path] | None = None) ->
         if rel.parts:
             return "_".join(rel.parts) + "_" + base
         return base
-    return base
+    digest = hashlib.sha1(os.fsencode(str(parent))).hexdigest()[:6]
+    return f"{parent.name}-{digest}_{base}"
 
 
 def _contained_in(path: Path, roots: list[Path]) -> bool:
@@ -99,30 +105,32 @@ def _is_fcp_internal(path: Path) -> bool:
     )
 
 
-def _in_tree_path(path: Path, roots: list[Path]) -> Path | None:
-    """Return a readable path that stays inside *roots*, or None to skip.
+def _in_tree_path(
+    path: Path, roots: list[Path], *, follow_links: bool = False
+) -> tuple[Path | None, str | None]:
+    """Return ``(readable path, None)`` or ``(None, reason)`` to skip.
 
     Final Cut Original Media often contains aliases into a ``.fcpbundle``
     (including broken ``__AsyncCopying`` targets). Those must not pull the
-    scan outside the folders the user passed.
+    scan outside the folders the user passed unless *follow_links* is set.
     """
     if _is_fcp_internal(path):
-        return None
+        return None, None
     try:
         if path.is_symlink():
             target = path.resolve()
             if not target.exists() or not target.is_file():
-                return None
+                return None, "broken link"
             if _is_fcp_internal(target):
-                return None
-            if roots and not _contained_in(target, roots):
-                return None
-            return target
+                return None, "points into a Final Cut library"
+            if roots and not follow_links and not _contained_in(target, roots):
+                return None, "points outside the input folders"
+            return target, None
         if not path.is_file():
-            return None
+            return None, None
     except OSError:
-        return None
-    return path.resolve()
+        return None, None
+    return path.resolve(), None
 
 
 def _normalize_excludes(patterns: list[str] | None) -> list[str]:
@@ -149,12 +157,13 @@ def iter_video_paths(
     *,
     exclude_roots: list[Path] | None = None,
     exclude_substrings: list[str] | None = None,
+    follow_links: bool = False,
 ) -> list[Path]:
     found: list[Path] = []
     seen: set[Path] = set()
     exclude = [p.expanduser().resolve() for p in (exclude_roots or [])]
     needles = _normalize_excludes(exclude_substrings)
-    skipped_outside = 0
+    skipped_links: list[tuple[Path, str]] = []
     for item in inputs:
         item = item.expanduser().resolve()
         if exclude and _contained_in(item, exclude):
@@ -197,21 +206,31 @@ def iter_video_paths(
         else:
             raise FileNotFoundError(item)
         for path in candidates:
-            usable = _in_tree_path(path, stay_inside)
+            usable, reason = _in_tree_path(path, stay_inside, follow_links=follow_links)
             if usable is None:
-                if path.is_symlink():
-                    skipped_outside += 1
+                if reason:
+                    skipped_links.append((path, reason))
                 continue
             if usable in seen:
                 continue
             if exclude and _contained_in(usable, exclude):
                 continue
+            if needles and path.is_symlink():
+                inside = _contained_in(usable, stay_inside)
+                if _matches_exclude(usable, needles, root=stay_inside[0] if inside else None):
+                    continue
             seen.add(usable)
             found.append(usable)
-    if skipped_outside:
-        print(
-            f"skipped {skipped_outside} linked file(s) pointing outside the input folders"
-        )
+    if skipped_links:
+        print(f"skipped {len(skipped_links)} linked file(s):")
+        for path, reason in skipped_links:
+            try:
+                target = os.readlink(path)
+            except OSError:
+                target = "?"
+            print(f"  {path} -> {target} ({reason})")
+        if any(r == "points outside the input folders" for _, r in skipped_links):
+            print("  use --follow-links to include links pointing outside the input folders")
     return found
 
 

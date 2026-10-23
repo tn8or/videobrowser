@@ -122,6 +122,68 @@ def test_iter_video_paths_skips_symlinks_outside_input(tmp_path: Path):
     assert names == {"keep.mp4"}
 
 
+def test_iter_video_paths_lists_skipped_links(tmp_path: Path, capsys):
+    library = tmp_path / "library"
+    outside = tmp_path / "elsewhere"
+    library.mkdir()
+    outside.mkdir()
+    target = outside / "secret.mp4"
+    target.write_bytes(b"x")
+    (library / "GX010001.mp4").symlink_to(target)
+    (library / "GX010002.mp4").symlink_to(outside / "missing.mp4")
+
+    iter_video_paths([library])
+    out = capsys.readouterr().out
+    assert "skipped 2 linked file(s)" in out
+    assert f"GX010001.mp4 -> {target} (points outside the input folders)" in out
+    assert "GX010002.mp4" in out and "(broken link)" in out
+    assert "--follow-links" in out
+
+
+def test_iter_video_paths_follow_links_includes_outside(tmp_path: Path):
+    library = tmp_path / "library"
+    outside = tmp_path / "elsewhere"
+    library.mkdir()
+    outside.mkdir()
+    (library / "keep.mp4").write_bytes(b"x")
+    target = outside / "secret.mp4"
+    target.write_bytes(b"x")
+    (library / "GX010001.mp4").symlink_to(target)
+    (library / "GX010002.mp4").symlink_to(outside / "missing.mp4")
+
+    found = iter_video_paths([library], follow_links=True)
+    assert {p.name for p in found} == {"keep.mp4", "secret.mp4"}
+
+
+def test_iter_video_paths_follow_links_applies_exclude_to_target(tmp_path: Path):
+    library = tmp_path / "library"
+    private = tmp_path / "private"
+    library.mkdir()
+    private.mkdir()
+    (private / "clip.mp4").write_bytes(b"x")
+    (library / "GX010001.mp4").symlink_to(private / "clip.mp4")
+    found = iter_video_paths([library], follow_links=True, exclude_substrings=["private"])
+    assert found == []
+
+
+def test_qualified_recording_id_outside_roots_does_not_collide(tmp_path: Path):
+    library = tmp_path / "library"
+    day1 = tmp_path / "a" / "100GOPRO"
+    day2 = tmp_path / "b" / "100GOPRO"
+    for d in (library, day1, day2):
+        d.mkdir(parents=True)
+    id1 = qualified_recording_id(day1 / "GX010001.mp4", [library])
+    id2 = qualified_recording_id(day2 / "GX010001.mp4", [library])
+    assert id1 != id2
+    assert id1.startswith("100GOPRO-") and id1.endswith("_GX-0001")
+
+
+def test_qualified_recording_id_file_input_stays_bare(tmp_path: Path):
+    clip = tmp_path / "GX010001.mp4"
+    clip.write_bytes(b"x")
+    assert qualified_recording_id(clip, [clip]) == "GX-0001"
+
+
 def test_iter_video_paths_skips_broken_symlinks(tmp_path: Path):
     (tmp_path / "keep.mp4").write_bytes(b"x")
     (tmp_path / "GX010001.mp4").symlink_to(tmp_path / "missing.mp4")
