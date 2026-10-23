@@ -9,6 +9,7 @@ from videobrowser.profiles import (
     guess_profile,
     guess_profile_from_samples,
     infer_rotation,
+    _sky_rotation,
     infer_rotation_from_samples,
     resolve_profile,
 )
@@ -193,3 +194,13 @@ def test_glare_patch_does_not_turn_upright_frame():
     image = _tilted(False, 0)
     image[200:280, 560:] = (240, 240, 240)  # white fairing / bridge on the right
     assert infer_rotation(image) == 0
+
+
+def test_failed_sideways_vote_does_not_flip_upside_down():
+    # Sky on the left, a little below level (~200 degrees): sideways frames.
+    # Without a sideways majority they must not turn the recording 180.
+    left_low = rotate_bgr(_tilted(False, -20), 270)
+    flat = np.full((360, 640, 3), 110, dtype=np.uint8)
+    assert _sky_rotation(left_low) == 90
+    assert infer_rotation_from_samples([left_low] * 4 + [flat] * 5) == 0
+    assert infer_rotation_from_samples([left_low] + [flat] * 8) == 0

@@ -220,18 +220,23 @@ def infer_rotation_from_samples(images: list[np.ndarray]) -> int:
     Frames without a clear sky abstain. Turning the footage sideways needs a
     majority of all frames: one frame with a bright fairing, white bridge or
     sunlit tarmac along an edge must not rotate a landscape mount by 90.
-    Upright vs upside down is the sign of the summed vertical sky direction,
-    so frames leaned into left and right corners still count.
+    Upright vs upside down counts frames with the sky below against frames
+    with it above, including diagonal ones, so frames leaned into left and
+    right corners still count. Sideways frames that lost the majority stay out
+    of that vote and cannot flip the recording.
     """
     angles = [a for a in (_sky_direction(image) for image in images) if a is not None]
     if not angles:
         return 0
-    counts = Counter(_rotation_for(a) for a in angles)
+    rotations = [_rotation_for(a) for a in angles]
+    counts = Counter(rotations)
     sideways = max((90, 270), key=lambda r: counts[r])
     if counts[sideways] * 2 > len(images):
         return sideways
-    vertical = sum(np.sin(np.radians(a)) for a in angles)
-    return 180 if vertical < -0.5 else 0
+    vertical = [np.sin(np.radians(a)) for a, r in zip(angles, rotations) if r not in (90, 270)]
+    below = sum(1 for v in vertical if v < 0)
+    above = sum(1 for v in vertical if v > 0)
+    return 180 if below > above else 0
 
 
 def _has_gauge(gray: np.ndarray) -> bool:
