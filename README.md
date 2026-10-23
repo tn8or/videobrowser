@@ -188,7 +188,7 @@ track days.
 | `--no-overlay` | off | No overlays: skip the RaceBox stage and date/time on verticals (alias `--no-racebox`) |
 | `--no-vertical` | off | Do not write 1080x1920 follow-cam copies to `vertical/` |
 | `--no-landscape` | off | Do not write landscape clips or RaceBox overlay renders (only `vertical/`) |
-| `--no-fetch` | off | Do not auto-download RaceBox sessions |
+| `--no-fetch` | off | Do not auto-download RaceBox sessions (they are fetched also with `--no-overlay`, for footage without GoPro GPS) |
 | `--sessions-dir` | `<out>/sessions` | Folder of `.vbo` sessions |
 | `--font` | Arial | TTF font for overlay text |
 | `--stats` | `<out>/stats.sqlite` | Lap-bests SQLite |
