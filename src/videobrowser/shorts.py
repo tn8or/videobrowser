@@ -218,6 +218,11 @@ class DayData:
     gps: dict = field(default_factory=dict)
     # recording id -> per-second scene motion from the scan.
     motion: dict = field(default_factory=dict)
+    # RaceBox log of the day, when there is one (``place_without_gps``).
+    track: object = None
+    # recording id -> camera-clock readings, for recordings without GPS the
+    # RaceBox match could not place.
+    unplaced: dict = field(default_factory=dict)
 
 
 def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
@@ -301,6 +306,10 @@ def _crash_moments(day: DayData) -> list[Moment]:
     return merged
 
 
+# Margin around a moment when checking an unplaced recording against the log.
+UNPLACED_SLACK_S = 60.0
+
+
 def _recording_gps(clock: CameraClock) -> tuple[list, list]:
     """GoPro GPS speed and turn-rate samples of a recording, on recording time."""
     from videobrowser.telemetry import (
@@ -366,6 +375,12 @@ def _moment_pace(m: Moment, day: DayData, min_speed: float) -> str | None:
         if speed < min(STOPPED_KMH, min_speed):
             return "stopped"
         return "slow" if speed < min_speed else "track"
+    unplaced = _unplaced_pace(m, day)
+    if unplaced is not None:
+        motion = _moment_motion(m, day)
+        if motion is not None and motion < DEFAULT_THRESHOLD:
+            return "stopped"
+        return unplaced
     motion = _moment_motion(m, day)
     if motion is None:
         return None
@@ -377,27 +392,82 @@ def _moment_pace(m: Moment, day: DayData, min_speed: float) -> str | None:
 def place_without_gps(day: DayData, track) -> None:
     """Lay recordings without GoPro GPS on the RaceBox log by scene motion.
 
-    Sets their start time and takes speed and turn rate from RaceBox.
+    A clearly placed recording takes its start time, speed and turn rate
+    from RaceBox. The rest of a camera's day is then matched as a whole (one
+    clock error per camera), which gives those recordings RaceBox speed. A
+    recording still unplaced keeps its camera clock and is checked against
+    the log at both readings of that clock (``_moment_pace``).
     """
-    from videobrowser.racebox_align import clock_guesses, motion_match
+    from videobrowser.racebox_align import clock_guesses, day_match, motion_match
 
     if track is None:
         return
+    day.track = track
+    cameras: dict[str, list[str]] = {}
     for rid, clock in day.clocks.items():
-        if rid not in day.motion or _day_gps(day, rid)[0]:
-            continue
-        match = motion_match(day.motion[rid], track, clock_guesses(clock.start_utc))
-        found = match.start_utc
-        if found is None:
-            print(f"  {rid}: no GPS, no clear RaceBox match: {match.reason}")
-            continue
-        print(
-            f"  {rid}: no GPS, laid on RaceBox by scene motion "
-            f"({found - (clock.start_utc or found):+.1f} s, {match.reason})"
-        )
+        if rid in day.motion and clock.start_utc is not None and not _day_gps(day, rid)[0]:
+            cameras.setdefault(day.profiles[rid], []).append(rid)
+
+    def place(rid: str, found: float, how: str) -> None:
+        clock = day.clocks[rid]
+        print(f"  {rid}: no GPS, laid on RaceBox by scene motion ({found - clock.start_utc:+.1f} s, {how})")
         clock.start_utc = found
         clock.source = "racebox-motion"
         day.gps[rid] = (track.speeds(found, clock.duration), track.turns(found, clock.duration))
+
+    # Camera-clock starts, before any recording is moved onto RaceBox time:
+    # the whole-day match needs them all on the same (camera) clock.
+    camera_start = {rid: day.clocks[rid].start_utc for rids in cameras.values() for rid in rids}
+    for profile, rids in sorted(cameras.items()):
+        unplaced = []
+        for rid in rids:
+            clock = day.clocks[rid]
+            match = motion_match(day.motion[rid], track, clock_guesses(clock.start_utc))
+            if match.start_utc is None:
+                print(f"  {rid}: no GPS, no clear RaceBox match: {match.reason}")
+                unplaced.append(rid)
+                continue
+            place(rid, match.start_utc, match.reason)
+        if not unplaced:
+            continue
+        # The camera's whole day at once: clear where single recordings are
+        # not, but only to within a minute or so at the session edges. Good
+        # enough to tell paddock from track; too rough for start time (camera
+        # sync) or turn rate, which stay as they are.
+        first = min(camera_start[rid] for rid in rids)
+        match = day_match([(camera_start[rid], day.motion[rid]) for rid in rids], track)
+        if match.start_utc is None:
+            print(f"  {profile}: whole day not matched to RaceBox either ({match.reason})")
+            for rid in unplaced:
+                day.unplaced[rid] = clock_guesses(day.clocks[rid].start_utc)
+            continue
+        shift = match.start_utc - first
+        print(f"  {profile}: whole day on RaceBox ({shift:+.0f} s, {match.reason}); speed only")
+        for rid in unplaced:
+            clock = day.clocks[rid]
+            day.gps[rid] = (track.speeds(camera_start[rid] + shift, clock.duration), [])
+
+
+def _unplaced_pace(m: Moment, day: DayData) -> str | None:
+    """Pace of a moment on recordings the RaceBox match could not place.
+
+    The camera clock is right to a few seconds under one of its two
+    readings. When the log shows the bike in (or standing) under every
+    reading, the moment is in the paddock. Otherwise it may be on track, but
+    that is not sure, so it counts as slow (at most one per action short).
+    """
+    seg = next((s for s in m.segments if s.recording_id in day.unplaced), None)
+    if seg is None or day.track is None:
+        return None
+    clock = day.clocks[seg.recording_id]
+    for guess in day.unplaced[seg.recording_id]:
+        shift = guess - (clock.start_utc or guess)
+        lo = (m.utc_start + shift) - UNPLACED_SLACK_S
+        hi = (m.utc_end + shift) + UNPLACED_SLACK_S
+        speeds = [s.speed_kmh for s in day.track.speeds(lo, hi - lo)]
+        if speeds and max(speeds) >= STOPPED_KMH:
+            return "slow"
+    return "stopped"
 
 
 def day_moments(

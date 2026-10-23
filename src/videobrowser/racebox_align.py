@@ -32,6 +32,13 @@ MIN_PEAK = 0.5
 # by this ratio. Nearby shifts score almost as high and are no rival.
 RIVAL_S = 300.0
 MIN_MARGIN = 1.15
+# Scene motion is median-filtered over this many seconds, then capped at this
+# percentile (camera in hand in the paddock).
+MOTION_MEDIAN_S = 61
+# The match is then refined within this many seconds with this short median.
+FINE_SEARCH_S = 20
+FINE_MEDIAN_S = 5
+MOTION_CLIP_PCT = 95.0
 # Speed above this adds nothing to the pit/track pattern motion can see.
 SPEED_CLIP_KMH = 80.0
 
@@ -147,6 +154,8 @@ def motion_match(
         return MotionMatch(None, f"only {len(motion)} s of scene motion (need {MIN_OVERLAP_S})")
     if len(track.utc) < 10:
         return MotionMatch(None, "RaceBox log is empty")
+    if not guesses:
+        return MotionMatch(None, "no camera clock to search around")
     n = int(max(t for t, _ in motion)) + 1
     x = np.full(n, np.nan)
     for t, mag in motion:
@@ -154,14 +163,18 @@ def motion_match(
     known = ~np.isnan(x)
     if known.sum() < MIN_OVERLAP_S or float(np.nanstd(x)) < 1e-6:
         return MotionMatch(None, "scene motion too short or flat")
-    x = np.where(known, (x - np.nanmean(x)) / np.nanstd(x), 0.0)
+    # A camera handled in the paddock moves far more than one on the bike,
+    # in bursts of seconds to a minute; sessions last many minutes. A rolling
+    # median removes most bursts and a cap stops the rest from outweighing
+    # whole sessions.
+    raw = x
+    x, known = _prepare(raw, MOTION_MEDIAN_S)
 
     # Only the part of the log the search can reach (the sessions dir holds
     # every day ever logged).
     utc, kmh = track.utc, track.speed_kmh
-    if guesses:
-        keep = (utc >= min(guesses) - search_s - 10.0) & (utc <= max(guesses) + search_s + n + 10.0)
-        utc, kmh = utc[keep], kmh[keep]
+    keep = (utc >= min(guesses) - search_s - 10.0) & (utc <= max(guesses) + search_s + n + 10.0)
+    utc, kmh = utc[keep], kmh[keep]
     if len(utc) < 10:
         return MotionMatch(None, "no RaceBox log near the camera clock " + _clock_text(guesses))
     if utc[-1] - utc[0] > 3 * 86400.0:
@@ -169,32 +182,29 @@ def motion_match(
 
     # RaceBox speed on a 1 s grid, padded by the recording length on both
     # sides so a recording may run past either end of the log.
-    g0 = float(np.floor(utc[0])) - n
-    grid = g0 + np.arange(int(np.ceil(utc[-1] - g0)) + n + 1)
+    g0 = float(np.floor(min(utc[0], min(guesses) - search_s))) - 1.0
+    grid = g0 + np.arange(int(np.ceil(max(utc[-1], max(guesses) + search_s) - g0)) + n + 2)
     speed = np.interp(grid, utc, np.minimum(kmh, SPEED_CLIP_KMH), left=0.0, right=0.0)
     # Between sessions (no sample within 5 s) the bike is in.
     i = np.clip(np.searchsorted(utc, grid), 1, len(utc) - 1)
     nearest = np.minimum(np.abs(grid - utc[i - 1]), np.abs(utc[i] - grid))
     speed[nearest > 5.0] = 0.0
-    if len(speed) < n + 2:
+
+    # Pearson correlation of x against the speed window at each candidate
+    # start (within the search window of a clock reading): a day's worth of
+    # recordings is too long to correlate against every start.
+    ks = sorted(
+        {
+            k
+            for guess in guesses
+            for k in range(int(guess - search_s - g0), int(guess + search_s - g0) + 1)
+            if 0 <= k <= len(grid) - n
+        }
+    )
+    if not ks:
         return MotionMatch(None, "RaceBox log too short")
-
-    # Pearson correlation of x against every window of the speed grid.
-    num = np.correlate(speed, x, mode="valid")
-    csum = np.r_[0.0, np.cumsum(speed)]
-    csq = np.r_[0.0, np.cumsum(speed * speed)]
-    win = csum[n:] - csum[:-n]
-    win_sq = csq[n:] - csq[:-n]
-    std = np.sqrt(np.maximum(win_sq / n - (win / n) ** 2, 0.0))
-    with np.errstate(divide="ignore", invalid="ignore"):
-        r = np.where(std > 1.0, num / (n * std), -1.0)
-
-    starts = grid[: len(r)]
-    if guesses:
-        near = np.zeros(len(r), dtype=bool)
-        for guess in guesses:
-            near |= np.abs(starts - guess) <= search_s
-        r = np.where(near, r, -1.0)
+    r = _pearson(speed, x, known, ks)
+    starts = grid[ks]
     best = int(np.argmax(r))
     peak = float(r[best])
     away = np.abs(starts - starts[best]) >= RIVAL_S
@@ -205,9 +215,77 @@ def motion_match(
         return MotionMatch(
             None, f"ambiguous r={peak:.2f} vs {runner:.2f} elsewhere", peak, runner
         )
+    # The long median blurs session edges by seconds: refine nearby with a
+    # short one.
+    fine_x, fine_known = _prepare(raw, FINE_MEDIAN_S)
+    k0 = ks[best]
+    near = [k for k in range(k0 - FINE_SEARCH_S, k0 + FINE_SEARCH_S + 1) if 0 <= k <= len(grid) - n]
+    fine = _pearson(speed, fine_x, fine_known, near)
+    if float(fine.max()) > 0:
+        k0 = near[int(np.argmax(fine))]
     # Motion sample i covers recording second [i, i + 1).
-    start = float(starts[best]) - 0.5
+    start = float(grid[k0]) - 0.5
     return MotionMatch(start, f"r={peak:.2f} (next best {runner:.2f})", peak, runner)
+
+
+def _prepare(raw: np.ndarray, width: int) -> tuple[np.ndarray, np.ndarray]:
+    """Median-filtered, capped, standardised motion (0 where unknown), and
+    where it is known."""
+    x = _rolling_median(raw, width)
+    known = ~np.isnan(x)
+    x = np.minimum(x, np.nanpercentile(x, MOTION_CLIP_PCT))
+    return np.where(known, (x - np.nanmean(x)) / max(float(np.nanstd(x)), 1e-6), 0.0), known
+
+
+def _pearson(speed: np.ndarray, x: np.ndarray, known: np.ndarray, ks: list[int]) -> np.ndarray:
+    """Correlation of *x* with the speed window starting at each index in *ks*,
+    over the seconds with motion only (gaps between recordings say nothing)."""
+    n = len(x)
+    mask = known.astype(np.float64)
+    count = float(mask.sum())
+    r = np.full(len(ks), -1.0)
+    for j, k in enumerate(ks):
+        window = speed[k : k + n]
+        mean = float(np.dot(window, mask)) / count
+        std = np.sqrt(max(float(np.dot(window * window, mask)) / count - mean * mean, 0.0))
+        if std > 1.0:
+            r[j] = float(np.dot(window, x)) / (count * std)
+    return r
+
+
+def _rolling_median(x: np.ndarray, width: int) -> np.ndarray:
+    """Centred rolling median ignoring NaN; NaN where the window has no data."""
+    half = width // 2
+    padded = np.r_[np.full(half, np.nan), x, np.full(half, np.nan)]
+    windows = np.lib.stride_tricks.sliding_window_view(padded, width)
+    out = np.full(len(x), np.nan)
+    has = (~np.isnan(windows)).any(axis=1)
+    with np.errstate(all="ignore"):
+        out[has] = np.nanmedian(windows[has], axis=1)
+    return out
+
+
+def day_match(
+    recordings: list[tuple[float, list[tuple[float, float]]]],
+    track: RaceboxTrack,
+    search_s: float = SEARCH_S,
+) -> MotionMatch:
+    """One camera's whole day laid on the RaceBox log at once.
+
+    *recordings* are (camera-clock start, per-second motion) pairs from the
+    same camera, so they share one clock error. Hours of footage with pit
+    stops between sessions match far more clearly than one recording, and a
+    recording made only in the paddock is placed along with the rest. The
+    result's start is that of the earliest recording; add the same shift
+    (``start_utc - earliest clock start``) to the others.
+    """
+    if not recordings:
+        return MotionMatch(None, "no recordings")
+    first = min(start for start, _ in recordings)
+    combined = [
+        (t + start - first, mag) for start, motion in recordings for t, mag in motion
+    ]
+    return motion_match(combined, track, clock_guesses(first), search_s)
 
 
 def _clock_text(guesses: list[float]) -> str:

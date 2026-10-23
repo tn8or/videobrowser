@@ -209,3 +209,54 @@ def test_collect_short_fails_whole_when_a_piece_fails(tmp_path, monkeypatch):
     plan = shorts.ShortPlan("action-01", "action", [_moment("action", 10, 5, 1.0)])
     with pytest.raises(RuntimeError, match="A@10s"):
         shorts.collect_short(plan, day, tmp_path / "action-01")
+
+
+def test_unplaced_recording_is_stopped_unless_racebox_rides_at_a_clock_reading(monkeypatch):
+    import numpy as np
+
+    import videobrowser.racebox_align as ra
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    start = 1785571200.0  # 2026-08-01 10:00 Copenhagen (UTC+2)
+    day = shorts.DayData("2026-08-01", {"M": CameraClock("M", start, 600.0, [])}, {"M": "cockpit"}, {"M": 0}, [], [])
+    day.motion["M"] = [(t + 0.5, 12.0) for t in range(600)]  # camera in hand: busy, flat
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    # Riding 7200 s after the clock (its other reading) for the first 200 s only.
+    utc = np.arange(start + 7200 - 100, start + 7200 + 200, 0.1)
+    track = ra.RaceboxTrack(utc, np.full(len(utc), 120.0), np.zeros(len(utc)))
+    shorts.place_without_gps(day, track)
+    assert day.unplaced["M"] == [start, start + 7200]
+    early = Moment("action", start + 50, start + 55, 1.0, [Segment("M", 50, 55)])
+    late = Moment("action", start + 500, start + 505, 1.0, [Segment("M", 500, 505)])
+    assert shorts._moment_pace(early, day, 40.0) == "slow"
+    assert shorts._moment_pace(late, day, 40.0) == "stopped"
+
+
+def test_whole_day_match_gets_camera_clock_starts_after_a_recording_was_placed(monkeypatch):
+    import numpy as np
+
+    import videobrowser.racebox_align as ra
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    clocks = {"A": CameraClock("A", 1000.0, 300.0, []), "B": CameraClock("B", 2000.0, 300.0, [])}
+    day = shorts.DayData("2026-08-01", clocks, {"A": "cockpit", "B": "cockpit"}, {"A": 0, "B": 0}, [], [])
+    day.motion = {rid: [(t + 0.5, 5.0) for t in range(300)] for rid in clocks}
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    monkeypatch.setattr(
+        ra, "motion_match",
+        lambda motion, track, guesses: ra.MotionMatch(975.0 if guesses[0] == 1000.0 else None, "x"),
+    )
+    seen = []
+
+    def fake_day(recs, track):
+        seen.extend(start for start, _ in recs)
+        return ra.MotionMatch(975.0, "r=0.70")
+
+    monkeypatch.setattr(ra, "day_match", fake_day)
+    utc = np.arange(0.0, 4000.0, 0.1)
+    shorts.place_without_gps(day, ra.RaceboxTrack(utc, np.full(len(utc), 100.0), np.zeros(len(utc))))
+    assert clocks["A"].start_utc == 975.0  # placed alone
+    assert sorted(seen) == [1000.0, 2000.0]  # camera clock, not RaceBox time
+    assert clocks["B"].start_utc == 2000.0 and day.gps["B"][0][0].t == pytest.approx(0.0, abs=0.1)

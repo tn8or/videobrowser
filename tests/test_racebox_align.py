@@ -4,6 +4,7 @@ import pytest
 from videobrowser.racebox_align import (
     RaceboxTrack,
     clock_guesses,
+    day_match,
     motion_match,
     motion_start_utc,
     track_from_sessions,
@@ -47,6 +48,28 @@ def test_motion_lays_recording_on_racebox_within_a_second():
         assert motion_start_utc(motion, track, guesses) == pytest.approx(start, abs=1.0)
 
 
+def test_fine_pass_without_a_score_keeps_the_coarse_start(monkeypatch):
+    import videobrowser.racebox_align as ra
+
+    track = _track([0, 2700, 6000])
+    start = T0 + 2700 - 300.4
+    motion = _motion(track, start, 1800)
+    monkeypatch.setattr(ra, "FINE_SEARCH_S", 0)
+    coarse = motion_start_utc(motion, track, [start + 40])
+    monkeypatch.setattr(ra, "FINE_SEARCH_S", 20)
+    calls = []
+    real = ra._pearson
+
+    def no_fine_score(speed, x, known, ks):
+        calls.append(len(ks))
+        out = real(speed, x, known, ks)
+        return out if len(calls) == 1 else out * 0 - 1.0
+
+    monkeypatch.setattr(ra, "_pearson", no_fine_score)
+    found = motion_start_utc(motion, track, [start + 40])
+    assert found == coarse
+
+
 def test_no_match_when_sessions_are_indistinguishable_and_no_clock():
     track = _track([0, 3000, 6000])
     motion = _motion(track, T0 + 3000 - 300.4, 1800)
@@ -86,3 +109,32 @@ def test_track_from_overlapping_sessions_is_strictly_increasing():
     assert track is not None
     assert np.all(np.diff(track.utc) > 0)
     assert track.utc[0] == pytest.approx(T0) and track.utc[-1] == pytest.approx(T0 + 50 + 99.9)
+
+
+def _handled(motion, rng, share=0.3):
+    """Camera picked up in the paddock now and then: bursts of 10-60 s of
+    big motion over about *share* of the time standing still."""
+    out = [list(p) for p in motion]
+    i = 0
+    while i < len(out):
+        if out[i][1] < 3 and rng.random() < share / 35:
+            for j in range(i, min(len(out), i + int(rng.uniform(10, 60)))):
+                out[j][1] += rng.uniform(20, 40)
+            i += 60
+        i += 1
+    return [tuple(p) for p in out]
+
+
+def test_whole_day_places_paddock_only_recordings_too():
+    rng = np.random.default_rng(7)
+    track = _track([0, 3300, 7400, 10500, 14800])  # 20 min out, irregular gaps
+    error = 25.0  # camera clock error
+    recs = []
+    for i, (s0, length) in enumerate([(-600, 1500), (1800, 1200), (6900, 1500), (10200, 2400)]):
+        start = T0 + s0 + 0.2
+        recs.append((start + error, _handled(_motion(track, start, length, seed=i), rng)))
+    # 1800 s + 1200 s lies between two sessions: paddock only, no match alone.
+    assert motion_start_utc(recs[1][1], track, clock_guesses(recs[1][0])) is None
+    match = day_match(recs, track)
+    # Session edges only: right to within a minute or two, not a second.
+    assert match.start_utc == pytest.approx(recs[0][0] - error, abs=120.0)
