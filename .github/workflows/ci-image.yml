@@ -25,8 +25,8 @@ jobs:
       contents: read
       packages: write
     env:
-      PIP_INDEX_URL: http://pypi-proxy.github-arc.svc.cluster.local:8080/simple/
-      PIP_TRUSTED_HOST: pypi-proxy.github-arc.svc.cluster.local
+      PIP_INDEX_URL: ${{ secrets.PIP_INDEX_URL }}
+      PIP_TRUSTED_HOST: ${{ secrets.PIP_TRUSTED_HOST }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7

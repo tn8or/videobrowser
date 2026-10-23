@@ -1,0 +1,39 @@
+name: Image Retention
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Weekly
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Delete old CI images
+        run: |
+          set -euo pipefail
+          # List tags for the CI image repository
+          IMAGE="ghcr.io/tn8or/videobrowser/ci"
+          # Fetch tags
+          TAGS=$(gh api repos/tn8or/videobrowser/git/tags --jq '.[].name' |
+                grep -E '^[0-9]+\.[0-9]+-bookworm-' |
+                sort -r)
+          # Delete tags older than 30 days
+          for tag in $TAGS;
+          do
+            # Get tag date
+            DATE=$(gh api repos/tn8or/videobrowser/git/tags/refs/tags/$tag --jq '.tag.message' | head -n1)
+            # Actually we need the commit date; simpler: use git show --no-pager $tag --format=%ci --quiet
+            DATE=$(git -c protocol.version=2 ls-remote https://github.com/tn8or/videobrowser refs/tags/$tag | awk '{print $1}')
+            # Convert to seconds
+            SECS=$(date -d @$DATE +%s)
+            NOW=$(date +%s)
+            DIFF=$((NOW - SECS))
+            DAYS=$((DIFF / 86400))
+            if [ $DAYS -gt 30 ]; then
+              echo "Deleting old tag: $tag ($DAYS days old)"
+              gh api -X DELETE repos/tn8or/videobrowser/releases/tags/$tag
+            fi
+          done
