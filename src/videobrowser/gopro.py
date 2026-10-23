@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass, field
@@ -58,6 +59,8 @@ def qualified_recording_id(path: Path, input_roots: list[Path] | None = None) ->
     Direct children of an input folder stay ``GX-0510``. Nested library layout
     becomes ``2026-08-01_100GOPRO_GX-0510`` so the same card index on two
     different days does not collide in ``scan.sqlite`` or output names.
+    Files outside every input folder (``--follow-links`` targets) get their
+    parent folder name plus a short hash of its path for the same reason.
     """
     base = recording_id_for(path)
     if not input_roots:
@@ -65,6 +68,8 @@ def qualified_recording_id(path: Path, input_roots: list[Path] | None = None) ->
     parent = path.parent.resolve()
     for root in input_roots:
         root = root.expanduser().resolve()
+        if root.is_file():
+            root = root.parent
         try:
             rel = parent.relative_to(root)
         except ValueError:
@@ -72,7 +77,8 @@ def qualified_recording_id(path: Path, input_roots: list[Path] | None = None) ->
         if rel.parts:
             return "_".join(rel.parts) + "_" + base
         return base
-    return base
+    digest = hashlib.sha1(os.fsencode(str(parent))).hexdigest()[:6]
+    return f"{parent.name}-{digest}_{base}"
 
 
 def _contained_in(path: Path, roots: list[Path]) -> bool:
@@ -209,6 +215,10 @@ def iter_video_paths(
                 continue
             if exclude and _contained_in(usable, exclude):
                 continue
+            if needles and path.is_symlink():
+                inside = _contained_in(usable, stay_inside)
+                if _matches_exclude(usable, needles, root=stay_inside[0] if inside else None):
+                    continue
             seen.add(usable)
             found.append(usable)
     if skipped_links:
