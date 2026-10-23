@@ -48,6 +48,28 @@ def test_motion_lays_recording_on_racebox_within_a_second():
         assert motion_start_utc(motion, track, guesses) == pytest.approx(start, abs=1.0)
 
 
+def test_fine_pass_without_a_score_keeps_the_coarse_start(monkeypatch):
+    import videobrowser.racebox_align as ra
+
+    track = _track([0, 2700, 6000])
+    start = T0 + 2700 - 300.4
+    motion = _motion(track, start, 1800)
+    monkeypatch.setattr(ra, "FINE_SEARCH_S", 0)
+    coarse = motion_start_utc(motion, track, [start + 40])
+    monkeypatch.setattr(ra, "FINE_SEARCH_S", 20)
+    calls = []
+    real = ra._pearson
+
+    def no_fine_score(speed, x, known, ks):
+        calls.append(len(ks))
+        out = real(speed, x, known, ks)
+        return out if len(calls) == 1 else out * 0 - 1.0
+
+    monkeypatch.setattr(ra, "_pearson", no_fine_score)
+    found = motion_start_utc(motion, track, [start + 40])
+    assert found == coarse
+
+
 def test_no_match_when_sessions_are_indistinguishable_and_no_clock():
     track = _track([0, 3000, 6000])
     motion = _motion(track, T0 + 3000 - 300.4, 1800)

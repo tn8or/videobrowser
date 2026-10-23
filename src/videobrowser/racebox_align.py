@@ -221,8 +221,10 @@ def motion_match(
     k0 = ks[best]
     near = [k for k in range(k0 - FINE_SEARCH_S, k0 + FINE_SEARCH_S + 1) if 0 <= k <= len(grid) - n]
     fine = _pearson(speed, fine_x, fine_known, near)
+    if float(fine.max()) > 0:
+        k0 = near[int(np.argmax(fine))]
     # Motion sample i covers recording second [i, i + 1).
-    start = float(grid[near[int(np.argmax(fine))]]) - 0.5
+    start = float(grid[k0]) - 0.5
     return MotionMatch(start, f"r={peak:.2f} (next best {runner:.2f})", peak, runner)
 
 
