@@ -135,7 +135,7 @@ def _sample_frames(recording: Recording, max_side: int, rotation: int = 0) -> li
 
 # Moments sampled for which way the camera looks (the ones in the pits or
 # standing still do not vote).
-_FACING_SAMPLES = 41
+_FACING_SAMPLES = 101
 
 
 def facing_for_recording(recording: Recording, max_side: int, profile: Profile) -> str | None:
@@ -531,7 +531,7 @@ def scan_recording(
             for ch in recording.chapters
         ],
         start_source,
-        facing=camera_facing,
+        facing=db.facing_override(recording.recording_id) or camera_facing,
     )
     db.save_motion(recording.recording_id, per_second(motion_samples))
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=True)

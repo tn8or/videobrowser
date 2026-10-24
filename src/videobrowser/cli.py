@@ -173,6 +173,14 @@ def build_parser() -> argparse.ArgumentParser:
     facing_cmd_p.add_argument("-o", "--out", type=Path, required=True, help="Scan output directory")
     facing_cmd_p.add_argument("--date", action="append", default=[], metavar="YYYY-MM-DD", help="Only this day (repeatable)")
     facing_cmd_p.add_argument("--size", type=int, default=640, help="Max analysis side in pixels")
+    facing_cmd_p.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="CAMERA=front|rear",
+        help="Fix the facing by hand for every recording whose id contains CAMERA, e.g. GX=front "
+        "(repeatable; kept for later scans)",
+    )
 
     shorts = sub.add_parser(
         "shorts",
@@ -240,12 +248,26 @@ def facing_cmd(args: argparse.Namespace) -> int:
     if not (out / "scan.sqlite").exists():
         print(f"no scan.sqlite in {out}", file=sys.stderr)
         return 1
+    overrides = []
+    for item in args.set:
+        camera, _, way = item.partition("=")
+        if not camera or way not in ("front", "rear"):
+            print(f"--set wants CAMERA=front or CAMERA=rear, got {item!r}", file=sys.stderr)
+            return 2
+        overrides.append((camera, way))
     db = ScanDB.open(out / "scan.sqlite")
     try:
+        for camera, way in overrides:
+            db.set_facing_override(camera, way)
         for meta in db.recording_metas():
             if args.date and meta["date_label"] not in args.date:
                 continue
             rid = meta["recording_id"]
+            fixed = db.facing_override(rid)
+            if fixed:
+                print(f"{rid}: {fixed} (set by hand)")
+                db.set_facing(rid, fixed)
+                continue
             try:
                 recording = recording_from_meta(meta)
             except (ProbeError, OSError) as exc:

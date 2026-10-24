@@ -255,13 +255,16 @@ envelopes match clearly; otherwise GPS stands. Turn the audio step off with
 `--no-audio-sync`.
 
 **Themes.** Event meaning depends on which way the camera faces. The scan
-reads it from the picture: at 41 moments spread over each recording it
+reads it from the picture: at 101 moments spread over each recording it
 compares two consecutive frames, and the scene grows towards a camera looking
 ahead and shrinks into one looking back (`facing by scene flow: ...` in the
 log, with the votes). Without a clear reading the mount guess decides (`rear`,
 `rear_right`, `rear_rotated` look back, everything else ahead).
 `videobrowser facing -o output` (optionally `--date`) re-reads it for an
-existing scan in seconds per recording, without a full `scan --force`:
+existing scan without a full `scan --force`. When a camera stays unclear,
+fix it by hand: `videobrowser facing -o output --set GX=front --set GH=rear`
+applies to every recording whose id contains that text, now and in later
+scans:
 
 | Theme | Rule | Reliability |
 |-------|------|-------------|

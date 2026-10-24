@@ -77,8 +77,8 @@ def per_second(samples: list[tuple[float, float]]) -> list[tuple[float, float]]:
 # Fewest tracked points for one frame pair to say anything about facing.
 _MIN_FLOW_POINTS = 12
 # Frame pairs that must vote, and the share that must agree, for a facing.
-MIN_FACING_VOTES = 12
-FACING_MAJORITY = 0.7
+MIN_FACING_VOTES = 15
+FACING_MAJORITY = 0.62
 
 
 def flow_divergence(
