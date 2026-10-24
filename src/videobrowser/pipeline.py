@@ -149,16 +149,19 @@ def gps_for_recording(
     config: ScanConfig,
     motion_samples: list[tuple[float, float]],
     start_utc: float | None,
-) -> tuple[list[SpeedSample], list[TurnSample], float | None]:
+) -> tuple[list[SpeedSample], list[TurnSample], float | None, str]:
     """Speed and turn samples from the GoPro GPS, else from RaceBox, plus the
-    recording's start (UTC), corrected when it was found on the RaceBox log.
+    recording's start (UTC), corrected when it was found on the RaceBox log,
+    and how that start is known: "gps", "racebox-motion" or "clock".
 
     Without GoPro telemetry the recording is laid on the RaceBox log by its
     scene motion (``racebox_align``); without a clear match there is none.
     """
     speeds = speed_for_recording(recording)
     if speeds or config.racebox_track is None:
-        return speeds, turns_for_recording(recording) if speeds else [], start_utc
+        if speeds:
+            return speeds, turns_for_recording(recording), start_utc, "gps"
+        return [], [], start_utc, "clock"
     from videobrowser.racebox_align import clock_guesses, motion_match
 
     match = motion_match(
@@ -167,11 +170,17 @@ def gps_for_recording(
     found = match.start_utc
     if found is None:
         print(f"  no GPS; no clear RaceBox match from scene motion: {match.reason}")
-        return [], [], start_utc
+        return [], [], start_utc, "clock"
     shift = found - start_utc if start_utc is not None else 0.0
     print(f"  no GPS; laid on RaceBox by scene motion (camera clock {shift:+.1f} s, {match.reason})")
     track = config.racebox_track
-    return track.speeds(found, recording.duration), track.turns(found, recording.duration), found
+    # A zero shift is still a RaceBox match: the camera clock was on the second.
+    return (
+        track.speeds(found, recording.duration),
+        track.turns(found, recording.duration),
+        found,
+        "racebox-motion",
+    )
 
 
 def _puck_events(hits: list[tuple[float, float]], recording_id: str) -> list[Event]:
@@ -386,17 +395,12 @@ def scan_recording(
     start_utc = (
         creation_utc_prefer_gps(recording.chapters[0].info) if recording.chapters else None
     )
-    clock_utc = start_utc
-    speeds, turns, start_utc = gps_for_recording(recording, config, motion_samples, start_utc)
     # How the start is known decides whether exports may put an overlay on
     # it: GoPro GPS time and a clear RaceBox match are sure, a bare camera
     # clock may be seconds off.
-    if start_utc != clock_utc:
-        start_source = "racebox-motion"
-    elif speeds:
-        start_source = "gps"
-    else:
-        start_source = "clock"
+    speeds, turns, start_utc, start_source = gps_for_recording(
+        recording, config, motion_samples, start_utc
+    )
     if config.min_speed > 0 and events:
         before_speed = len(events)
         events = [
