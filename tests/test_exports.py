@@ -103,3 +103,18 @@ def test_horizontals_render_overlays_even_when_clips_exist(tmp_path, monkeypatch
     (out / "clips" / "2026-08-01" / "R_00005_approaching_rider.mp4").write_bytes(b"old")
     assert exports.export_horizontals(out) == 0
     assert runs == [True]  # missing overlay renders still get made
+
+
+def test_run_jobs_keeps_order_and_errors():
+    from videobrowser.exports import _run_jobs
+
+    def work(n):
+        if n == 2:
+            raise RuntimeError("boom")
+        return n * 10
+
+    for jobs in (1, 3):
+        out = list(_run_jobs([1, 2, 3], work, jobs))
+        assert [item for item, _, _ in out] == [1, 2, 3]
+        assert [result for _, result, _ in out] == [10, None, 30]
+        assert str(out[1][2]) == "boom"

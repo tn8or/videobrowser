@@ -140,6 +140,12 @@ def build_parser() -> argparse.ArgumentParser:
         cmd.add_argument("-o", "--out", type=Path, required=True, help="Scan output directory")
         cmd.add_argument("--date", action="append", default=[], metavar="YYYY-MM-DD", help="Only this day (repeatable)")
         cmd.add_argument(
+            "--jobs",
+            type=int,
+            default=None,
+            help="Clips cut at once (default: CPU threads / 4, at most 4)",
+        )
+        cmd.add_argument(
             "--no-overlay",
             "--no-racebox",
             dest="no_overlay",
@@ -291,7 +297,7 @@ def facing_cmd(args: argparse.Namespace) -> int:
 
 
 def exports_cmd(args: argparse.Namespace) -> int:
-    from videobrowser.exports import export_horizontals, export_verticals
+    from videobrowser.exports import default_jobs, export_horizontals, export_verticals
 
     out = args.out.expanduser().resolve()
     if not (out / "scan.sqlite").exists():
@@ -303,6 +309,7 @@ def exports_cmd(args: argparse.Namespace) -> int:
         sessions_dir=(args.sessions_dir or (out / "sessions")).expanduser(),
         font_path=args.font,
         force=args.force,
+        jobs=max(1, args.jobs) if args.jobs else default_jobs(),
     )
     if args.cmd == "horizontals":
         export_horizontals(out, stats_path=args.stats, **common)

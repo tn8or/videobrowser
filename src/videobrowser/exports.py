@@ -17,6 +17,9 @@ re-scan dropped are removed.
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +87,40 @@ def _clear_others(directory: Path, rid: str, keep: set[str]) -> None:
             path.unlink(missing_ok=True)
 
 
+def default_jobs() -> int:
+    """Clips cut at once: ffmpeg does the work, so a few run side by side.
+
+    About one per four CPU threads, at most 4 (consumer NVIDIA cards allow a
+    handful of NVENC sessions at a time).
+    """
+    return max(1, min(4, (os.cpu_count() or 4) // 4))
+
+
+def _run_jobs(
+    items: Iterable[Any], work: Callable[[Any], Any], jobs: int
+) -> Iterable[tuple[Any, Any, Exception | None]]:
+    """(item, result, error) for each item, in order, *jobs* at a time.
+
+    Callers handle the results on their own thread, so the SQLite
+    connection is only used from there.
+    """
+
+    def _safe(item):
+        try:
+            return work(item), None
+        except Exception as exc:
+            return None, exc
+
+    items = list(items)
+    if jobs <= 1 or len(items) <= 1:
+        for item in items:
+            yield (item, *_safe(item))
+        return
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for item, (result, error) in zip(items, pool.map(_safe, items)):
+            yield item, result, error
+
+
 def _days(db: ScanDB, dates: list[str] | None):
     for row in db.recording_metas():
         if dates and row["date_label"] not in dates:
@@ -116,6 +153,7 @@ def export_horizontals(
     font_path: str = DEFAULT_FONT,
     stats_path: Path | None = None,
     force: bool = False,
+    jobs: int = 1,
 ) -> int:
     """Cut landscape clips (and RaceBox overlay renders); returns how many were cut."""
     from videobrowser.clips import export_clip
@@ -137,18 +175,26 @@ def export_horizontals(
                 continue
             clip_dir = out_dir / "clips" / meta["date_label"]
             _clear_others(clip_dir, rid, {_clip_name(w) for _, w in pairs})
-            new = 0
+            todo = []
             for row, window in pairs:
                 dest = clip_dir / _clip_name(window)
                 if force or not dest.exists():
-                    try:
-                        export_clip(recording, window, dest, rotation=meta["rotation"])
-                    except RuntimeError as exc:
-                        print(f"  clip failed {dest.name}: {exc}")
-                        db.set_clip_path(row["id"], "clip_path", None)
-                        continue
-                    new += 1
+                    todo.append((row, window))
+                else:
+                    db.set_clip_path(row["id"], "clip_path", str(dest))
+
+            def cut_one(item, recording=recording, clip_dir=clip_dir, rotation=meta["rotation"]):
+                _, window = item
+                return export_clip(recording, window, clip_dir / _clip_name(window), rotation=rotation)
+
+            new = 0
+            for (row, window), dest, exc in _run_jobs(todo, cut_one, jobs):
+                if exc is not None:
+                    print(f"  clip failed {_clip_name(window)}: {exc}")
+                    db.set_clip_path(row["id"], "clip_path", None)
+                    continue
                 db.set_clip_path(row["id"], "clip_path", str(dest))
+                new += 1
             cut += new
             print(f"{rid}: {new} landscape clip(s) cut, {len(pairs) - new} kept")
             if not overlay:
@@ -179,6 +225,7 @@ def export_verticals(
     sessions_dir: Path | None = None,
     font_path: str = DEFAULT_FONT,
     force: bool = False,
+    jobs: int = 1,
 ) -> int:
     """Cut 1080x1920 follow-cam clips; returns how many were cut."""
     from videobrowser.racebox_align import load_track
@@ -243,20 +290,30 @@ def export_verticals(
             elif overlay:
                 print("  overlays skipped: no sure RaceBox match for this recording")
 
+            def cut_one(
+                item,
+                recording=recording,
+                vdir=vdir,
+                rotation=meta["rotation"],
+                tracks=tracks,
+                turns=turns,
+                looks=looks,
+                factory_for=factory_for,
+            ):
+                _, window = item
+                return export_vertical(
+                    recording,
+                    window,
+                    vdir / _clip_name(window),
+                    rotation,
+                    focus_samples(window, tracks, turns, looks),
+                    overlay_factory=factory_for(window) if factory_for else None,
+                )
+
             new = 0
-            for row, window in todo:
-                dest = vdir / _clip_name(window)
-                try:
-                    export_vertical(
-                        recording,
-                        window,
-                        dest,
-                        meta["rotation"],
-                        focus_samples(window, tracks, turns, looks),
-                        overlay_factory=factory_for(window) if factory_for else None,
-                    )
-                except Exception as exc:
-                    print(f"  vertical failed {dest.name}: {exc}")
+            for (row, window), dest, exc in _run_jobs(todo, cut_one, jobs):
+                if exc is not None:
+                    print(f"  vertical failed {_clip_name(window)}: {exc}")
                     db.set_clip_path(row["id"], "vertical_path", None)
                     continue
                 db.set_clip_path(row["id"], "vertical_path", str(dest))

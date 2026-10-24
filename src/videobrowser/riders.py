@@ -89,6 +89,7 @@ class RiderTracker:
             classes=list(self.classes),
             imgsz=self.imgsz,
             device=self._ultralytics_device(),
+            half=self._half(),
             verbose=False,
         )
         return self._points_from_result(results[0], image, ids=None)
@@ -105,6 +106,7 @@ class RiderTracker:
             classes=list(self.classes),
             imgsz=self.imgsz,
             device=self._ultralytics_device(),
+            half=self._half(),
             verbose=False,
         )
         result = results[0]
@@ -141,6 +143,10 @@ class RiderTracker:
                 )
             )
         return points
+
+    def _half(self) -> bool:
+        # FP16 on NVIDIA roughly halves the time per frame for the same boxes.
+        return str(self.device).startswith("cuda")
 
     def _ultralytics_device(self) -> str | int:
         if self.device == "coreml":

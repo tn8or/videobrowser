@@ -25,7 +25,10 @@ Design criteria and product decisions live in [INSTRUCTIONS.md](INSTRUCTIONS.md)
 - Python 3.11–3.14
 - `ffmpeg` and `ffprobe` on your `PATH`
   - macOS: VideoToolbox decode/encode when available
-  - Windows/Linux with NVIDIA: CUDA decode + NVENC encode (`h264_nvenc` / `hevc_nvenc`)
+  - Windows/Linux with NVIDIA: CUDA decode + NVENC encode (`h264_nvenc` / `hevc_nvenc`).
+    Scan scales frames on the GPU (`scale_cuda`, in the gyan.dev and BtbN
+    Windows builds) and logs `decode cuda`; `decode cuda-copy` means the build
+    lacks it and frames are scaled on the CPU instead.
   - otherwise software (`libx264` / `libx265`)
 - Python packages (installed with the project):
   - `ultralytics`, `torch`, `opencv-python-headless`, `numpy`, `tqdm`, `lap` — detection
@@ -224,7 +227,8 @@ track days.
 The clip options scan used to take (`--no-overlay`, `--no-vertical`,
 `--no-landscape`, `--no-clips`, `--no-shorts`) are still accepted and ignored.
 `horizontals` and `verticals` take `--date`, `--no-overlay` (alias
-`--no-racebox`), `--force`, `--sessions-dir` and `--font`; `horizontals` also
+`--no-racebox`), `--force`, `--sessions-dir`, `--font` and `--jobs` (clips cut
+at once, default CPU threads / 4, at most 4); `horizontals` also
 `--stats` (default `<out>/stats.sqlite`). Run `videobrowser <command> --help`
 for the complete list.
 

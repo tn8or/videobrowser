@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -119,10 +120,23 @@ def _sample_times(recording: Recording) -> list[tuple[Chapter, float]]:
     return picks
 
 
+# Short seeks run side by side: each is its own ffmpeg, mostly start-up and
+# waiting on the decoder, so a handful overlap well on GPU or CPU decode.
+_SEEK_WORKERS = 6
+
+
+def _parallel(work, items: list) -> list:
+    """work(item) for each item, in order, a few at a time."""
+    if len(items) <= 1:
+        return [work(item) for item in items]
+    with ThreadPoolExecutor(max_workers=_SEEK_WORKERS) as pool:
+        return list(pool.map(work, items))
+
+
 def _sample_frames(recording: Recording, max_side: int, rotation: int = 0) -> list:
-    frames = []
-    for chapter, t in _sample_times(recording):
-        image = decode_one_frame(
+    def _one(pick):
+        chapter, t = pick
+        return decode_one_frame(
             chapter.path,
             t,
             max_side,
@@ -130,9 +144,8 @@ def _sample_frames(recording: Recording, max_side: int, rotation: int = 0) -> li
             chapter.info.height,
             rotation=rotation,
         )
-        if image is not None:
-            frames.append(image)
-    return frames
+
+    return [image for image in _parallel(_one, _sample_times(recording)) if image is not None]
 
 
 # Moments sampled for which way the camera looks (the ones in the pits or
@@ -145,21 +158,26 @@ def facing_for_recording(recording: Recording, max_side: int, profile: Profile) 
     frames at moments spread over the recording, else None (the mount guess
     from ``profile`` stands). Logs the votes either way."""
     duration = recording.duration or 0.0
-    divergences: list[float] = []
+    picks = []
     for k in range(_FACING_SAMPLES):
         t = duration * (k + 0.5) / _FACING_SAMPLES
         chapter = chapter_at(recording, t)
         if chapter is None:
             continue
         local = min(max(t - chapter.offset, 0.0), max(0.0, chapter.duration - 0.5))
+        picks.append((chapter, local))
+
+    def _one(pick):
+        chapter, local = pick
         pair = decode_frames(
             chapter.path, local, 2, max_side, chapter.info.width, chapter.info.height,
             rotation=profile.rotation,
         )
         if len(pair) == 2:
-            div = flow_divergence(pair[0], pair[1], profile.ego_masks)
-            if div is not None:
-                divergences.append(div)
+            return flow_divergence(pair[0], pair[1], profile.ego_masks)
+        return None
+
+    divergences = [d for d in _parallel(_one, picks) if d is not None]
     found = facing_from_flow(divergences)
     ahead = sum(1 for d in divergences if d > FACING_MIN_DIVERGENCE)
     back = sum(1 for d in divergences if d < -FACING_MIN_DIVERGENCE)
