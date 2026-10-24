@@ -3,10 +3,18 @@
 Local highlight extraction **and** RaceBox telemetry overlays for motorcycle
 track-day GoPro footage.
 
-`videobrowser scan` scans GoPro recordings, detects interesting moments (nearby
-riders, approaching/receding riders, kneepuck), and cuts short highlight clips.
-In the same run it can also overlay RaceBox telemetry (lap timer, track map,
-speed, lean) onto three separate output sets.
+Work happens in steps, each its own command:
+
+1. `videobrowser scan` analyses GoPro recordings: it detects interesting
+   moments (nearby riders, approaching/receding riders, kneepuck), places each
+   recording on the RaceBox log where it can, and stores everything in
+   `scan.sqlite`. It cuts no clips.
+2. `videobrowser horizontals` cuts landscape highlight clips and the RaceBox
+   telemetry overlays (lap timer, track map, speed, lean).
+3. `videobrowser verticals` cuts 1080x1920 follow-cam clips.
+4. `videobrowser shorts` lays out per-day shorts as folders of clips.
+
+Steps 2-4 read only the scan, so each can be re-run on its own.
 
 Design criteria and product decisions live in [INSTRUCTIONS.md](INSTRUCTIONS.md).
 
@@ -46,14 +54,13 @@ Credentials for auto-fetch (optional): put the racebox.pro login in
 ## Quick start
 
 ```bash
-# Scan footage, cut highlights, and produce RaceBox overlays
-videobrowser scan inputclips -o output
-
-# A whole library — folders are searched recursively
+# Analyse footage (a whole library: folders are searched recursively)
 videobrowser scan ~/Movies/GoPro -o output
 
-# Detection only, no overlays
-videobrowser scan inputclips -o output --no-overlay
+# Then cut what you want from it
+videobrowser horizontals -o output            # landscape clips + RaceBox overlays
+videobrowser verticals -o output --no-overlay # 9:16 follow-cam clips, no overlay
+videobrowser shorts -o output                 # per-day shorts (folders of clips)
 ```
 
 `videobrowser` is the installed console script. You can also run:
@@ -64,24 +71,31 @@ python -m videobrowser scan inputclips -o output
 
 ---
 
-## What a scan produces
+## What each step produces
 
 Everything is written under the `-o/--out` directory:
 
 ```
 output/
-  clips/YYYY-MM-DD/          # raw rotation-corrected highlight cuts (no overlay)
-  previews/YYYY-MM-DD/       # annotated JPEG previews of detected events
-  highlights/YYYY-MM-DD/     # highlight clips re-cut with a COMPACT telemetry overlay
-  full_sessions/YYYY-MM-DD/  # one clip per RaceBox session, out-lap -> in-lap (FULL overlay)
-  fastest_laps/YYYY-MM-DD/   # fastest timed lap per session, +/-10s (FULL overlay)
-  vertical/YYYY-MM-DD/       # 1080x1920 follow-cam copy of each highlight (VERTICAL overlay)
-  shorts/YYYY-MM-DD/         # ready-to-post shorts per day + index.html overview (see "Shorts")
-  sessions/                  # downloaded/.vbo files (default location)
-  stats.sqlite               # lap bests used for green/purple lap colouring
-  scan.sqlite                # detection log
-  events.json                # events + clip list from the last run
+  scan.sqlite                # scan: events, clip windows, rider boxes, motion, RaceBox placement
+  events.json                # scan: events from the last run
+  previews/YYYY-MM-DD/       # scan: annotated JPEG previews of detected events
+  sessions/                  # scan: downloaded .vbo files (default location)
+  clips/YYYY-MM-DD/          # horizontals: rotation-corrected highlight cuts (no overlay)
+  highlights/YYYY-MM-DD/     # horizontals: highlight clips with a COMPACT telemetry overlay
+  full_sessions/YYYY-MM-DD/  # horizontals: one clip per RaceBox session, out-lap -> in-lap (FULL overlay)
+  fastest_laps/YYYY-MM-DD/   # horizontals: fastest timed lap per session, +/-10s (FULL overlay)
+  stats.sqlite               # horizontals: lap bests used for green/purple lap colouring
+  vertical/YYYY-MM-DD/       # verticals: 1080x1920 follow-cam copy of each highlight (VERTICAL overlay)
+  shorts/YYYY-MM-DD/         # shorts: folders of clips per day + index.html overview (see "Shorts")
 ```
+
+`horizontals` and `verticals` keep clips whose file already exists (re-cut
+them with `--force`) and remove files of clip windows a re-scan dropped. Both
+take `--date` (repeatable) and `--no-overlay`. Overlays only go on recordings
+whose start time is sure: GoPro GPS time, or a clear RaceBox match from the
+scan. Rider following on verticals needs a scan from this version (the rider
+boxes are stored by `scan`); older scans get the corner-looking crop only.
 
 Date folders use the clip's GoPro creation timestamp in `Europe/Copenhagen`
 (e.g. `highlights/2026-08-01/`). Full-session and fastest-lap clips use the
@@ -123,11 +137,12 @@ without an overlay.
 
 ### 1. Full run with auto-fetch (default)
 
-Downloads any new RaceBox sessions, imports lap stats, scans footage, and writes
-all three overlay sets.
+`scan` downloads any new RaceBox sessions and analyses the footage;
+`horizontals` imports lap stats and writes all three overlay sets.
 
 ```bash
 videobrowser scan inputclips -o output
+videobrowser horizontals -o output
 ```
 
 Auto-fetch needs credentials in `racebox/fetcher/username` and
@@ -144,18 +159,17 @@ videobrowser scan inputclips -o output --no-fetch --sessions-dir /path/to/vbos
 `--sessions-dir` defaults to `<out>/sessions`. Drop your `.vbo` files there (or
 point at another folder) and skip the network with `--no-fetch`.
 
-### 3. Detection only (no overlays)
+### 3. Clips without overlays
 
 ```bash
-videobrowser scan inputclips -o output --no-overlay
+videobrowser horizontals -o output --no-overlay
+videobrowser verticals -o output --no-overlay
 ```
-
-Produces `clips/` and `previews/` only.
 
 ### 4. Custom font / stats location
 
 ```bash
-videobrowser scan inputclips -o output \
+videobrowser horizontals -o output \
   --font /System/Library/Fonts/Supplemental/Arial.ttf \
   --stats /path/to/stats.sqlite
 ```
@@ -166,7 +180,7 @@ track days.
 
 ---
 
-## Useful flags
+## Useful flags (scan)
 
 | Flag | Default | Purpose |
 |------|---------|---------|
@@ -181,33 +195,30 @@ track days.
 | `--conf` | 0.25 | YOLO confidence threshold |
 | `--exclude` | none | Repeatable; skip files/folders whose path contains the text |
 | `--follow-links` | off | Include linked files that point outside the input folders (skipped links are listed in the output) |
-| `--no-clips` | off | Detect only; do not cut clips (also skips overlays) |
 | `--previews` | 8 | Annotated preview JPEGs per recording |
-| `--max-clip-seconds` | 24 | Max highlight length |
-| `--max-clips` | 12 | Max highlights per recording |
-| `--no-overlay` | off | No overlays: skip the RaceBox stage and date/time on verticals (alias `--no-racebox`) |
-| `--no-vertical` | off | Do not write 1080x1920 follow-cam copies to `vertical/` |
-| `--no-landscape` | off | Do not write landscape clips or RaceBox overlay renders (only `vertical/`) |
-| `--no-fetch` | off | Do not auto-download RaceBox sessions (they are fetched also with `--no-overlay`, for footage without GoPro GPS) |
+| `--max-clip-seconds` | 24 | Max clip window length |
+| `--max-clips` | 12 | Max clip windows per recording |
+| `--no-fetch` | off | Do not auto-download RaceBox sessions |
 | `--sessions-dir` | `<out>/sessions` | Folder of `.vbo` sessions |
-| `--font` | Arial | TTF font for overlay text |
-| `--stats` | `<out>/stats.sqlite` | Lap-bests SQLite |
-| `--no-shorts` | off | Do not build `shorts/` after the scan |
-| `--min-speed` | 10 | Drop events below this GoPro GPS speed in km/h (standing still); 0 disables, also in the shorts |
+| `--min-speed` | 10 | Drop events below this GoPro GPS speed in km/h (standing still); 0 disables |
 
-Run `videobrowser scan --help` for the complete list.
+The clip options scan used to take (`--no-overlay`, `--no-vertical`,
+`--no-landscape`, `--no-clips`, `--no-shorts`) are still accepted and ignored.
+`horizontals` and `verticals` take `--date`, `--no-overlay` (alias
+`--no-racebox`), `--force`, `--sessions-dir` and `--font`; `horizontals` also
+`--stats` (default `<out>/stats.sqlite`). Run `videobrowser <command> --help`
+for the complete list.
 
 ---
 
 ## Shorts
 
-`scan` works through the recordings oldest first (by file creation time) and
-builds a day's shorts as soon as that day's last recording is scanned, so the
-first days are ready while the rest of a library is still running. Days with
-no newly scanned recordings are left as they are, and a day whose shorts
-failed is retried by the next scan. Copies of the same recording in several
-folders (same start time, length and file sizes) are scanned once. `videobrowser shorts -o
-output` rebuilds them on its own. Each short is a folder of the day's 9:16
+`scan` works through the recordings oldest first (by file creation time).
+Copies of the same recording in several folders (same start time, length and
+file sizes) are scanned once. `videobrowser shorts -o output` then builds the
+shorts of every scanned day (`--date` for one). Run `verticals` first so the
+shorts can copy whole vertical clips; without them every piece is cut from
+the source. Each short is a folder of the day's 9:16
 source clips, numbered in order, to put together in an editor (joining them
 with ffmpeg gives clicks in the sound):
 
@@ -254,8 +265,8 @@ profiles: `rear`, `rear_right`, `rear_rotated`; everything else is front):
 footage scanned before they existed needs `scan --force` to get them. Each piece is the whole vertical clip that covers it (crop + HUD),
 copied; `klip.txt` says which part the moment is. A piece no clip covers
 (e.g. the rear half of an overtake) is cut from the source with a crop that
-looks into the corner. For verticals without the telemetry HUD scan with
-`--no-overlay`.
+looks into the corner. For verticals without the telemetry HUD run
+`verticals --no-overlay`.
 The scan drops events where the bike stands still (below 10 km/h GoPro GPS
 speed, `scan --min-speed`). In the shorts, moments where the bike stands
 still are left out, and moments below 40 km/h (paddock, pit lane;
@@ -265,8 +276,7 @@ theme shorts. Only own crashes skip this check. Footage without GPS (e.g.
 falls back to the scene motion measured during the scan (stored from this
 version on, so rescan with `--force`). `--min-speed 0` turns the checks off.
 
-With RaceBox sessions in `--sessions-dir` (default `<out>/sessions`; also used
-with `--no-overlay`), footage without GoPro GPS is laid on the RaceBox log by
+With RaceBox sessions in `--sessions-dir` (default `<out>/sessions`), footage without GoPro GPS is laid on the RaceBox log by
 matching its scene motion against the RaceBox speed (pit stops and out-laps
 make the pattern), searched within a few minutes of the camera clock. A clear
 match gives it RaceBox speed and turn rate, so the speed checks and the

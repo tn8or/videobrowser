@@ -54,9 +54,12 @@ CREATE TABLE IF NOT EXISTS motion (
     samples TEXT NOT NULL
 );
 
--- Days whose shorts still need (re)building; cleared once a build finishes.
-CREATE TABLE IF NOT EXISTS shorts_pending (
-    date_label TEXT PRIMARY KEY
+-- Rider boxes inside the clip windows (JSON [[track_id, t, x1, y1, x2, y2,
+-- frame_w, frame_h], ...]): what the vertical crop follows, without
+-- re-running the detector.
+CREATE TABLE IF NOT EXISTS tracks (
+    recording_id TEXT PRIMARY KEY,
+    points TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS clips (
@@ -84,6 +87,10 @@ class ScanDB:
         conn.execute("PRAGMA busy_timeout=30000;")
         conn.row_factory = sqlite3.Row
         conn.executescript(SCHEMA)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(recording_meta)")}
+        if "start_source" not in columns:
+            # How start_utc was found: "gps", "racebox-motion" or "clock".
+            conn.execute("ALTER TABLE recording_meta ADD COLUMN start_source TEXT")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS scans (id INTEGER PRIMARY KEY, started_at TEXT, note TEXT)"
         )
@@ -145,22 +152,77 @@ class ScanDB:
         date_label: str,
         duration: float,
         chapters: list[dict],
+        start_source: str | None = None,
     ) -> None:
-        """*chapters*: ``[{"path", "offset", "duration"}, ...]`` in recording order."""
+        """*chapters*: ``[{"path", "offset", "duration"}, ...]`` in recording order.
+
+        *start_source*: how *start_utc* was found ("gps", "racebox-motion"
+        or "clock"); overlays go only on the first two.
+        """
         self.conn.execute(
             """
-            INSERT INTO recording_meta(recording_id, profile, rotation, start_utc, date_label, duration, chapters)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO recording_meta(
+                recording_id, profile, rotation, start_utc, date_label, duration, chapters, start_source
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(recording_id) DO UPDATE SET
                 profile=excluded.profile,
                 rotation=excluded.rotation,
                 start_utc=excluded.start_utc,
                 date_label=excluded.date_label,
                 duration=excluded.duration,
-                chapters=excluded.chapters
+                chapters=excluded.chapters,
+                start_source=excluded.start_source
             """,
-            (recording_id, profile, rotation, start_utc, date_label, duration, json.dumps(chapters)),
+            (
+                recording_id, profile, rotation, start_utc, date_label, duration,
+                json.dumps(chapters), start_source,
+            ),
         )
+        self.conn.commit()
+
+    def save_tracks(self, recording_id: str, points: list) -> None:
+        """*points*: ``TrackPoint``-like objects (track_id, t, box, frame size)."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO tracks(recording_id, points) VALUES (?, ?)",
+            (
+                recording_id,
+                json.dumps(
+                    [
+                        [p.track_id, round(p.t, 2), round(p.x1, 1), round(p.y1, 1),
+                         round(p.x2, 1), round(p.y2, 1), p.frame_w, p.frame_h]
+                        for p in points
+                    ]
+                ),
+            ),
+        )
+        self.conn.commit()
+
+    def tracks(self, recording_id: str) -> list[list]:
+        row = self.conn.execute(
+            "SELECT points FROM tracks WHERE recording_id = ?", (recording_id,)
+        ).fetchone()
+        return json.loads(row["points"]) if row else []
+
+    def clips_for(self, recording_id: str) -> list[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                "SELECT * FROM clips WHERE recording_id = ? ORDER BY t_start", (recording_id,)
+            )
+        )
+
+    def events_for(self, recording_id: str) -> list[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                "SELECT * FROM events WHERE recording_id = ? ORDER BY t_start", (recording_id,)
+            )
+        )
+
+    def set_clip_path(self, clip_id: int, column: str, path: str | None) -> None:
+        """Record an exported file: *column* is ``clip_path`` or ``vertical_path``."""
+        if column not in ("clip_path", "vertical_path"):
+            raise ValueError(column)
+        self.conn.execute(f"UPDATE clips SET {column} = ? WHERE id = ?", (path, clip_id))
         self.conn.commit()
 
     def replace_clips(self, recording_id: str, clips: list[tuple]) -> None:
@@ -196,29 +258,3 @@ class ScanDB:
 
     def all_clips(self) -> list[sqlite3.Row]:
         return list(self.conn.execute("SELECT * FROM clips ORDER BY recording_id, t_start"))
-
-    def date_labels(self, recording_ids: list[str]) -> list[str]:
-        """Output days (``recording_meta.date_label``) of *recording_ids*."""
-        if not recording_ids:
-            return []
-        marks = ",".join("?" * len(recording_ids))
-        rows = self.conn.execute(
-            f"SELECT DISTINCT date_label FROM recording_meta WHERE recording_id IN ({marks})",
-            recording_ids,
-        )
-        return sorted(row["date_label"] for row in rows)
-
-    def add_shorts_pending(self, dates: list[str]) -> None:
-        self.conn.executemany(
-            "INSERT OR IGNORE INTO shorts_pending(date_label) VALUES (?)", [(d,) for d in dates]
-        )
-        self.conn.commit()
-
-    def clear_shorts_pending(self, dates: list[str]) -> None:
-        self.conn.executemany("DELETE FROM shorts_pending WHERE date_label = ?", [(d,) for d in dates])
-        self.conn.commit()
-
-    def shorts_pending(self) -> list[str]:
-        return [row["date_label"] for row in self.conn.execute(
-            "SELECT date_label FROM shorts_pending ORDER BY date_label"
-        )]

@@ -6,7 +6,6 @@ from typing import Any
 
 from tqdm import tqdm
 
-from videobrowser.clips import export_clip
 from videobrowser.db import ScanDB
 from videobrowser.decode import FrameDecoder, decode_one_frame
 from videobrowser.events import (
@@ -21,7 +20,7 @@ from videobrowser.gopro import Chapter, Recording, chapter_at
 from videobrowser.incidents import offtrack_fraction, score_incidents
 from videobrowser.motion import DEFAULT_THRESHOLD, event_is_moving, per_second, scene_motion
 from videobrowser.preview import write_previews
-from videobrowser.profiles import CameraMap, Profile, Rect, apply_ego_mask, guess_profile_from_samples, resolve_profile
+from videobrowser.profiles import CameraMap, Rect, apply_ego_mask, guess_profile_from_samples, resolve_profile
 from videobrowser.probe import local_date_label
 from videobrowser.puck import detect_puck
 from videobrowser.riders import RiderTracker, TrackPoint, score_tracks
@@ -51,7 +50,6 @@ class ScanConfig:
     device: str = "auto"
     conf: float = 0.25
     force: bool = False
-    no_clips: bool = False
     preview_limit: int = 8
     lean_gate: float = 20.0
     max_seconds: float | None = None
@@ -61,18 +59,9 @@ class ScanConfig:
     min_speed: float = STOPPED_KMH
     max_clip_seconds: float = 24.0
     max_clips: int = 12
-    # Optional RaceboxContext; when set, overlay clips are produced after cuts.
-    racebox: Any = None
     # RaceBox speed/turn track (racebox_align.RaceboxTrack) for footage
-    # without GoPro GPS; loaded even with overlays off.
+    # without GoPro GPS.
     racebox_track: Any = None
-    # 1080x1920 follow-cam copies of each clip under ``vertical/``.
-    vertical: bool = True
-    # Landscape clips under ``clips/`` plus the RaceBox overlay renders.
-    landscape: bool = True
-    # Date/time/telemetry overlay on vertical clips (off with ``--no-overlay``).
-    overlay: bool = True
-    font_path: str = "/System/Library/Fonts/Supplemental/Arial.ttf"
 
 
 def pick_device(requested: str) -> str:
@@ -263,56 +252,6 @@ def _clear_stale_outputs(directory: Path, recording_id: str, suffix: str) -> Non
             print(f"  could not remove stale {path.name}: {exc}")
 
 
-def _export_verticals(
-    recording: Recording,
-    windows: list[ClipWindow],
-    profile: Profile,
-    config: ScanConfig,
-    tracks: dict[int, list[TrackPoint]],
-    turns: list[TurnSample],
-    rec_start_utc: float | None,
-    out_dir: Path,
-    overlay: bool = True,
-) -> None:
-    from videobrowser.themes import facing
-    from videobrowser.vertical import export_vertical, focus_samples
-
-    overlay_factory = None
-    ctx = None
-    if config.overlay and overlay:
-        try:
-            from videobrowser import racebox_stage as rbs
-
-            ctx = config.racebox or rbs.overlay_context(config.out_dir, config.font_path)
-            if rec_start_utc is None:
-                rec_start_utc = rbs.recording_start_utc(recording, ctx)
-        except Exception as exc:
-            print(f"  vertical: overlay unavailable ({exc}); exporting without it")
-            ctx = None
-
-    _clear_stale_outputs(out_dir, recording.recording_id, ".mp4")
-    for window in windows:
-        dest = out_dir / _clip_name(window)
-        if ctx is not None:
-
-            def overlay_factory(w, h, fps, window=window):
-                return rbs.overlay_source(
-                    ctx, recording, window, w, h, fps, rec_start_utc, "vertical"
-                )
-
-        try:
-            export_vertical(
-                recording,
-                window,
-                dest,
-                profile.rotation,
-                focus_samples(window, tracks, turns, facing(profile.name)),
-                overlay_factory=overlay_factory,
-            )
-        except Exception as exc:
-            print(f"  vertical failed {dest.name}: {exc}")
-
-
 def scan_recording(
     recording: Recording,
     config: ScanConfig,
@@ -449,11 +388,15 @@ def scan_recording(
     )
     clock_utc = start_utc
     speeds, turns, start_utc = gps_for_recording(recording, config, motion_samples, start_utc)
-    # Placed on the RaceBox log by scene motion: overlays use that start too.
-    rb_start_utc = start_utc if start_utc != clock_utc else None
-    # Overlays only where the RaceBox/camera link is sure: GoPro GPS time, or
-    # a clear scene-motion match. A bare camera clock may be seconds off.
-    overlay_sure = bool(speeds) or rb_start_utc is not None
+    # How the start is known decides whether exports may put an overlay on
+    # it: GoPro GPS time and a clear RaceBox match are sure, a bare camera
+    # clock may be seconds off.
+    if start_utc != clock_utc:
+        start_source = "racebox-motion"
+    elif speeds:
+        start_source = "gps"
+    else:
+        start_source = "clock"
     if config.min_speed > 0 and events:
         before_speed = len(events)
         events = [
@@ -476,47 +419,6 @@ def scan_recording(
         max_clips=config.max_clips,
     )
     date_label = local_date_label(start_utc)
-    clip_dir = config.out_dir / "clips" / date_label
-    write_landscape = config.landscape and not config.no_clips
-    if write_landscape:
-        _clear_stale_outputs(clip_dir, recording.recording_id, ".mp4")
-    clip_records: list[tuple[ClipWindow, Path | None]] = []
-    for window in windows:
-        dest = clip_dir / _clip_name(window)
-        path: Path | None = None
-        if write_landscape:
-            try:
-                path = export_clip(recording, window, dest, rotation=profile.rotation)
-            except RuntimeError as exc:
-                print(f"  clip failed {dest.name}: {exc}")
-        clip_records.append((window, path))
-
-    rec_start_utc: float | None = rb_start_utc
-    if (config.racebox is not None or config.overlay) and not overlay_sure:
-        print("  overlays skipped: no sure RaceBox match for this recording")
-    if config.racebox is not None and write_landscape and overlay_sure:
-        try:
-            from videobrowser.racebox_stage import run_for_recording
-
-            rec_start_utc = run_for_recording(
-                recording, windows, profile.rotation, config.racebox, rb_start_utc
-            )
-        except Exception as exc:
-            print(f"  racebox overlays failed: {exc}")
-
-    if config.vertical and not config.no_clips and windows:
-        _export_verticals(
-            recording,
-            windows,
-            profile,
-            config,
-            _merge_tracks(tracks, focus_tracks),
-            turns,
-            rec_start_utc,
-            config.out_dir / "vertical" / date_label,
-            overlay=overlay_sure,
-        )
-
     preview_dir = config.out_dir / "previews" / date_label
     if config.preview_limit and events:
         _clear_stale_outputs(preview_dir, recording.recording_id, ".jpg")
@@ -542,34 +444,25 @@ def scan_recording(
                 e.t_end,
                 e.score,
                 e.track_id,
-                next(
-                    (
-                        str(path)
-                        for window, path in clip_records
-                        if path and e in window.events
-                    ),
-                    None,
-                ),
+                None,
                 dumps_extra(e.extra),
             )
             for e in events
         ],
     )
-    vertical_dir = config.out_dir / "vertical" / date_label
+    # Clip windows only: ``horizontals`` and ``verticals`` cut them later.
     db.replace_clips(
         recording.recording_id,
+        [(w.t_start, w.t_end, "+".join(w.types), w.score, None, None) for w in windows],
+    )
+    # The rider boxes the vertical crop follows, inside the windows only.
+    db.save_tracks(
+        recording.recording_id,
         [
-            (
-                window.t_start,
-                window.t_end,
-                "+".join(window.types),
-                window.score,
-                str(path) if path else None,
-                str(vertical_dir / _clip_name(window))
-                if (vertical_dir / _clip_name(window)).exists()
-                else None,
-            )
-            for window, path in clip_records
+            point
+            for points in _merge_tracks(tracks, focus_tracks).values()
+            for point in points
+            if any(w.t_start <= point.t <= w.t_end for w in windows)
         ],
     )
     db.save_recording_meta(
@@ -583,12 +476,13 @@ def scan_recording(
             {"path": str(ch.path), "offset": ch.offset, "duration": ch.duration}
             for ch in recording.chapters
         ],
+        start_source,
     )
     db.save_motion(recording.recording_id, per_second(motion_samples))
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=True)
     extra = f"  dropped {dropped} stationary" if dropped else ""
     print(
-        f"  events={len(events)} clips={sum(1 for _, p in clip_records if p)} "
+        f"  events={len(events)} clip windows={len(windows)} "
         f"types={sorted({e.type for e in events}) or '-'}{extra}"
     )
     return events
