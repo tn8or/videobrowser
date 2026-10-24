@@ -30,19 +30,22 @@ _PREFETCH = 16
 # failing and has never worked (VideoToolbox on Windows, cuda without an
 # NVIDIA card) is skipped, so each short seek does not pay for its start-up.
 _MODE_LOG: dict[str, list[int]] = {}
+_MODE_LOCK = threading.Lock()  # the profile/facing seeks run in parallel
 _GIVE_UP_AFTER = 2
 
 
 def _note(name: str, ok: bool) -> None:
-    log = _MODE_LOG.setdefault(name, [0, 0])
-    log[1 if ok else 0] += 1
+    with _MODE_LOCK:
+        log = _MODE_LOG.setdefault(name, [0, 0])
+        log[1 if ok else 0] += 1
 
 
 def _modes() -> list[tuple[str, list[str], bool]]:
     """Hardware modes worth trying now, in order."""
     out = []
     for mode in _DECODE_MODES:
-        failures, successes = _MODE_LOG.get(mode[0], (0, 0))
+        with _MODE_LOCK:
+            failures, successes = _MODE_LOG.get(mode[0], (0, 0))
         if successes or failures < _GIVE_UP_AFTER:
             out.append(mode)
     return out
