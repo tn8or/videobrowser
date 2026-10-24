@@ -61,6 +61,7 @@ videobrowser scan ~/Movies/GoPro -o output
 videobrowser horizontals -o output            # landscape clips + RaceBox overlays
 videobrowser verticals -o output --no-overlay # 9:16 follow-cam clips, no overlay
 videobrowser shorts -o output                 # per-day shorts (folders of clips)
+videobrowser facing -o output                 # re-read front/rear per camera, if a short has them swapped
 ```
 
 `videobrowser` is the installed console script. You can also run:
@@ -113,7 +114,9 @@ RaceBox session date. Recordings with no timestamp go under `unknown/`.
 - **Vertical** (`vertical/`): the compact elements laid out for 9:16 phone
   video, kept clear of the Reels / TikTok / Shorts UI. The 9:16 crop pans to
   follow the rider that triggered the clip (else any rider in view), and
-  keeps that rider as they get smaller. Only after nobody has been in view
+  keeps that rider as they get smaller. Boxes that sit still on the frame
+  edge (the camera's own exhaust or fairing) are never followed, nor scored
+  as riders. Only after nobody has been in view
   for 1.5 s does it look into the corner like a rider would, from the GoPro
   GPS turn rate (left in a left-hander on a front camera, mirrored on a rear
   one). It opens centred unless the subject is already in view. Without RaceBox sessions the overlay uses GoPro telemetry or
@@ -252,11 +255,13 @@ envelopes match clearly; otherwise GPS stands. Turn the audio step off with
 `--no-audio-sync`.
 
 **Themes.** Event meaning depends on which way the camera faces. The scan
-reads it from the picture while riding (the scene grows towards a camera
-looking ahead and shrinks into one looking back) and logs it when that
-disagrees with the mount guess; without a clear reading the profile decides
-(`rear`, `rear_right`, `rear_rotated` look back, everything else ahead).
-Scans from before this need `scan --force` to get it:
+reads it from the picture: at 41 moments spread over each recording it
+compares two consecutive frames, and the scene grows towards a camera looking
+ahead and shrinks into one looking back (`facing by scene flow: ...` in the
+log, with the votes). Without a clear reading the mount guess decides (`rear`,
+`rear_right`, `rear_rotated` look back, everything else ahead).
+`videobrowser facing -o output` (optionally `--date`) re-reads it for an
+existing scan in seconds per recording, without a full `scan --force`:
 
 | Theme | Rule | Reliability |
 |-------|------|-------------|

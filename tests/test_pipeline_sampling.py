@@ -1,4 +1,7 @@
+import shutil
 from pathlib import Path
+
+import pytest
 
 from videobrowser.gopro import Chapter, Recording
 from videobrowser.pipeline import _sample_times
@@ -51,3 +54,31 @@ def test_racebox_match_on_the_camera_second_counts_as_racebox(monkeypatch):
     assert (speeds, turns, start, source) == (["speed"], ["turn"], 1785571200.0, "racebox-motion")
     config.racebox_track = None
     assert pipeline.gps_for_recording(rec, config, [], 1785571200.0)[3] == "clock"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg missing")
+@pytest.mark.parametrize("reverse,expected", [(False, "front"), (True, "rear")])
+def test_facing_from_a_video_moving_into_or_out_of_the_scene(tmp_path, reverse, expected):
+    import cv2
+    import numpy as np
+
+    from videobrowser.pipeline import facing_for_recording
+    from videobrowser.probe import probe
+    from videobrowser.profiles import REAR
+
+    rng = np.random.default_rng(0)
+    base = cv2.GaussianBlur((rng.random((720, 1280)) * 255).astype(np.uint8), (5, 5), 1.5)
+    base = cv2.cvtColor(base, cv2.COLOR_GRAY2BGR)
+    path = tmp_path / "zoom.mp4"
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (640, 360))
+    n = 300  # 10 s, the scene growing 1% a frame (a cycle of 30 frames)
+    order = range(n - 1, -1, -1) if reverse else range(n)
+    for i in order:
+        m = cv2.getRotationMatrix2D((700.0, 300.0), 0.0, 1.0 + 0.01 * (i % 30))
+        writer.write(cv2.resize(cv2.warpAffine(base, m, (1280, 720)), (640, 360)))
+    writer.release()
+    info = probe(path)
+    rec = Recording("Z", "", "Z")
+    rec.chapters.append(Chapter(path, "", 1, "Z", info.duration, 0.0, info))
+    # The left-side ego mask of a "rear" mount guess must not matter.
+    assert facing_for_recording(rec, 640, REAR) == expected

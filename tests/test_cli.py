@@ -91,3 +91,27 @@ def test_scan_date_keeps_only_that_day(tmp_path, monkeypatch):
     assert cli.scan_cmd(args) == 0 and scanned == ["B"]
     args = build_parser().parse_args(["scan", "in", "-o", str(out), "--date", "2026-09-01"])
     assert cli.scan_cmd(args) == 1
+
+
+def test_facing_command_stores_the_facing_without_a_scan(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    import videobrowser.cli as cli
+    import videobrowser.exports as exports
+    import videobrowser.pipeline as pipeline
+    from videobrowser.db import ScanDB
+
+    out = tmp_path / "out"
+    db = ScanDB.open(out / "scan.sqlite")
+    db.save_recording_meta("GX", "rear", 0, 1.0, "2026-08-14", 60.0, [{"path": "x.mp4", "offset": 0.0, "duration": 60.0}])
+    db.close()
+    monkeypatch.setattr(exports, "recording_from_meta", lambda row: Path(row["recording_id"]))
+    seen = []
+    monkeypatch.setattr(
+        pipeline, "facing_for_recording", lambda rec, size, profile: seen.append(profile.name) or "front"
+    )
+    assert cli.main(["facing", "-o", str(out)]) == 0
+    assert seen == ["rear"]
+    db = ScanDB.open(out / "scan.sqlite")
+    assert db.recording_metas()[0]["facing"] == "front"
+    db.close()

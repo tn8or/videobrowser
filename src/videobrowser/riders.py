@@ -177,6 +177,38 @@ def _runs(mask: list[bool], points: list[TrackPoint]) -> list[list[TrackPoint]]:
     return runs
 
 
+# A box this close to the left, right or bottom edge (fraction of the frame)
+# touches it.
+_EDGE_FRAC = 0.02
+# Parts of the camera's own bike (exhaust, fairing, tyre) that YOLO takes for
+# a motorcycle: a box on the frame edge that hardly moves for this long.
+EGO_MIN_SECONDS = 2.0
+EGO_EDGE_SHARE = 0.6
+EGO_MAX_DRIFT = 0.04
+EGO_MAX_SIZE_CHANGE = 0.1
+
+
+def is_ego_track(points: list[TrackPoint]) -> bool:
+    """True for a track that is part of the camera's own bike, not a rider:
+    it sits on the left, right or bottom edge and barely moves or changes
+    size in the frame."""
+    if len(points) < 5 or points[-1].t - points[0].t < EGO_MIN_SECONDS:
+        return False
+
+    def on_edge(p: TrackPoint) -> bool:
+        w, h = max(1, p.frame_w), max(1, p.frame_h)
+        return p.x1 <= _EDGE_FRAC * w or p.x2 >= (1 - _EDGE_FRAC) * w or p.y2 >= (1 - _EDGE_FRAC) * h
+
+    if sum(on_edge(p) for p in points) < EGO_EDGE_SHARE * len(points):
+        return False
+    cx = [0.5 * (p.x1 + p.x2) / max(1, p.frame_w) for p in points]
+    cy = [0.5 * (p.y1 + p.y2) / max(1, p.frame_h) for p in points]
+    heights = np.array([p.height for p in points], dtype=np.float64)
+    # A rider closing in or dropping back changes size; the bike's own parts do not.
+    steady = float(np.std(heights)) < EGO_MAX_SIZE_CHANGE * max(1e-6, float(np.mean(heights)))
+    return steady and float(np.std(cx)) < EGO_MAX_DRIFT and float(np.std(cy)) < EGO_MAX_DRIFT
+
+
 def score_tracks(
     tracks: dict[int, list[TrackPoint]],
     recording_id: str,
@@ -185,6 +217,8 @@ def score_tracks(
     params = params or RiderParams()
     events: list[Event] = []
     for track_id, raw in tracks.items():
+        if is_ego_track(raw):
+            continue
         points = [p for p in raw if p.height_frac >= params.min_box_height_frac]
         if len(points) < params.min_track_points:
             continue

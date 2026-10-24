@@ -7,7 +7,7 @@ from typing import Any
 from tqdm import tqdm
 
 from videobrowser.db import ScanDB
-from videobrowser.decode import FrameDecoder, decode_one_frame
+from videobrowser.decode import FrameDecoder, decode_frames, decode_one_frame
 from videobrowser.events import (
     SPEED_EXEMPT,
     ClipWindow,
@@ -20,7 +20,7 @@ from videobrowser.gopro import Chapter, Recording, chapter_at
 from videobrowser.incidents import offtrack_fraction, road_colour, score_incidents
 from videobrowser.motion import (
     DEFAULT_THRESHOLD,
-    TRACK_MOTION,
+    FACING_MIN_DIVERGENCE,
     event_is_moving,
     facing_from_flow,
     flow_divergence,
@@ -28,7 +28,14 @@ from videobrowser.motion import (
     scene_motion,
 )
 from videobrowser.preview import write_previews
-from videobrowser.profiles import CameraMap, Rect, apply_ego_mask, guess_profile_from_samples, resolve_profile
+from videobrowser.profiles import (
+    CameraMap,
+    Profile,
+    Rect,
+    apply_ego_mask,
+    guess_profile_from_samples,
+    resolve_profile,
+)
 from videobrowser.probe import local_date_label
 from videobrowser.puck import detect_puck
 from videobrowser.riders import RiderTracker, TrackPoint, score_tracks
@@ -124,6 +131,41 @@ def _sample_frames(recording: Recording, max_side: int, rotation: int = 0) -> li
         if image is not None:
             frames.append(image)
     return frames
+
+
+# Moments sampled for which way the camera looks (the ones in the pits or
+# standing still do not vote).
+_FACING_SAMPLES = 41
+
+
+def facing_for_recording(recording: Recording, max_side: int, profile: Profile) -> str | None:
+    """"front" or "rear" from how the scene moves between two consecutive
+    frames at moments spread over the recording, else None (the mount guess
+    from ``profile`` stands). Logs the votes either way."""
+    duration = recording.duration or 0.0
+    divergences: list[float] = []
+    for k in range(_FACING_SAMPLES):
+        t = duration * (k + 0.5) / _FACING_SAMPLES
+        chapter = chapter_at(recording, t)
+        if chapter is None:
+            continue
+        local = min(max(t - chapter.offset, 0.0), max(0.0, chapter.duration - 0.5))
+        pair = decode_frames(
+            chapter.path, local, 2, max_side, chapter.info.width, chapter.info.height,
+            rotation=profile.rotation,
+        )
+        if len(pair) == 2:
+            div = flow_divergence(pair[0], pair[1], profile.ego_masks)
+            if div is not None:
+                divergences.append(div)
+    found = facing_from_flow(divergences)
+    ahead = sum(1 for d in divergences if d > FACING_MIN_DIVERGENCE)
+    back = sum(1 for d in divergences if d < -FACING_MIN_DIVERGENCE)
+    print(
+        f"  facing by scene flow: {found or 'unclear'} ({ahead} ahead / {back} back, "
+        f"{len(divergences)} moments; mount guess {profile.name} = {facing(profile.name)})"
+    )
+    return found
 
 
 def _lean_for_recording(recording: Recording) -> list[LeanSample]:
@@ -312,6 +354,7 @@ def scan_recording(
             f"pipelines={','.join(profile.pipelines)}"
         )
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=False)
+    camera_facing = facing_for_recording(recording, config.max_side, profile)
 
     if tracker is not None:
         tracker.reset()
@@ -320,9 +363,6 @@ def scan_recording(
     focus_tracks: dict[int, list[TrackPoint]] = {}
     puck_hits: list[tuple[float, float]] = []
     motion_samples: list[tuple[float, float]] = []
-    # Expansion or contraction of the scene while moving: which way the
-    # camera looks, surer than the mount guess from still frames.
-    divergences: list[float] = []
     prev_image = None
     lean_samples = _lean_for_recording(recording) if "puck" in profile.pipelines else []
 
@@ -362,12 +402,9 @@ def scan_recording(
             ):
                 global_t = chapter.offset + frame.t
                 if prev_image is not None:
-                    motion = scene_motion(prev_image, frame.image, profile.ego_masks)
-                    motion_samples.append((global_t, motion))
-                    if motion >= TRACK_MOTION and len(motion_samples) % 5 == 0:
-                        div = flow_divergence(prev_image, frame.image, profile.ego_masks)
-                        if div is not None:
-                            divergences.append(div)
+                    motion_samples.append(
+                        (global_t, scene_motion(prev_image, frame.image, profile.ego_masks))
+                    )
                 prev_image = frame.image
                 if "riders" in profile.pipelines and tracker is not None:
                     masked = apply_ego_mask(frame.image, profile)
@@ -414,10 +451,6 @@ def scan_recording(
     speeds, turns, start_utc, start_source = gps_for_recording(
         recording, config, motion_samples, start_utc
     )
-    camera_facing = facing_from_flow(divergences)
-    guessed = facing(profile.name)
-    if camera_facing and camera_facing != guessed:
-        print(f"  camera looks {camera_facing} by scene flow (mount guess {profile.name} said {guessed})")
     if config.min_speed > 0 and events:
         before_speed = len(events)
         events = [

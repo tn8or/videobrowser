@@ -1,4 +1,4 @@
-from videobrowser.riders import TrackPoint, score_tracks
+from videobrowser.riders import TrackPoint, is_ego_track, score_tracks
 
 
 def _pt(t: float, height_frac: float, track_id: int = 1) -> TrackPoint:
@@ -31,3 +31,11 @@ def test_receding():
     points = [_pt(i * 0.2, 0.28 - i * 0.02) for i in range(12)]
     events = score_tracks({1: points}, "GX-0011")
     assert any(e.type == "receding_rider" for e in events)
+
+
+def test_own_exhaust_on_the_frame_edge_is_not_a_rider():
+    exhaust = [_pt(i * 0.2, 0.5) for i in range(20)]  # same box on the bottom edge for 4 s
+    assert is_ego_track(exhaust)
+    assert score_tracks({1: exhaust}, "GX-0014") == []
+    closing = [_pt(i * 0.2, 0.08 + i * 0.03) for i in range(20)]  # also on the edge, but growing
+    assert not is_ego_track(closing)

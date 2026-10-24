@@ -166,6 +166,14 @@ def build_parser() -> argparse.ArgumentParser:
                 help="Stats SQLite for lap bests (default: <out>/stats.sqlite)",
             )
 
+    facing_cmd_p = sub.add_parser(
+        "facing",
+        help="Re-read which way each scanned camera looks (front/rear) from the picture, without a full scan",
+    )
+    facing_cmd_p.add_argument("-o", "--out", type=Path, required=True, help="Scan output directory")
+    facing_cmd_p.add_argument("--date", action="append", default=[], metavar="YYYY-MM-DD", help="Only this day (repeatable)")
+    facing_cmd_p.add_argument("--size", type=int, default=640, help="Max analysis side in pixels")
+
     shorts = sub.add_parser(
         "shorts",
         help="Build per-day vertical shorts (mixed action + themes) from a finished scan",
@@ -217,6 +225,38 @@ def shorts_cmd(args: argparse.Namespace) -> int:
         render=not args.dry_run,
         min_speed=args.min_speed,
     )
+    return 0
+
+
+def facing_cmd(args: argparse.Namespace) -> int:
+    from dataclasses import replace
+
+    from videobrowser.exports import recording_from_meta
+    from videobrowser.pipeline import facing_for_recording
+    from videobrowser.probe import ProbeError
+    from videobrowser.profiles import PROFILES, UNKNOWN
+
+    out = args.out.expanduser().resolve()
+    if not (out / "scan.sqlite").exists():
+        print(f"no scan.sqlite in {out}", file=sys.stderr)
+        return 1
+    db = ScanDB.open(out / "scan.sqlite")
+    try:
+        for meta in db.recording_metas():
+            if args.date and meta["date_label"] not in args.date:
+                continue
+            rid = meta["recording_id"]
+            try:
+                recording = recording_from_meta(meta)
+            except (ProbeError, OSError) as exc:
+                print(f"{rid}: source unavailable ({exc}); skipped")
+                continue
+            print(rid)
+            profile = replace(PROFILES.get(meta["profile"], UNKNOWN), rotation=int(meta["rotation"]))
+            db.set_facing(rid, facing_for_recording(recording, args.size, profile))
+    finally:
+        db.close()
+    print("next: videobrowser verticals --force / shorts -o " + str(out))
     return 0
 
 
@@ -332,6 +372,8 @@ def main(argv: list[str] | None = None) -> int:
         return scan_cmd(args)
     if args.cmd == "shorts":
         return shorts_cmd(args)
+    if args.cmd == "facing":
+        return facing_cmd(args)
     if args.cmd in ("horizontals", "verticals"):
         return exports_cmd(args)
     parser.error(f"unknown command {args.cmd}")
