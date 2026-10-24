@@ -76,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional cameras.json override. Not inferred from GoPro filenames.",
     )
     scan.add_argument("--model", default="yolo11n.pt", help="Ultralytics model path or name")
-    scan.add_argument("--device", default="auto", help="auto | mps | cpu | coreml")
+    scan.add_argument("--device", default="auto", help="auto | cuda | mps | cpu | coreml")
     scan.add_argument("--conf", type=float, default=0.25, help="YOLO confidence threshold")
     scan.add_argument("--force", action="store_true", help="Reprocess recordings already in the SQLite log")
     scan.add_argument("--previews", type=int, default=8, help="Annotated preview JPEGs per recording")
