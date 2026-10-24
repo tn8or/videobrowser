@@ -184,7 +184,8 @@ def build_parser() -> argparse.ArgumentParser:
     facing_cmd_p.add_argument(
         "--clear",
         action="store_true",
-        help="Forget every hand-set facing and measure again (combine with --set to start over)",
+        help="Forget every hand-set facing (for all days, also with --date) and measure again; "
+        "combine with --set to start over",
     )
 
     shorts = sub.add_parser(
