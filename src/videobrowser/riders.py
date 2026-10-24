@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -58,8 +59,10 @@ class RiderTracker:
     conf: float
     imgsz: int = 640
     classes: tuple[int, ...] = (0, 3)  # person, motorcycle
+    tensorrt: bool = False
     _model: object | None = field(default=None, init=False, repr=False)
     _started: bool = field(default=False, init=False)
+    engine: bool = field(default=False, init=False)
 
     def load(self) -> None:
         if self._model is not None:
@@ -72,7 +75,34 @@ class RiderTracker:
             exported = model.export(format="coreml", imgsz=self.imgsz, nms=True)
             self._model = YOLO(exported)
             return
+        if self.tensorrt and str(self.device).startswith("cuda"):
+            engine = self._engine(path)
+            if engine is not None:
+                self._model = YOLO(engine, task="detect")
+                self.engine = True
+                return
         self._model = YOLO(path)
+
+    def _engine(self, path: str) -> str | None:
+        """TensorRT engine for *path* at this size in FP16, built once and kept
+        next to the model; None (plain PyTorch) when the build fails."""
+        from ultralytics import YOLO
+
+        if path.endswith(".engine"):
+            return path
+        cached = Path(path).with_name(f"{Path(path).stem}-{self.imgsz}-fp16.engine")
+        if cached.exists():
+            return str(cached)
+        print(f"tensorrt: building {cached.name} (a few minutes, once)")
+        try:
+            built = YOLO(path).export(
+                format="engine", imgsz=self.imgsz, device=self.device, **self._precision()
+            )
+            Path(built).replace(cached)
+        except Exception as exc:
+            print(f"tensorrt: build failed ({exc}); using PyTorch")
+            return None
+        return str(cached)
 
     def reset(self) -> None:
         self._started = False
@@ -150,7 +180,7 @@ class RiderTracker:
         Newer ultralytics takes ``quantize=16`` and warns on every frame for
         the older ``half=True``.
         """
-        if not str(self.device).startswith("cuda"):
+        if self.engine or not str(self.device).startswith("cuda"):
             return {}
         try:
             from ultralytics.cfg import DEFAULT_CFG_DICT

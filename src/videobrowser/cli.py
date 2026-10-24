@@ -78,6 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--model", default="yolo11n.pt", help="Ultralytics model path or name")
     scan.add_argument("--device", default="auto", help="auto | cuda | mps | cpu | coreml")
     scan.add_argument("--conf", type=float, default=0.25, help="YOLO confidence threshold")
+    scan.add_argument(
+        "--tensorrt",
+        action="store_true",
+        help="On cuda: run the detector as a TensorRT FP16 engine (built once next to the model)",
+    )
     scan.add_argument("--force", action="store_true", help="Reprocess recordings already in the SQLite log")
     scan.add_argument("--previews", type=int, default=8, help="Annotated preview JPEGs per recording")
     scan.add_argument(
@@ -351,8 +356,12 @@ def scan_cmd(args: argparse.Namespace) -> int:
     out.mkdir(parents=True, exist_ok=True)
     db = ScanDB.open(out / "scan.sqlite")
     device = pick_device(args.device)
-    tracker = RiderTracker(model_path=args.model, device=device, conf=args.conf, imgsz=args.size)
-    print(f"detector: {args.model} on {device}")
+    tracker = RiderTracker(
+        model_path=args.model, device=device, conf=args.conf, imgsz=args.size, tensorrt=args.tensorrt
+    )
+    if args.tensorrt and device == "cuda":
+        tracker.load()
+    print(f"detector: {args.model} on {device}{' (TensorRT)' if getattr(tracker, 'engine', False) else ''}")
 
     config = ScanConfig(
         out_dir=out,

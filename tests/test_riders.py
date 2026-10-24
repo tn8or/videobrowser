@@ -56,3 +56,62 @@ def test_fp16_uses_quantize_when_ultralytics_has_it(monkeypatch):
     cfg.DEFAULT_CFG_DICT = {"half": False}
     assert tracker._precision() == {"half": True}
     assert RiderTracker(model_path="x.pt", device="mps", conf=0.25)._precision() == {}
+
+
+def test_tensorrt_engine_is_built_once_and_cached(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from videobrowser.riders import RiderTracker
+
+    built = []
+
+    class FakeYOLO:
+        def __init__(self, path, task=None):
+            self.path = path
+
+        def export(self, **kwargs):
+            built.append(kwargs)
+            out = tmp_path / "yolo11n.engine"
+            out.write_text("engine")
+            return str(out)
+
+    ul = types.ModuleType("ultralytics")
+    ul.YOLO = FakeYOLO
+    cfg = types.ModuleType("ultralytics.cfg")
+    cfg.DEFAULT_CFG_DICT = {"quantize": None}
+    monkeypatch.setitem(sys.modules, "ultralytics", ul)
+    monkeypatch.setitem(sys.modules, "ultralytics.cfg", cfg)
+
+    model = str(tmp_path / "yolo11n.pt")
+    tracker = RiderTracker(model_path=model, device="cuda", conf=0.25, tensorrt=True)
+    tracker.load()
+    assert tracker.engine and tracker._model.path.endswith("yolo11n-640-fp16.engine")
+    assert built == [{"format": "engine", "imgsz": 640, "device": "cuda", "quantize": 16}]
+    assert tracker._precision() == {}  # the engine fixes its own precision
+
+    again = RiderTracker(model_path=model, device="cuda", conf=0.25, tensorrt=True)
+    again.load()
+    assert len(built) == 1 and again.engine
+
+
+def test_tensorrt_build_failure_falls_back_to_pytorch(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from videobrowser.riders import RiderTracker
+
+    class FakeYOLO:
+        def __init__(self, path, task=None):
+            self.path = path
+
+        def export(self, **kwargs):
+            raise RuntimeError("no tensorrt")
+
+    ul = types.ModuleType("ultralytics")
+    ul.YOLO = FakeYOLO
+    monkeypatch.setitem(sys.modules, "ultralytics", ul)
+    monkeypatch.setitem(sys.modules, "ultralytics.cfg", types.ModuleType("ultralytics.cfg"))
+    tracker = RiderTracker(model_path=str(tmp_path / "m.pt"), device="cuda", conf=0.25, tensorrt=True)
+    tracker.load()
+    assert not tracker.engine and tracker._model.path.endswith("m.pt")

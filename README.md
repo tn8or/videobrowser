@@ -58,6 +58,13 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 python -c "import torch; print(torch.cuda.is_available())"   # should print True
 ```
 
+`scan --tensorrt` then runs the detector as a TensorRT FP16 engine, usually
+2-3x faster than PyTorch on RTX cards. The first run builds
+`yolo11n-640-fp16.engine` next to the model, which takes a few minutes, and
+ultralytics installs `tensorrt` and `onnx` itself if they are missing. Delete
+the `.engine` file after a driver or TensorRT update. If the build fails, scan
+falls back to PyTorch.
+
 `scan` then logs `detector: yolo11n.pt on cuda`.
 
 Log in to racebox.pro once for auto-fetch: `python racebox/fetcher/download_sessions.py --login`
