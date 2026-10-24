@@ -81,8 +81,12 @@ def fetch_sessions(sessions_dir: Path, headful: bool = False, max_clicks: int = 
     fetcher_dir = root / "fetcher"
     user_f = fetcher_dir / "username"
     pass_f = fetcher_dir / "password"
-    if not user_f.exists() or not pass_f.exists():
-        print("racebox: fetch skipped (missing fetcher/username or fetcher/password)")
+    auth_f = fetcher_dir / "auth_state.json"
+    if not auth_f.exists() and not (user_f.exists() and pass_f.exists()):
+        print(
+            "racebox: fetch skipped (not logged in; run "
+            "python racebox/fetcher/download_sessions.py --login)"
+        )
         return
     try:
         if str(fetcher_dir) not in sys.path:
@@ -99,8 +103,8 @@ def fetch_sessions(sessions_dir: Path, headful: bool = False, max_clicks: int = 
         # fresh sessions dir actually re-downloads, rather than being skipped
         # because the file was previously saved somewhere else.
         tracker = dl.DownloadTracker(sessions_dir / "downloads.db")
-        username = dl.read_secret(user_f)
-        password = dl.read_secret(pass_f)
+        username = dl.read_optional_secret(user_f)
+        password = dl.read_optional_secret(pass_f)
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=not headful)
             context = dl.new_context(browser)

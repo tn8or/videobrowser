@@ -26,6 +26,14 @@ def read_secret(path: Path) -> str:
     return value
 
 
+def read_optional_secret(path: Path) -> str | None:
+    """Like read_secret, but None when the file is missing or empty."""
+    try:
+        return read_secret(path)
+    except (FileNotFoundError, ValueError):
+        return None
+
+
 class DownloadTracker:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -65,13 +73,6 @@ def extract_session_id(url: str) -> str:
     """Extract session ID from URL like /webapp/sessions/12345"""
     match = re.search(r"/sessions/(\d+)", url)
     return match.group(1) if match else url
-
-
-def read_secret(path: Path) -> str:
-    value = path.read_text(encoding="utf-8").strip()
-    if not value:
-        raise ValueError(f"Empty secret in {path}")
-    return value
 
 
 def find_first_visible(page, selectors: Iterable[str]):
@@ -161,14 +162,15 @@ def new_context(browser, auth_state: Path = AUTH_STATE_PATH):
     return browser.new_context(accept_downloads=True)
 
 
-def ensure_logged_in(page, username: str, password: str) -> None:
+def ensure_logged_in(page, username: str | None = None, password: str | None = None) -> None:
     """Use saved cookies if still valid, else try a scripted login; raise if both fail."""
     if is_logged_in(page):
         return
-    try:
-        login(page, username, password)
-    except Exception:
-        pass
+    if username and password:
+        try:
+            login(page, username, password)
+        except Exception:
+            pass
     if is_logged_in(page):
         page.context.storage_state(path=str(AUTH_STATE_PATH))
         return
@@ -178,7 +180,36 @@ def ensure_logged_in(page, username: str, password: str) -> None:
     )
 
 
-CHROME_BIN = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+def find_chrome() -> str:
+    """Path to a desktop Chrome/Chromium; CHROME_BIN overrides the search."""
+    import shutil
+
+    override = os.environ.get("CHROME_BIN")
+    if override:
+        return override
+    candidates: list[str] = []
+    if sys.platform == "darwin":
+        candidates.append("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    elif os.name == "nt":
+        for base in (
+            os.environ.get("PROGRAMFILES"),
+            os.environ.get("PROGRAMFILES(X86)"),
+            os.environ.get("LOCALAPPDATA"),
+        ):
+            if base:
+                candidates.append(str(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"))
+    for path in candidates:
+        if Path(path).exists():
+            return path
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"):
+        found = shutil.which(name)
+        if found:
+            return found
+    raise FileNotFoundError(
+        "could not find Google Chrome; install it or set CHROME_BIN to its path"
+    )
+
+
 CHROME_PROFILE_DIR = Path(__file__).resolve().parent / "chrome_profile"
 CDP_PORT = 9333
 
@@ -213,11 +244,16 @@ def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
     import subprocess
     import urllib.request
 
+    chrome = find_chrome()
     CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     tty = _tty_state()
+    if os.name == "nt":
+        detach = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    else:
+        detach = {"start_new_session": True}
     proc = subprocess.Popen(
         [
-            CHROME_BIN,
+            chrome,
             f"--user-data-dir={CHROME_PROFILE_DIR}",
             f"--remote-debugging-port={CDP_PORT}",
             "--no-first-run",
@@ -227,7 +263,7 @@ def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **detach,
     )
     try:
         # Chrome can leave the terminal in raw mode (Enter shows as ^M).
@@ -258,8 +294,11 @@ def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
         # Chrome runs in its own session: stop the whole group, the terminal
         # closing no longer does.
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
+            if os.name == "nt":
+                proc.terminate()
+            else:
+                os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
             pass
 
 
@@ -750,12 +789,13 @@ def main() -> int:
     args = parser.parse_args()
 
     script_dir = Path(__file__).resolve().parent
-    username = read_secret(script_dir / "username")
-    password = read_secret(script_dir / "password")
-
     if args.login:
         interactive_login()
         return 0
+
+    # Optional: only used as a fallback when the saved login has expired.
+    username = read_optional_secret(script_dir / "username")
+    password = read_optional_secret(script_dir / "password")
 
     output_dir = Path(args.output_dir).resolve()
     tracker = DownloadTracker(script_dir / "downloads.db")

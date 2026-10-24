@@ -46,8 +46,10 @@ pip install -e ".[fetch]"
 playwright install chromium
 ```
 
-Credentials for auto-fetch (optional): put the racebox.pro login in
-`racebox/fetcher/username` and `racebox/fetcher/password`.
+Log in to racebox.pro once for auto-fetch: `python racebox/fetcher/download_sessions.py --login`
+opens Chrome, you log in (and solve the captcha), and the session is saved to
+`racebox/fetcher/auth_state.json`. No username/password files are needed; set
+`CHROME_BIN` if Chrome isn't found.
 
 ---
 
@@ -151,10 +153,9 @@ videobrowser scan inputclips -o output
 videobrowser horizontals -o output
 ```
 
-Auto-fetch needs credentials in `racebox/fetcher/username` and
-`racebox/fetcher/password` plus `playwright install chromium`. If they are
-missing, fetching is skipped with a message and the scan continues using whatever
-`.vbo` files are already present.
+Auto-fetch needs a saved login (`download_sessions.py --login`) plus
+`playwright install chromium`. If there is no login, fetching is skipped with a
+message and the scan continues using whatever `.vbo` files are already present.
 
 ### 2. Use local sessions, no download
 
