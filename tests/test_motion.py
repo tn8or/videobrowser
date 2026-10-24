@@ -58,6 +58,10 @@ def test_flow_tells_a_camera_looking_ahead_from_one_looking_back():
     ahead = flow_divergence(view(1.0), view(1.04, 3.0, 30.0))  # roll and yaw while moving on
     behind = flow_divergence(view(1.04, 3.0, 30.0), view(1.0))
     assert ahead > 0.01 and behind < -0.01
+    # An ego mask over the left 28% leaves points on one side only.
+    mask = (Rect(0.0, 0.0, 0.28, 1.0),)
+    assert flow_divergence(view(1.0), view(1.04, 3.0, 30.0), mask) > 0.01
+    assert flow_divergence(view(1.04, 3.0, 30.0), view(1.0), mask) < -0.01
     assert facing_from_flow([ahead] * MIN_FACING_VOTES) == "front"
     assert facing_from_flow([behind] * MIN_FACING_VOTES + [ahead] * 3) == "rear"
     assert facing_from_flow([ahead] * 5) is None

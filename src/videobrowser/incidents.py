@@ -23,7 +23,7 @@ import cv2
 import numpy as np
 
 from videobrowser.events import Event
-from videobrowser.riders import TrackPoint
+from videobrowser.riders import TrackPoint, is_ego_track
 
 PERSON, MOTORCYCLE = 0, 3
 # Boxes smaller than this (fraction of frame height) are too far to judge.
@@ -156,6 +156,8 @@ def score_incidents(tracks: dict[int, list[TrackPoint]], recording_id: str) -> l
     events: list[Event] = []
     offtrack: list[tuple[float, float, str]] = []
     for track_id, raw in tracks.items():
+        if is_ego_track(raw):
+            continue
         points = sorted((p for p in raw if p.height_frac >= MIN_HEIGHT_FRAC), key=lambda p: p.t)
         if len(points) < 6:
             continue

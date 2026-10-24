@@ -188,6 +188,12 @@ class ScanDB:
         )
         self.conn.commit()
 
+    def set_facing(self, recording_id: str, facing: str | None) -> None:
+        self.conn.execute(
+            "UPDATE recording_meta SET facing = ? WHERE recording_id = ?", (facing, recording_id)
+        )
+        self.conn.commit()
+
     def save_tracks(self, recording_id: str, points: list) -> None:
         """*points*: ``TrackPoint``-like objects (track_id, t, box, frame size)."""
         self.conn.execute(

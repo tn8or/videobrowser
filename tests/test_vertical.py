@@ -329,3 +329,11 @@ def test_tracks_in_puck_roi_are_followed_but_not_scored():
     merged = _merge_tracks({1: [later], 2: [beside]}, {1: [ahead]})
     assert [p.t for p in merged[1]] == [1.0, 2.0]
     assert merged[2] == [beside]
+
+
+def test_focus_ignores_the_cameras_own_exhaust_on_the_frame_edge():
+    # A big box stuck on the left edge for 3 s (exhaust), a small rider far right.
+    exhaust = [_pt(t / 5, 9, 0.12, h=0.6, w=0.24) for t in range(0, 16)]
+    rider = [_pt(t / 5, 3, 0.85, h=0.08, w=0.04) for t in range(0, 16)]
+    samples = focus_samples(_window(), {9: exhaust, 3: rider})
+    assert samples and all(s.cx == pytest.approx(0.85) for s in samples)

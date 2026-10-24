@@ -31,7 +31,7 @@ from videobrowser.decode import rotation_filter
 from videobrowser.events import ClipWindow
 from videobrowser.gopro import Recording
 from videobrowser.probe import ProbeError, probe
-from videobrowser.riders import TrackPoint
+from videobrowser.riders import TrackPoint, is_ego_track
 from videobrowser.telemetry import TurnSample
 
 OUT_W = 1080
@@ -119,6 +119,8 @@ def focus_samples(
 
     by_t: dict[float, list[TrackPoint]] = {}
     for points in tracks.values():
+        if is_ego_track(points):
+            continue  # the camera's own exhaust or fairing
         for point in points:
             if not window.t_start <= point.t <= window.t_end:
                 continue

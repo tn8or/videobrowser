@@ -68,6 +68,20 @@ def decode_one_frame(
     rotation: int = 0,
 ) -> np.ndarray | None:
     """Seek to t seconds and return a scaled BGR frame."""
+    frames = decode_frames(path, t, 1, max_side, src_width, src_height, rotation)
+    return frames[0] if frames else None
+
+
+def decode_frames(
+    path: Path,
+    t: float,
+    count: int,
+    max_side: int,
+    src_width: int,
+    src_height: int,
+    rotation: int = 0,
+) -> list[np.ndarray]:
+    """*count* consecutive scaled BGR frames from t seconds on (fewer near the end)."""
     width, height = scaled_size(src_width, src_height, max_side, rotation)
     vf_parts: list[str] = []
     rot = rotation_filter(rotation)
@@ -86,7 +100,7 @@ def decode_one_frame(
             "-i",
             str(path),
             "-frames:v",
-            "1",
+            str(count),
             "-vf",
             vf,
             "-pix_fmt",
@@ -100,11 +114,13 @@ def decode_one_frame(
     raw = b""
     for hw in (*_HWACCEL_TRY, []):
         raw = _run(hw)
-        if len(raw) >= expected:
+        if len(raw) >= expected * count:
             break
-    if len(raw) < expected:
-        return None
-    return np.frombuffer(raw[:expected], dtype=np.uint8).copy().reshape(height, width, 3)
+    n = len(raw) // expected
+    return [
+        np.frombuffer(raw[i * expected : (i + 1) * expected], dtype=np.uint8).copy().reshape(height, width, 3)
+        for i in range(n)
+    ]
 
 
 @dataclass
