@@ -39,3 +39,125 @@ def test_own_exhaust_on_the_frame_edge_is_not_a_rider():
     assert score_tracks({1: exhaust}, "GX-0014") == []
     closing = [_pt(i * 0.2, 0.08 + i * 0.03) for i in range(20)]  # also on the edge, but growing
     assert not is_ego_track(closing)
+
+
+def test_fp16_uses_quantize_when_ultralytics_has_it(monkeypatch):
+    import sys
+    import types
+
+    from videobrowser.riders import RiderTracker
+
+    cfg = types.ModuleType("ultralytics.cfg")
+    monkeypatch.setitem(sys.modules, "ultralytics", types.ModuleType("ultralytics"))
+    monkeypatch.setitem(sys.modules, "ultralytics.cfg", cfg)
+    tracker = RiderTracker(model_path="x.pt", device="cuda", conf=0.25)
+    cfg.DEFAULT_CFG_DICT = {"quantize": None, "half": False}
+    assert tracker._precision() == {"quantize": 16}
+    cfg.DEFAULT_CFG_DICT = {"half": False}
+    assert tracker._precision() == {"half": True}
+    assert RiderTracker(model_path="x.pt", device="mps", conf=0.25)._precision() == {}
+
+
+def test_tensorrt_engine_is_built_once_and_cached(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from videobrowser.riders import RiderTracker
+
+    built = []
+
+    class FakeYOLO:
+        def __init__(self, path, task=None):
+            self.path = path
+
+        def export(self, **kwargs):
+            built.append(kwargs)
+            out = tmp_path / "yolo11n.engine"
+            out.write_text("engine")
+            return str(out)
+
+    ul = types.ModuleType("ultralytics")
+    ul.YOLO = FakeYOLO
+    cfg = types.ModuleType("ultralytics.cfg")
+    cfg.DEFAULT_CFG_DICT = {"quantize": None}
+    monkeypatch.setitem(sys.modules, "ultralytics", ul)
+    monkeypatch.setitem(sys.modules, "ultralytics.cfg", cfg)
+
+    model = str(tmp_path / "yolo11n.pt")
+    tracker = RiderTracker(model_path=model, device="cuda", conf=0.25, tensorrt=True)
+    tracker.load()
+    assert tracker.engine and tracker._model.path.endswith("yolo11n-640-fp16.engine")
+    assert built == [{"format": "engine", "imgsz": 640, "device": "cuda", "quantize": 16}]
+    assert tracker._precision() == {}  # the engine fixes its own precision
+
+    again = RiderTracker(model_path=model, device="cuda", conf=0.25, tensorrt=True)
+    again.load()
+    assert len(built) == 1 and again.engine
+
+
+def test_tensorrt_build_failure_falls_back_to_pytorch(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from videobrowser.riders import RiderTracker
+
+    class FakeYOLO:
+        def __init__(self, path, task=None):
+            self.path = path
+
+        def export(self, **kwargs):
+            raise RuntimeError("no tensorrt")
+
+    ul = types.ModuleType("ultralytics")
+    ul.YOLO = FakeYOLO
+    monkeypatch.setitem(sys.modules, "ultralytics", ul)
+    monkeypatch.setitem(sys.modules, "ultralytics.cfg", types.ModuleType("ultralytics.cfg"))
+    tracker = RiderTracker(model_path=str(tmp_path / "m.pt"), device="cuda", conf=0.25, tensorrt=True)
+    tracker.load()
+    assert not tracker.engine and tracker._model.path.endswith("m.pt")
+
+
+def test_update_batch_runs_yolo_once_per_batch():
+    import numpy as np
+
+    from videobrowser.riders import RiderTracker
+
+    class Boxes:
+        def __init__(self, n):
+            self.xyxy = _Arr(np.array([[1.0, 2.0, 3.0, 4.0]] * n))
+            self.conf = _Arr(np.ones(n))
+            self.cls = _Arr(np.zeros(n))
+            self.id = _Arr(np.arange(n) + 7) if n else None
+
+        def __len__(self):
+            return len(self.xyxy.a)
+
+    class _Arr:
+        def __init__(self, a):
+            self.a = a
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self.a
+
+    class Result:
+        def __init__(self, n):
+            self.boxes = Boxes(n)
+
+    calls = []
+
+    class Model:
+        def track(self, images, **kwargs):
+            calls.append((len(images), kwargs["persist"]))
+            return [Result(i % 2) for i in range(len(images))]
+
+    tracker = RiderTracker(model_path="x.pt", device="cpu", conf=0.25)
+    tracker._model = Model()
+    images = [np.zeros((36, 64, 3), np.uint8)] * 4
+    first = tracker.update_batch(images)
+    second = tracker.update_batch(images)
+    assert calls == [(4, False), (4, True)]
+    assert [len(p) for p in first] == [0, 1, 0, 1]
+    assert first[1][0].track_id == 7 and len(second) == 4

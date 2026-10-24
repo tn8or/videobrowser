@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -58,8 +59,10 @@ class RiderTracker:
     conf: float
     imgsz: int = 640
     classes: tuple[int, ...] = (0, 3)  # person, motorcycle
+    tensorrt: bool = False
     _model: object | None = field(default=None, init=False, repr=False)
     _started: bool = field(default=False, init=False)
+    engine: bool = field(default=False, init=False)
 
     def load(self) -> None:
         if self._model is not None:
@@ -72,7 +75,34 @@ class RiderTracker:
             exported = model.export(format="coreml", imgsz=self.imgsz, nms=True)
             self._model = YOLO(exported)
             return
+        if self.tensorrt and str(self.device).startswith("cuda"):
+            engine = self._engine(path)
+            if engine is not None:
+                self._model = YOLO(engine, task="detect")
+                self.engine = True
+                return
         self._model = YOLO(path)
+
+    def _engine(self, path: str) -> str | None:
+        """TensorRT engine for *path* at this size in FP16, built once and kept
+        next to the model; None (plain PyTorch) when the build fails."""
+        from ultralytics import YOLO
+
+        if path.endswith(".engine"):
+            return path
+        cached = Path(path).with_name(f"{Path(path).stem}-{self.imgsz}-fp16.engine")
+        if cached.exists():
+            return str(cached)
+        print(f"tensorrt: building {cached.name} (a few minutes, once)")
+        try:
+            built = YOLO(path).export(
+                format="engine", imgsz=self.imgsz, device=self.device, **self._precision()
+            )
+            Path(built).replace(cached)
+        except Exception as exc:
+            print(f"tensorrt: build failed ({exc}); using PyTorch")
+            return None
+        return str(cached)
 
     def reset(self) -> None:
         self._started = False
@@ -89,7 +119,7 @@ class RiderTracker:
             classes=list(self.classes),
             imgsz=self.imgsz,
             device=self._ultralytics_device(),
-            half=self._half(),
+            **self._precision(),
             verbose=False,
         )
         return self._points_from_result(results[0], image, ids=None)
@@ -106,7 +136,7 @@ class RiderTracker:
             classes=list(self.classes),
             imgsz=self.imgsz,
             device=self._ultralytics_device(),
-            half=self._half(),
+            **self._precision(),
             verbose=False,
         )
         result = results[0]
@@ -114,6 +144,38 @@ class RiderTracker:
         if result.boxes is not None and result.boxes.id is not None:
             ids = result.boxes.id.cpu().numpy()
         return self._points_from_result(result, image, ids)
+
+    def update_batch(self, images: list) -> list[list[TrackPoint]]:
+        """``update`` for several consecutive frames at once.
+
+        YOLO runs on the whole batch in one call, which removes most of the
+        per-call overhead (one frame per call left the GPU mostly waiting);
+        the tracker still steps through the frames in order. A TensorRT
+        engine is built for batch 1, so it takes them one by one.
+        """
+        self.load()
+        if self.engine or len(images) <= 1:
+            return [self.update(image) for image in images]
+        persist = self._started
+        self._started = True
+        results = self._model.track(
+            images,
+            persist=persist,
+            tracker="bytetrack.yaml",
+            conf=self.conf,
+            classes=list(self.classes),
+            imgsz=self.imgsz,
+            device=self._ultralytics_device(),
+            **self._precision(),
+            verbose=False,
+        )
+        out = []
+        for result, image in zip(results, images):
+            ids = None
+            if result.boxes is not None and result.boxes.id is not None:
+                ids = result.boxes.id.cpu().numpy()
+            out.append(self._points_from_result(result, image, ids))
+        return out
 
     def _points_from_result(self, result, image, ids) -> list[TrackPoint]:
         boxes = result.boxes
@@ -144,9 +206,21 @@ class RiderTracker:
             )
         return points
 
-    def _half(self) -> bool:
-        # FP16 on NVIDIA roughly halves the time per frame for the same boxes.
-        return str(self.device).startswith("cuda")
+    def _precision(self) -> dict:
+        """FP16 on NVIDIA, which roughly halves the time per frame.
+
+        Newer ultralytics takes ``quantize=16`` and warns on every frame for
+        the older ``half=True``.
+        """
+        if self.engine or not str(self.device).startswith("cuda"):
+            return {}
+        try:
+            from ultralytics.cfg import DEFAULT_CFG_DICT
+        except ImportError:
+            DEFAULT_CFG_DICT = {}
+        if "quantize" in DEFAULT_CFG_DICT:
+            return {"quantize": 16}
+        return {"half": True}
 
     def _ultralytics_device(self) -> str | int:
         if self.device == "coreml":

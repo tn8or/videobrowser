@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -120,9 +122,13 @@ def _sample_times(recording: Recording) -> list[tuple[Chapter, float]]:
     return picks
 
 
-# Short seeks run side by side: each is its own ffmpeg, mostly start-up and
-# waiting on the decoder, so a handful overlap well on GPU or CPU decode.
-_SEEK_WORKERS = 6
+# Short seeks run side by side, one per CPU thread: each is its own ffmpeg,
+# mostly start-up and waiting on the decoder.
+_SEEK_WORKERS = os.cpu_count() or 4
+
+# Frames sent to YOLO per call. One frame per call spent most of the time on
+# per-call overhead rather than on the GPU (~22 ms a frame on an RTX 5070).
+_DETECT_BATCH = 16
 
 
 def _parallel(work, items: list) -> list:
@@ -413,13 +419,50 @@ def scan_recording(
             backend = decoder.backend
             print(f"  decode {backend} {decoder.width}x{decoder.height} @ {config.fps:g}fps")
 
+            # Where the chapter's time goes, logged after it: waiting on the
+            # decoder, in the detector, and the per-frame work around it.
+            waited = detected = 0.0
+            began = time.perf_counter()
+
             def _frames():
+                nonlocal waited
                 if first is not None:
                     yield first
-                    yield from frame_iter
+                while True:
+                    t0 = time.perf_counter()
+                    frame = next(frame_iter, None)
+                    waited += time.perf_counter() - t0
+                    if frame is None:
+                        return
+                    yield frame
 
-            for frame in tqdm(
-                _frames(),
+            use_riders = "riders" in profile.pipelines and tracker is not None
+
+            def _detected():
+                """(frame, rider boxes) in order, YOLO run _DETECT_BATCH frames at a time."""
+                batch = []
+                for frame in _frames():
+                    batch.append(frame)
+                    if len(batch) < _DETECT_BATCH:
+                        continue
+                    yield from _flush(batch)
+                    batch = []
+                if batch:
+                    yield from _flush(batch)
+
+            def _flush(batch):
+                nonlocal detected
+                if not use_riders:
+                    for frame in batch:
+                        yield frame, []
+                    return
+                t0 = time.perf_counter()
+                found = tracker.update_batch([apply_ego_mask(f.image, profile) for f in batch])
+                detected += time.perf_counter() - t0
+                yield from zip(batch, found)
+
+            for frame, points in tqdm(
+                _detected(),
                 total=max(expected, 1),
                 desc=chapter.path.name,
                 unit="fr",
@@ -430,9 +473,7 @@ def scan_recording(
                         (global_t, scene_motion(prev_image, frame.image, profile.ego_masks))
                     )
                 prev_image = frame.image
-                if "riders" in profile.pipelines and tracker is not None:
-                    masked = apply_ego_mask(frame.image, profile)
-                    points = tracker.update(masked)
+                if use_riders:
                     road = road_colour(frame.image) if points else None
                     for point in points:
                         point.t = global_t
@@ -453,6 +494,11 @@ def scan_recording(
                         hit = detect_puck(frame.image, profile.puck_roi)
                         if hit:
                             puck_hits.append((global_t, hit.score))
+            total = time.perf_counter() - began
+            print(
+                f"  time {total:.0f}s: decode wait {waited:.0f}s, detector {detected:.0f}s, "
+                f"other {max(0.0, total - waited - detected):.0f}s"
+            )
         if remaining is not None:
             remaining -= chapter.duration
 
