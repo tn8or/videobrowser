@@ -203,6 +203,10 @@ class ScanDB:
         )
         self.conn.commit()
 
+    def clear_facing_overrides(self) -> None:
+        self.conn.execute("DELETE FROM facing_overrides")
+        self.conn.commit()
+
     def facing_override(self, recording_id: str) -> str | None:
         """The hand-set facing whose camera text occurs in *recording_id*."""
         for row in self.conn.execute("SELECT camera, facing FROM facing_overrides ORDER BY length(camera) DESC"):

@@ -181,6 +181,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fix the facing by hand for every recording whose id contains CAMERA, e.g. GX=front "
         "(repeatable; kept for later scans)",
     )
+    facing_cmd_p.add_argument(
+        "--clear",
+        action="store_true",
+        help="Forget every hand-set facing (for all days, also with --date) and measure again; "
+        "combine with --set to start over",
+    )
 
     shorts = sub.add_parser(
         "shorts",
@@ -257,6 +263,8 @@ def facing_cmd(args: argparse.Namespace) -> int:
         overrides.append((camera, way))
     db = ScanDB.open(out / "scan.sqlite")
     try:
+        if args.clear:
+            db.clear_facing_overrides()
         for camera, way in overrides:
             db.set_facing_override(camera, way)
         for meta in db.recording_metas():

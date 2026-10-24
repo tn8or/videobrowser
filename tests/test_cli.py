@@ -136,3 +136,25 @@ def test_facing_set_by_hand_wins_and_is_kept(tmp_path, monkeypatch):
     assert db.facing_override("2026-08-15_GH-0020") is None
     db.close()
     assert cli.main(["facing", "-o", str(out), "--set", "GX=up"]) == 2
+
+
+def test_facing_clear_measures_again(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    import videobrowser.cli as cli
+    import videobrowser.exports as exports
+    import videobrowser.pipeline as pipeline
+    from videobrowser.db import ScanDB
+
+    out = tmp_path / "out"
+    db = ScanDB.open(out / "scan.sqlite")
+    db.save_recording_meta("2026-08-14_GX-0014", "rear", 0, 1.0, "2026-08-14", 60.0, [])
+    db.set_facing_override("GX", "front")
+    db.close()
+    monkeypatch.setattr(exports, "recording_from_meta", lambda row: Path(row["recording_id"]))
+    monkeypatch.setattr(pipeline, "facing_for_recording", lambda *a: "rear")
+    assert cli.main(["facing", "-o", str(out), "--clear"]) == 0
+    db = ScanDB.open(out / "scan.sqlite")
+    assert db.facing_override("2026-08-14_GX-0014") is None
+    assert db.recording_metas()[0]["facing"] == "rear"
+    db.close()
