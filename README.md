@@ -196,6 +196,7 @@ track days.
 | `--device` | `auto` | `auto` / `mps` / `cpu` / `coreml` |
 | `--conf` | 0.25 | YOLO confidence threshold |
 | `--exclude` | none | Repeatable; skip files/folders whose path contains the text |
+| `--date YYYY-MM-DD` | all days | Repeatable; only scan recordings from that day |
 | `--follow-links` | off | Include linked files that point outside the input folders (skipped links are listed in the output) |
 | `--previews` | 8 | Annotated preview JPEGs per recording |
 | `--max-clip-seconds` | 24 | Max clip window length |

@@ -54,6 +54,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include linked files that point outside the input folders",
     )
+    scan.add_argument(
+        "--date",
+        action="append",
+        default=[],
+        metavar="YYYY-MM-DD",
+        help="Only recordings from this day (repeatable)",
+    )
     scan.add_argument("--fps", type=float, default=5.0, help="Analysis frame rate (default 5)")
     scan.add_argument("--size", type=int, default=640, help="Max analysis side in pixels")
     scan.add_argument("--pad", type=float, default=10.0, help="Seconds of pad around each event")
@@ -249,6 +256,12 @@ def scan_cmd(args: argparse.Namespace) -> int:
         print("no video files found", file=sys.stderr)
         return 1
     recordings = drop_duplicates(sort_by_start(group_recordings(paths, input_roots=inputs)))
+    if args.date:
+        recordings = [r for r in recordings if recording_day(r) in args.date]
+        print("date: " + ", ".join(args.date))
+        if not recordings:
+            print("no recordings on " + ", ".join(args.date), file=sys.stderr)
+            return 1
     camera_map = CameraMap.load(args.map) if args.map else CameraMap({}, {})
     if args.map:
         print(f"camera map override: {args.map}")
