@@ -173,6 +173,7 @@ def ensure_logged_in(page, username: str | None = None, password: str | None = N
             pass
     if is_logged_in(page):
         page.context.storage_state(path=str(AUTH_STATE_PATH))
+        AUTH_STATE_PATH.chmod(0o600)
         return
     raise NotLoggedInError(
         "not logged in to racebox.pro (login is behind a Cloudflare captcha). "
@@ -186,6 +187,8 @@ def find_chrome() -> str:
 
     override = os.environ.get("CHROME_BIN")
     if override:
+        if not Path(override).is_file():
+            raise FileNotFoundError(f"CHROME_BIN does not point to a file: {override}")
         return override
     candidates: list[str] = []
     if sys.platform == "darwin":
