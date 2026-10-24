@@ -151,7 +151,7 @@ def export_horizontals(
                 db.set_clip_path(row["id"], "clip_path", str(dest))
             cut += new
             print(f"{rid}: {new} landscape clip(s) cut, {len(pairs) - new} kept")
-            if not overlay or not (new or force):
+            if not overlay:
                 continue
             source = start_source(meta, recording)
             if source == "clock":
@@ -159,6 +159,7 @@ def export_horizontals(
                 continue
             if ctx is None:
                 ctx = _racebox_context(out_dir, sessions_dir, font_path, stats_path)
+                ctx.keep_existing = not force
             try:
                 from videobrowser.racebox_stage import run_for_recording
 

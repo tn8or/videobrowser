@@ -57,7 +57,7 @@ Credentials for auto-fetch (optional): put the racebox.pro login in
 # Analyse footage (a whole library: folders are searched recursively)
 videobrowser scan ~/Movies/GoPro -o output
 
-# Then cut what you want from it
+# Then cut what you want from it (-o is always the same scan folder)
 videobrowser horizontals -o output            # landscape clips + RaceBox overlays
 videobrowser verticals -o output --no-overlay # 9:16 follow-cam clips, no overlay
 videobrowser shorts -o output                 # per-day shorts (folders of clips)
@@ -90,12 +90,14 @@ output/
   shorts/YYYY-MM-DD/         # shorts: folders of clips per day + index.html overview (see "Shorts")
 ```
 
-`horizontals` and `verticals` keep clips whose file already exists (re-cut
-them with `--force`) and remove files of clip windows a re-scan dropped. Both
+`horizontals` and `verticals` keep clips and overlay renders whose file
+already exists, and only make the missing ones (re-cut all with `--force`) and remove files of clip windows a re-scan dropped. Both
 take `--date` (repeatable) and `--no-overlay`. Overlays only go on recordings
 whose start time is sure: GoPro GPS time, or a clear RaceBox match from the
 scan. Rider following on verticals needs a scan from this version (the rider
-boxes are stored by `scan`); older scans get the corner-looking crop only.
+boxes are stored by `scan`); older scans get the corner-looking crop only. Scans from before this version
+also have no stored RaceBox placement, so footage with GoPro telemetry counts
+as sure and the rest gets no overlay; run `scan --force` once after upgrading.
 
 Date folders use the clip's GoPro creation timestamp in `Europe/Copenhagen`
 (e.g. `highlights/2026-08-01/`). Full-session and fastest-lap clips use the

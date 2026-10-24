@@ -82,3 +82,24 @@ def test_horizontals_cut_windows_and_drop_files_of_old_windows(tmp_path, monkeyp
     assert cut == ["R_00005_approaching_rider.mp4"] and not stale.exists()
     assert exports.export_horizontals(out) == 0
     assert exports.export_horizontals(out, force=True) == 1
+
+
+def test_horizontals_render_overlays_even_when_clips_exist(tmp_path, monkeypatch):
+    import types
+
+    import videobrowser.clips as clips
+    import videobrowser.exports as exports
+    import videobrowser.racebox_stage as rbs
+
+    out = tmp_path / "out"
+    _scan(out, "gps")
+    monkeypatch.setattr(exports, "recording_from_meta", _recording)
+    monkeypatch.setattr(clips, "export_clip", lambda rec, w, dest, rotation=0: dest.write_bytes(b"c"))
+    ctx = types.SimpleNamespace()
+    monkeypatch.setattr(exports, "_racebox_context", lambda *a: ctx)
+    runs = []
+    monkeypatch.setattr(rbs, "run_for_recording", lambda *a: runs.append(ctx.keep_existing))
+    (out / "clips" / "2026-08-01").mkdir(parents=True)
+    (out / "clips" / "2026-08-01" / "R_00005_approaching_rider.mp4").write_bytes(b"old")
+    assert exports.export_horizontals(out) == 0
+    assert runs == [True]  # missing overlay renders still get made
