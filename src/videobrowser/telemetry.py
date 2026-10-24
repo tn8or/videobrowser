@@ -217,13 +217,18 @@ def speed_series(info: VideoInfo, blob: bytes | None = None) -> list[SpeedSample
         blob = extract_gpmd_bytes(info.path, info.gpmd_index)
     if not blob:
         return []
-    speeds = _walk_gps5(blob)
-    n = len(speeds)
+    rows = _walk_gps5_rows(blob)
+    n = len(rows)
     if n < 2:
         return []
     duration = info.duration if info.duration and info.duration > 0 else float(n)
     times = np.linspace(0.0, duration, n)
-    return [SpeedSample(t=float(t), speed_kmh=float(s)) for t, s in zip(times, speeds)]
+    # Rows without a fix read 0 km/h at lat/lon 0: unknown, not standing still.
+    return [
+        SpeedSample(t=float(t), speed_kmh=float(speed))
+        for t, (lat, lon, speed) in zip(times, rows)
+        if abs(lat) > 1e-6 or abs(lon) > 1e-6
+    ]
 
 
 # Turn rate is only read above this speed; GPS heading wanders when slow.

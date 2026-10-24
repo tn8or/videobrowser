@@ -35,12 +35,23 @@ OFFTRACK_POINTS = 3
 MOUNTED_OVERLAP = 0.5
 
 
-def offtrack_fraction(image: np.ndarray, point: TrackPoint) -> float:
+def road_colour(image: np.ndarray) -> np.ndarray:
+    """Median HSV of the ground just ahead of (or behind) the camera's own
+    bike, which is on the road: the colour of this track's asphalt."""
+    h, w = image.shape[:2]
+    patch = image[int(h * 0.95) :, int(w * 0.35) : int(w * 0.65)]
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV).reshape(-1, 3)
+    return np.median(hsv, axis=0)
+
+
+def offtrack_fraction(image: np.ndarray, point: TrackPoint, road: np.ndarray | None = None) -> float:
     """Share of grass or gravel pixels in a strip just below *point*'s box.
 
     The strip is where the tyres meet the ground. Asphalt is grey (low
     saturation); grass is green, gravel pale yellow-brown. Kerbs (red/white)
-    count as neither.
+    count as neither. Sunlit asphalt can be as warm as gravel, so pixels
+    close to the camera's own road colour (*road*, from ``road_colour``)
+    never count.
     """
     h, w = image.shape[:2]
     box_h = point.y2 - point.y1
@@ -54,7 +65,15 @@ def offtrack_fraction(image: np.ndarray, point: TrackPoint) -> float:
     hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
     grass = (hue >= 30) & (hue <= 90) & (sat >= 60) & (val >= 40)
     gravel = (hue >= 10) & (hue < 30) & (sat >= 45) & (sat <= 170) & (val >= 110)
-    return float(np.mean(grass | gravel))
+    off = grass | gravel
+    if road is not None:
+        like_road = (
+            (np.abs(hue.astype(int) - int(road[0])) <= 8)
+            & (np.abs(sat.astype(int) - int(road[1])) <= 35)
+            & (np.abs(val.astype(int) - int(road[2])) <= 45)
+        )
+        off &= ~like_road
+    return float(np.mean(off))
 
 
 def _overlap(person: TrackPoint, bike: TrackPoint) -> float:

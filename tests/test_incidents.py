@@ -63,3 +63,18 @@ def test_offtrack_fraction_tells_asphalt_from_grass_and_gravel():
     gravel = cv2.cvtColor(np.uint8([[[20, 90, 190]]]), cv2.COLOR_HSV2BGR)[0, 0]
     assert offtrack_fraction(frame(green), box) > 0.9
     assert offtrack_fraction(frame(gravel), box) > 0.9
+
+
+def test_warm_asphalt_like_the_cameras_own_road_is_not_gravel():
+    import cv2
+
+    from videobrowser.incidents import road_colour
+
+    tan = cv2.cvtColor(np.uint8([[[18, 70, 170]]]), cv2.COLOR_HSV2BGR)[0, 0]
+    img = np.full((FH, FW, 3), tan, dtype=np.uint8)  # sunlit asphalt everywhere
+    box = _box(0, MOTORCYCLE, 1, 320, 40, 80, bottom=300)
+    assert offtrack_fraction(img, box) > 0.9  # the colour alone looks like gravel
+    assert offtrack_fraction(img, box, road_colour(img)) == 0.0
+    green = cv2.cvtColor(np.uint8([[[60, 160, 120]]]), cv2.COLOR_HSV2BGR)[0, 0]
+    img[300:330, :] = green
+    assert offtrack_fraction(img, box, road_colour(img)) > 0.9

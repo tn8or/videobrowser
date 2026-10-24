@@ -223,6 +223,13 @@ class DayData:
     # recording id -> camera-clock readings, for recordings without GPS the
     # RaceBox match could not place.
     unplaced: dict = field(default_factory=dict)
+    # recording id -> "front"/"rear" the scan read from scene flow.
+    facings: dict = field(default_factory=dict)
+
+    def facing(self, rid: str) -> str:
+        """Which way the camera looks: scene flow when the scan had it, else
+        the mount guess."""
+        return self.facings.get(rid) or facing(self.profiles.get(rid, ""))
 
 
 def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
@@ -237,6 +244,8 @@ def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
         day.clocks[rid] = CameraClock(rid, row["start_utc"], float(row["duration"]), chapters)
         day.profiles[rid] = row["profile"]
         day.rotations[rid] = int(row["rotation"])
+        if "facing" in row.keys() and row["facing"]:
+            day.facings[rid] = row["facing"]
     owner = {rid: day for day in days.values() for rid in day.clocks}
     for rid, samples in db.motion().items():
         if rid in owner:
@@ -261,6 +270,15 @@ def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
         if rid not in with_rows:
             day.clips.extend(_clips_from_folder(out_dir, rid, day.date_label))
     return days
+
+
+def _moving_after(motion: list | None, t: float) -> bool:
+    """True when the scene keeps streaming past at track pace after *t*: the
+    bike did not stop, whatever the GPS says."""
+    if not motion:
+        return False
+    after = [m for s, m in motion if t + 3.0 <= s <= t + 10.0]
+    return len(after) >= 3 and float(np.median(after)) >= TRACK_MOTION
 
 
 def _crash_moments(day: DayData) -> list[Moment]:
@@ -291,15 +309,19 @@ def _crash_moments(day: DayData) -> list[Moment]:
                 accl_t,
                 np.asarray(accl),
             ):
-                print(f"  crash? {rid} t={chapter.offset + t:.1f}s")
-                found.append(crash_moment(rid, chapter.offset + t, clock.start_utc))
+                t_rec = chapter.offset + t
+                if _moving_after(day.motion.get(rid), t_rec):
+                    print(f"  crash? {rid} t={t_rec:.1f}s: no, the picture keeps moving")
+                    continue
+                print(f"  crash? {rid} t={t_rec:.1f}s")
+                found.append(crash_moment(rid, t_rec, clock.start_utc))
     # Several cameras feel the same crash: keep one moment per incident.
     found.sort(key=lambda m: m.utc_start)
     merged: list[Moment] = []
     for m in found:
         if merged and m.utc_start - merged[-1].utc_start < 15.0:
-            front = facing(day.profiles[m.segments[0].recording_id]) == "front"
-            if front and facing(day.profiles[merged[-1].segments[0].recording_id]) != "front":
+            front = day.facing(m.segments[0].recording_id) == "front"
+            if front and day.facing(merged[-1].segments[0].recording_id) != "front":
                 merged[-1] = m
             continue
         merged.append(m)
@@ -476,7 +498,7 @@ def day_moments(
     events = [
         CamEvent(
             recording_id=row["recording_id"],
-            facing=facing(day.profiles[row["recording_id"]]),
+            facing=day.facing(row["recording_id"]),
             type=row["type"],
             t_start=float(row["t_start"]),
             t_end=float(row["t_end"]),
@@ -551,7 +573,7 @@ def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
     end = min(segment.t_end, clock.duration)
     window = ClipWindow(segment.t_start, end, segment.recording_id, [], 0.0, [])
     _speeds, turns = _day_gps(day, segment.recording_id)
-    focus = turn_focus(turns, segment.t_start, end, facing(day.profiles[segment.recording_id]))
+    focus = turn_focus(turns, segment.t_start, end, day.facing(segment.recording_id))
     return export_vertical(recording, window, dest, day.rotations[segment.recording_id], focus)
 
 
@@ -568,7 +590,7 @@ def collect_short(plan: ShortPlan, day: DayData, dest: Path) -> Path | None:
     copied: dict[Path, str] = {}
     for i, moment in enumerate(plan.moments, start=1):
         for j, segment in enumerate(moment.segments):
-            cam = facing(day.profiles[segment.recording_id])
+            cam = day.facing(segment.recording_id)
             stem = f"{i:02d}{'abcdefgh'[j] if len(moment.segments) > 1 else ''}"
             stem += f"_{_file_time(moment.utc_start)}_{moment.theme}_{cam}"
             found = _source_for(segment, day.clips)
@@ -608,7 +630,7 @@ def _moment_json(m: Moment, day: DayData) -> dict:
         "segments": [
             {
                 "recording_id": s.recording_id,
-                "camera": facing(day.profiles[s.recording_id]),
+                "camera": day.facing(s.recording_id),
                 "t_start": round(s.t_start, 2),
                 "t_end": round(s.t_end, 2),
             }
@@ -666,7 +688,7 @@ def write_index(
         for clip in clips:
             clock = day.clocks.get(clip.recording_id)
             when = _clock_label(clock.utc(clip.t_start)) if clock and clock.start_utc else "?"
-            cam = facing(day.profiles.get(clip.recording_id, ""))
+            cam = day.facing(clip.recording_id)
             caption = f"{when} · {cam} · {clip.recording_id}"
             if clip.vertical_path and clip.vertical_path.exists():
                 parts.append(video(clip.vertical_path, caption))
@@ -744,7 +766,7 @@ def build_shorts(
                 {
                     "cameras": {
                         rid: {
-                            "camera": facing(day.profiles[rid]),
+                            "camera": day.facing(rid),
                             "profile": day.profiles[rid],
                             "start_utc": c.start_utc,
                             "sync": c.source,

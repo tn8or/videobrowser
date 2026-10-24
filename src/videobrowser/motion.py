@@ -72,3 +72,68 @@ def per_second(samples: list[tuple[float, float]]) -> list[tuple[float, float]]:
     for t, mag in samples:
         buckets.setdefault(int(t), []).append(mag)
     return [(k + 0.5, float(np.median(v))) for k, v in sorted(buckets.items())]
+
+
+# Fewest tracked points for one frame pair to say anything about facing.
+_MIN_FLOW_POINTS = 12
+# Frame pairs that must vote, and the share that must agree, for a facing.
+MIN_FACING_VOTES = 20
+FACING_MAJORITY = 0.7
+
+
+def flow_divergence(
+    prev: np.ndarray,
+    curr: np.ndarray,
+    ego_masks: tuple[Rect, ...] = (),
+) -> float | None:
+    """Median outward flow of tracked points, relative to their distance from
+    the frame centre: positive when the scene expands (camera moving the way
+    it looks), negative when it contracts (camera looking back).
+
+    The common shift (pan, tilt, a vanishing point off centre) is taken out
+    first and roll turns points around the centre, so neither changes the
+    sign; the mount's rotation does not matter either. None when
+    too few points track both ways.
+    """
+    if prev.shape != curr.shape:
+        return None
+    a = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY) if prev.ndim == 3 else prev
+    b = cv2.cvtColor(curr, cv2.COLOR_BGR2GRAY) if curr.ndim == 3 else curr
+    h, w = a.shape
+    mask = np.full((h, w), 255, dtype=np.uint8)
+    for rect in ego_masks:
+        x1, y1, x2, y2 = rect.to_pixels(w, h)
+        mask[y1:y2, x1:x2] = 0
+    p0 = cv2.goodFeaturesToTrack(a, maxCorners=300, qualityLevel=0.01, minDistance=7, mask=mask)
+    if p0 is None or len(p0) < _MIN_FLOW_POINTS:
+        return None
+    lk = dict(winSize=(21, 21), maxLevel=3)
+    p1, ok1, _ = cv2.calcOpticalFlowPyrLK(a, b, p0, None, **lk)
+    back, ok2, _ = cv2.calcOpticalFlowPyrLK(b, a, p1, None, **lk)
+    # Forward-backward check drops points lost in motion blur.
+    good = (ok1.ravel() == 1) & (ok2.ravel() == 1) & (np.linalg.norm(back - p0, axis=2).ravel() < 1.0)
+    start, end = p0.reshape(-1, 2)[good], p1.reshape(-1, 2)[good]
+    radial = start - np.array([w / 2.0, h / 2.0])
+    dist2 = (radial**2).sum(axis=1)
+    keep = dist2 > (0.05 * min(w, h)) ** 2
+    if keep.sum() < _MIN_FLOW_POINTS:
+        return None
+    # Without the common shift, pans, tilts and a vanishing point away from
+    # the centre leave only the expansion (or contraction).
+    flow = end - start
+    flow = flow - np.median(flow, axis=0)
+    outward = (flow[keep] * radial[keep]).sum(axis=1) / dist2[keep]
+    return float(np.median(outward))
+
+
+def facing_from_flow(divergences: list[float], min_abs: float = 0.002) -> str | None:
+    """"front" or "rear" when the frame pairs taken on the move clearly agree."""
+    front = sum(1 for d in divergences if d > min_abs)
+    rear = sum(1 for d in divergences if d < -min_abs)
+    if front + rear < MIN_FACING_VOTES:
+        return None
+    if front >= FACING_MAJORITY * (front + rear):
+        return "front"
+    if rear >= FACING_MAJORITY * (front + rear):
+        return "rear"
+    return None

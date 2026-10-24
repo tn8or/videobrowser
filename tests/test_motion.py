@@ -39,3 +39,26 @@ def test_event_dropped_when_parked():
     moving = [(t, 14.0) for t, _ in samples]
     assert event_is_moving(event, moving)
     assert event_is_moving(event, samples, threshold=0)
+
+
+def test_flow_tells_a_camera_looking_ahead_from_one_looking_back():
+    import cv2
+
+    from videobrowser.motion import MIN_FACING_VOTES, facing_from_flow, flow_divergence
+
+    rng = np.random.default_rng(0)
+    base = cv2.GaussianBlur((rng.random((720, 1280)) * 255).astype(np.uint8), (5, 5), 1.5)
+    base = cv2.cvtColor(base, cv2.COLOR_GRAY2BGR)
+
+    def view(scale, angle=0.0, dx=0.0):
+        m = cv2.getRotationMatrix2D((740.0, 280.0), angle, scale)  # vanishing point off centre
+        m[0, 2] += dx
+        return cv2.resize(cv2.warpAffine(base, m, (1280, 720)), (640, 360))
+
+    ahead = flow_divergence(view(1.0), view(1.04, 3.0, 30.0))  # roll and yaw while moving on
+    behind = flow_divergence(view(1.04, 3.0, 30.0), view(1.0))
+    assert ahead > 0.01 and behind < -0.01
+    assert facing_from_flow([ahead] * MIN_FACING_VOTES) == "front"
+    assert facing_from_flow([behind] * MIN_FACING_VOTES + [ahead] * 3) == "rear"
+    assert facing_from_flow([ahead] * 5) is None
+    assert facing_from_flow([ahead, behind] * MIN_FACING_VOTES) is None
