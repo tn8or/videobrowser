@@ -46,6 +46,17 @@ pip install -e ".[fetch]"
 playwright install chromium
 ```
 
+On Windows/Linux with an NVIDIA card, pip installs a CPU-only `torch`. Swap it
+for a CUDA build so the detector runs on the GPU (`cu128` covers RTX 50-series):
+
+```bash
+pip uninstall -y torch torchvision
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+python -c "import torch; print(torch.cuda.is_available())"   # should print True
+```
+
+`scan` then logs `detector: yolo11n.pt on cuda`.
+
 Log in to racebox.pro once for auto-fetch: `python racebox/fetcher/download_sessions.py --login`
 opens Chrome, you log in (and solve the captcha), and the session is saved to
 `racebox/fetcher/auth_state.json`. No username/password files are needed; set
@@ -198,7 +209,7 @@ track days.
 | `--profile` | `auto` | Camera mount profile (`auto`, `cockpit`, `side`, `rear`, `ground`, ...) |
 | `--map` | none | `cameras.json` mount override |
 | `--model` | `yolo11n.pt` | Ultralytics model |
-| `--device` | `auto` | `auto` / `mps` / `cpu` / `coreml` |
+| `--device` | `auto` | `auto` / `cuda` / `mps` / `cpu` / `coreml` |
 | `--conf` | 0.25 | YOLO confidence threshold |
 | `--exclude` | none | Repeatable; skip files/folders whose path contains the text |
 | `--date YYYY-MM-DD` | all days | Repeatable; only scan recordings from that day |
