@@ -14,6 +14,7 @@ from videobrowser.telemetry import TurnSample
 from videobrowser.vertical import (
     MAX_PAN_PER_S,
     MAX_TURN_SHIFT,
+    RIDER_HOLD_S,
     FocusSample,
     crop_centers,
     crop_offsets,
@@ -77,12 +78,25 @@ def test_focus_prefers_riders_in_view_over_the_corner_and_ignores_tiny_boxes():
     }
     left_hander = [TurnSample(t / 10, -30.0) for t in range(0, 40)]
     samples = focus_samples(_window(), tracks, left_hander)
-    # Rider wins around t=1; elsewhere nobody followable is in view, so the
-    # crop looks left into the corner.
-    near_rider = [s for s in samples if abs(s.t - 1.0) < 0.3]
+    # Rider wins around t=1 and for RIDER_HOLD_S after; once nobody followable
+    # has been in view for that long, the crop looks left into the corner.
+    near_rider = [s for s in samples if 0.75 < s.t < 1.0 + RIDER_HOLD_S]
     assert [(s.t, round(s.cx, 2)) for s in near_rider] == [(1.0, 0.3)]
-    at_two = next(s for s in samples if s.t == pytest.approx(2.0))
-    assert at_two.cx == pytest.approx(0.5 - MAX_TURN_SHIFT)
+    at_three = next(s for s in samples if s.t == pytest.approx(3.0))
+    assert at_three.cx == pytest.approx(0.5 - MAX_TURN_SHIFT)
+
+
+def test_focus_stays_on_a_rider_the_tracker_drops_for_a_moment_or_who_pulls_away():
+    # Seen at 1.0-1.4, lost by the tracker for a second, back at 2.4, then
+    # shrinking below the size a new rider needs to be followed.
+    rider = [_pt(t / 10, 7, 0.7) for t in range(10, 15)] + [_pt(2.4, 7, 0.7)]
+    rider += [_pt(2.6, 7, 0.7, h=0.04)]
+    left_hander = [TurnSample(t / 10, -30.0) for t in range(0, 40)]
+    samples = focus_samples(_window(), {7: rider}, left_hander)
+    between = [s for s in samples if 1.0 <= s.t <= 2.6]
+    assert between and all(s.cx == pytest.approx(0.7) for s in between)
+    stranger = {8: [_pt(1.0, 8, 0.2, h=0.04)]}
+    assert [s.t for s in focus_samples(_window(), stranger) if s.cx == pytest.approx(0.2)] == []
 
 
 def test_turn_focus_looks_into_the_corner_mirrored_on_rear_camera():
