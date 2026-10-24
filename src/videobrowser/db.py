@@ -57,6 +57,13 @@ CREATE TABLE IF NOT EXISTS motion (
 -- Rider boxes inside the clip windows (JSON [[track_id, t, x1, y1, x2, y2,
 -- frame_w, frame_h], ...]): what the vertical crop follows, without
 -- re-running the detector.
+-- "front"/"rear" set by hand for every recording whose id contains camera
+-- (e.g. "GX"); wins over the scene-flow reading.
+CREATE TABLE IF NOT EXISTS facing_overrides (
+    camera TEXT PRIMARY KEY,
+    facing TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tracks (
     recording_id TEXT PRIMARY KEY,
     points TEXT NOT NULL
@@ -187,6 +194,21 @@ class ScanDB:
             ),
         )
         self.conn.commit()
+
+    def set_facing_override(self, camera: str, facing: str) -> None:
+        self.conn.execute(
+            "INSERT INTO facing_overrides(camera, facing) VALUES (?, ?) "
+            "ON CONFLICT(camera) DO UPDATE SET facing=excluded.facing",
+            (camera, facing),
+        )
+        self.conn.commit()
+
+    def facing_override(self, recording_id: str) -> str | None:
+        """The hand-set facing whose camera text occurs in *recording_id*."""
+        for row in self.conn.execute("SELECT camera, facing FROM facing_overrides ORDER BY length(camera) DESC"):
+            if row["camera"] in recording_id:
+                return row["facing"]
+        return None
 
     def set_facing(self, recording_id: str, facing: str | None) -> None:
         self.conn.execute(

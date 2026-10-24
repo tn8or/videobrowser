@@ -1,3 +1,5 @@
+import pytest
+
 from videobrowser.cli import build_parser
 
 
@@ -115,3 +117,22 @@ def test_facing_command_stores_the_facing_without_a_scan(tmp_path, monkeypatch):
     db = ScanDB.open(out / "scan.sqlite")
     assert db.recording_metas()[0]["facing"] == "front"
     db.close()
+
+
+def test_facing_set_by_hand_wins_and_is_kept(tmp_path, monkeypatch):
+    import videobrowser.cli as cli
+    import videobrowser.pipeline as pipeline
+    from videobrowser.db import ScanDB
+
+    out = tmp_path / "out"
+    db = ScanDB.open(out / "scan.sqlite")
+    db.save_recording_meta("2026-08-14_GX-0014", "rear", 0, 1.0, "2026-08-14", 60.0, [])
+    db.close()
+    monkeypatch.setattr(pipeline, "facing_for_recording", lambda *a: pytest.fail("measured despite --set"))
+    assert cli.main(["facing", "-o", str(out), "--set", "GX=front"]) == 0
+    db = ScanDB.open(out / "scan.sqlite")
+    assert db.recording_metas()[0]["facing"] == "front"
+    assert db.facing_override("2026-08-15_GX-0020") == "front"
+    assert db.facing_override("2026-08-15_GH-0020") is None
+    db.close()
+    assert cli.main(["facing", "-o", str(out), "--set", "GX=up"]) == 2

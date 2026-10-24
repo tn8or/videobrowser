@@ -135,7 +135,7 @@ def _sample_frames(recording: Recording, max_side: int, rotation: int = 0) -> li
 
 # Moments sampled for which way the camera looks (the ones in the pits or
 # standing still do not vote).
-_FACING_SAMPLES = 41
+_FACING_SAMPLES = 101
 
 
 def facing_for_recording(recording: Recording, max_side: int, profile: Profile) -> str | None:
@@ -354,7 +354,11 @@ def scan_recording(
             f"pipelines={','.join(profile.pipelines)}"
         )
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=False)
-    camera_facing = facing_for_recording(recording, config.max_side, profile)
+    camera_facing = db.facing_override(recording.recording_id)
+    if camera_facing:
+        print(f"  facing: {camera_facing} (set by hand)")
+    else:
+        camera_facing = facing_for_recording(recording, config.max_side, profile)
 
     if tracker is not None:
         tracker.reset()
