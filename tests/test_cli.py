@@ -68,3 +68,26 @@ def test_scan_fetches_racebox_sessions_unless_no_fetch(tmp_path, monkeypatch):
     fetched.clear()
     cli.scan_cmd(build_parser().parse_args(["scan", "in", "-o", str(out), "--no-fetch"]))
     assert fetched == []
+
+
+def test_scan_date_keeps_only_that_day(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    import videobrowser.cli as cli
+    import videobrowser.racebox_stage as rbs
+
+    recs = ["A", "B"]
+    monkeypatch.setattr(cli, "iter_video_paths", lambda *a, **k: [Path("x.mp4")])
+    monkeypatch.setattr(cli, "group_recordings", lambda *a, **k: list(recs))
+    monkeypatch.setattr(cli, "sort_by_start", lambda r: r)
+    monkeypatch.setattr(cli, "drop_duplicates", lambda r: r)
+    monkeypatch.setattr(cli, "recording_day", lambda r: {"A": "2026-08-01", "B": "2026-08-02"}[r])
+    monkeypatch.setattr(cli, "RiderTracker", lambda **k: None)
+    monkeypatch.setattr(rbs, "fetch_sessions", lambda d, **kw: None)
+    scanned = []
+    monkeypatch.setattr(cli, "scan_recording", lambda r, *a: scanned.append(r) or [])
+    out = tmp_path / "out"
+    args = build_parser().parse_args(["scan", "in", "-o", str(out), "--date", "2026-08-02"])
+    assert cli.scan_cmd(args) == 0 and scanned == ["B"]
+    args = build_parser().parse_args(["scan", "in", "-o", str(out), "--date", "2026-09-01"])
+    assert cli.scan_cmd(args) == 1
