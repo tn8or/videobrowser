@@ -91,6 +91,9 @@ class ScanDB:
         if "start_source" not in columns:
             # How start_utc was found: "gps", "racebox-motion" or "clock".
             conn.execute("ALTER TABLE recording_meta ADD COLUMN start_source TEXT")
+        if "facing" not in columns:
+            # "front"/"rear" from scene flow; NULL falls back to the profile.
+            conn.execute("ALTER TABLE recording_meta ADD COLUMN facing TEXT")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS scans (id INTEGER PRIMARY KEY, started_at TEXT, note TEXT)"
         )
@@ -153,18 +156,21 @@ class ScanDB:
         duration: float,
         chapters: list[dict],
         start_source: str | None = None,
+        facing: str | None = None,
     ) -> None:
         """*chapters*: ``[{"path", "offset", "duration"}, ...]`` in recording order.
 
         *start_source*: how *start_utc* was found ("gps", "racebox-motion"
-        or "clock"); overlays go only on the first two.
+        or "clock"); overlays go only on the first two. *facing*: "front"
+        or "rear" when scene flow told, else None (the profile decides).
         """
         self.conn.execute(
             """
             INSERT INTO recording_meta(
-                recording_id, profile, rotation, start_utc, date_label, duration, chapters, start_source
+                recording_id, profile, rotation, start_utc, date_label, duration, chapters,
+                start_source, facing
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(recording_id) DO UPDATE SET
                 profile=excluded.profile,
                 rotation=excluded.rotation,
@@ -172,11 +178,12 @@ class ScanDB:
                 date_label=excluded.date_label,
                 duration=excluded.duration,
                 chapters=excluded.chapters,
-                start_source=excluded.start_source
+                start_source=excluded.start_source,
+                facing=excluded.facing
             """,
             (
                 recording_id, profile, rotation, start_utc, date_label, duration,
-                json.dumps(chapters), start_source,
+                json.dumps(chapters), start_source, facing,
             ),
         )
         self.conn.commit()

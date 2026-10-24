@@ -170,3 +170,16 @@ def test_turn_series_sign_follows_the_turn(monkeypatch):
         mid = [s.yaw_rate for s in turns if 5 < s.t < 15]
         # v / r = 0.37 rad/s, about 21 deg/s.
         assert np.median(mid) == pytest.approx(sign * 21.2, abs=1.5)
+
+
+def test_speed_series_leaves_out_rows_without_a_fix(monkeypatch):
+    from pathlib import Path
+
+    from videobrowser import telemetry
+    from videobrowser.probe import VideoInfo
+
+    rows = [(55.0, 10.0, 120.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (55.0, 10.0, 118.0)]
+    monkeypatch.setattr(telemetry, "_walk_gps5_rows", lambda blob: rows)
+    info = VideoInfo(Path("x.mp4"), 3.0, 1920, 1080, 30.0, 0, "h264", True, 3)
+    speeds = telemetry.speed_series(info, b"x")
+    assert [(s.t, s.speed_kmh) for s in speeds] == [(0.0, 120.0), (3.0, 118.0)]

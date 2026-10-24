@@ -224,6 +224,7 @@ def export_verticals(
             else:
                 turns = []
             tracks = tracks_for(db, rid)
+            looks = meta["facing"] if "facing" in meta.keys() and meta["facing"] else facing(meta["profile"])
 
             factory_for = None
             if overlay and source != "clock":
@@ -251,7 +252,7 @@ def export_verticals(
                         window,
                         dest,
                         meta["rotation"],
-                        focus_samples(window, tracks, turns, facing(meta["profile"])),
+                        focus_samples(window, tracks, turns, looks),
                         overlay_factory=factory_for(window) if factory_for else None,
                     )
                 except Exception as exc:

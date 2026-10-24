@@ -260,3 +260,13 @@ def test_whole_day_match_gets_camera_clock_starts_after_a_recording_was_placed(m
     assert clocks["A"].start_utc == 975.0  # placed alone
     assert sorted(seen) == [1000.0, 2000.0]  # camera clock, not RaceBox time
     assert clocks["B"].start_utc == 2000.0 and day.gps["B"][0][0].t == pytest.approx(0.0, abs=0.1)
+
+
+def test_a_crash_needs_the_picture_to_stop_too():
+    from videobrowser.shorts import _moving_after
+
+    streaming = [(t + 0.5, 15.0) for t in range(30)]
+    parked = [(t + 0.5, 15.0 if t < 12 else 1.0) for t in range(30)]
+    assert _moving_after(streaming, 10.0)
+    assert not _moving_after(parked, 10.0)
+    assert not _moving_after(None, 10.0)  # no scene motion: trust the GPS

@@ -250,8 +250,12 @@ overlaps. Engine sound refines the result when both cameras' loudness
 envelopes match clearly; otherwise GPS stands. Turn the audio step off with
 `--no-audio-sync`.
 
-**Themes.** Event meaning depends on which way the camera faces (rear
-profiles: `rear`, `rear_right`, `rear_rotated`; everything else is front):
+**Themes.** Event meaning depends on which way the camera faces. The scan
+reads it from the picture while riding (the scene grows towards a camera
+looking ahead and shrinks into one looking back) and logs it when that
+disagrees with the mount guess; without a clear reading the profile decides
+(`rear`, `rear_right`, `rear_rotated` look back, everything else ahead).
+Scans from before this need `scan --force` to get it:
 
 | Theme | Rule | Reliability |
 |-------|------|-------------|
@@ -259,9 +263,9 @@ profiles: `rear`, `rear_right`, `rear_rotated`; everything else is front):
 | Bliver overhalet | rear `approaching` ends, front `receding` starts within -1.5..+5 s | good with front + rear |
 | Indhenter | front `approaching` for 1.5 s+ that is not an overtake | good |
 | Knæ i asfalten | `kneepuck_visible` | as the puck detector |
-| Styrt (own) | accelerometer jolt >= 3x gravity, moving >= 30 km/h before, stopped after | needs real crash data to tune |
+| Styrt (own) | accelerometer jolt >= 3x gravity, moving >= 30 km/h before, stopped after (GPS samples without a fix do not count, and the picture must stop moving too) | needs real crash data to tune |
 | Muligt styrt (others) | `rider_down`: a bike box loses its rider while a person box appears beside it, or the bike box turns low and wide while out on grass/gravel | candidates to check by hand |
-| Ude i gruset | `off_track`: the ground under a rider's box turns from grey asphalt to green grass or pale gravel for 0.6 s+ | candidates to check by hand |
+| Ude i gruset | `off_track`: the ground under a rider's box turns from asphalt to green grass or pale gravel for 0.6 s+; ground the colour of the road under the camera's own bike never counts (sunlit asphalt can look like gravel) | candidates to check by hand |
 | Action | any other event, for the mixed shorts | |
 
 `rider_down` and `off_track` are found during the scan (`incidents.py`), so

@@ -17,8 +17,16 @@ from videobrowser.events import (
     merge_same_type,
 )
 from videobrowser.gopro import Chapter, Recording, chapter_at
-from videobrowser.incidents import offtrack_fraction, score_incidents
-from videobrowser.motion import DEFAULT_THRESHOLD, event_is_moving, per_second, scene_motion
+from videobrowser.incidents import offtrack_fraction, road_colour, score_incidents
+from videobrowser.motion import (
+    DEFAULT_THRESHOLD,
+    TRACK_MOTION,
+    event_is_moving,
+    facing_from_flow,
+    flow_divergence,
+    per_second,
+    scene_motion,
+)
 from videobrowser.preview import write_previews
 from videobrowser.profiles import CameraMap, Rect, apply_ego_mask, guess_profile_from_samples, resolve_profile
 from videobrowser.probe import local_date_label
@@ -36,6 +44,7 @@ from videobrowser.telemetry import (
     speed_series,
     turn_series,
 )
+from videobrowser.themes import facing
 
 
 @dataclass
@@ -311,6 +320,9 @@ def scan_recording(
     focus_tracks: dict[int, list[TrackPoint]] = {}
     puck_hits: list[tuple[float, float]] = []
     motion_samples: list[tuple[float, float]] = []
+    # Expansion or contraction of the scene while moving: which way the
+    # camera looks, surer than the mount guess from still frames.
+    divergences: list[float] = []
     prev_image = None
     lean_samples = _lean_for_recording(recording) if "puck" in profile.pipelines else []
 
@@ -350,19 +362,20 @@ def scan_recording(
             ):
                 global_t = chapter.offset + frame.t
                 if prev_image is not None:
-                    motion_samples.append(
-                        (
-                            global_t,
-                            scene_motion(prev_image, frame.image, profile.ego_masks),
-                        )
-                    )
+                    motion = scene_motion(prev_image, frame.image, profile.ego_masks)
+                    motion_samples.append((global_t, motion))
+                    if motion >= TRACK_MOTION and len(motion_samples) % 5 == 0:
+                        div = flow_divergence(prev_image, frame.image, profile.ego_masks)
+                        if div is not None:
+                            divergences.append(div)
                 prev_image = frame.image
                 if "riders" in profile.pipelines and tracker is not None:
                     masked = apply_ego_mask(frame.image, profile)
                     points = tracker.update(masked)
+                    road = road_colour(frame.image) if points else None
                     for point in points:
                         point.t = global_t
-                        point.offtrack = offtrack_fraction(frame.image, point)
+                        point.offtrack = offtrack_fraction(frame.image, point, road)
                         # The puck ROI is where the camera rider's own knee
                         # shows, so boxes centred there do not count as other
                         # riders. They are not blacked out before tracking
@@ -401,6 +414,10 @@ def scan_recording(
     speeds, turns, start_utc, start_source = gps_for_recording(
         recording, config, motion_samples, start_utc
     )
+    camera_facing = facing_from_flow(divergences)
+    guessed = facing(profile.name)
+    if camera_facing and camera_facing != guessed:
+        print(f"  camera looks {camera_facing} by scene flow (mount guess {profile.name} said {guessed})")
     if config.min_speed > 0 and events:
         before_speed = len(events)
         events = [
@@ -481,6 +498,7 @@ def scan_recording(
             for ch in recording.chapters
         ],
         start_source,
+        facing=camera_facing,
     )
     db.save_motion(recording.recording_id, per_second(motion_samples))
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=True)
