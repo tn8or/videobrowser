@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import queue
 import subprocess
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,16 +13,39 @@ import numpy as np
 from videobrowser.probe import VideoInfo
 
 # Tried in order for analysis decode. Unavailable backends fail fast.
-_HWACCEL_TRY: tuple[list[str], ...] = (
-    ["-hwaccel", "videotoolbox"],
-    ["-hwaccel", "cuda"],
+# (name, ffmpeg input args, scale on the GPU). "cuda" keeps the decoded frames
+# in GPU memory and only downloads the few that pass the fps filter, already
+# scaled; without that every 4K frame is copied to RAM and scaled on the CPU.
+_DECODE_MODES: tuple[tuple[str, list[str], bool], ...] = (
+    ("videotoolbox", ["-hwaccel", "videotoolbox"], False),
+    ("cuda", ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"], True),
+    ("cuda-copy", ["-hwaccel", "cuda"], False),
 )
 
+# Frames the decoder reads ahead, so ffmpeg keeps decoding while the
+# detector works on the current frame.
+_PREFETCH = 16
 
-def _hwaccel_name(args: list[str]) -> str:
-    if len(args) >= 2 and args[0] == "-hwaccel":
-        return args[1]
-    return "software"
+# Per decode mode: (failures, successes) in this process. A mode that keeps
+# failing and has never worked (VideoToolbox on Windows, cuda without an
+# NVIDIA card) is skipped, so each short seek does not pay for its start-up.
+_MODE_LOG: dict[str, list[int]] = {}
+_GIVE_UP_AFTER = 2
+
+
+def _note(name: str, ok: bool) -> None:
+    log = _MODE_LOG.setdefault(name, [0, 0])
+    log[1 if ok else 0] += 1
+
+
+def _modes() -> list[tuple[str, list[str], bool]]:
+    """Hardware modes worth trying now, in order."""
+    out = []
+    for mode in _DECODE_MODES:
+        failures, successes = _MODE_LOG.get(mode[0], (0, 0))
+        if successes or failures < _GIVE_UP_AFTER:
+            out.append(mode)
+    return out
 
 
 def scaled_size(width: int, height: int, max_side: int, rotation: int = 0) -> tuple[int, int]:
@@ -46,6 +71,28 @@ def rotation_filter(rotation: int) -> str | None:
     if rotation == 270:
         return "transpose=2"
     return None
+
+
+def filter_chain(
+    width: int, height: int, rotation: int = 0, fps: float | None = None, gpu: bool = False
+) -> str:
+    """ffmpeg -vf for analysis frames of *width* x *height* (upright size).
+
+    Frames are dropped to *fps* and scaled before they are rotated, so the
+    rotation only touches small frames.
+    """
+    pre_w, pre_h = (height, width) if rotation % 180 else (width, height)
+    parts: list[str] = []
+    if fps:
+        parts.append(f"fps={fps:g}")
+    if gpu:
+        parts += [f"scale_cuda={pre_w}:{pre_h}:format=nv12", "hwdownload", "format=nv12"]
+    else:
+        parts.append(f"scale={pre_w}:{pre_h}")
+    rot = rotation_filter(rotation)
+    if rot:
+        parts.append(rot)
+    return ",".join(parts)
 
 
 def rotate_bgr(image: np.ndarray, rotation: int) -> np.ndarray:
@@ -83,15 +130,9 @@ def decode_frames(
 ) -> list[np.ndarray]:
     """*count* consecutive scaled BGR frames from t seconds on (fewer near the end)."""
     width, height = scaled_size(src_width, src_height, max_side, rotation)
-    vf_parts: list[str] = []
-    rot = rotation_filter(rotation)
-    if rot:
-        vf_parts.append(rot)
-    vf_parts.append(f"scale={width}:{height}")
-    vf = ",".join(vf_parts)
     expected = width * height * 3
 
-    def _run(hw: list[str]) -> bytes:
+    def _run(hw: list[str], gpu: bool) -> bytes:
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", *hw]
         cmd += [
             "-noautorotate",
@@ -102,7 +143,7 @@ def decode_frames(
             "-frames:v",
             str(count),
             "-vf",
-            vf,
+            filter_chain(width, height, rotation, gpu=gpu),
             "-pix_fmt",
             "bgr24",
             "-f",
@@ -111,11 +152,17 @@ def decode_frames(
         ]
         return subprocess.run(cmd, capture_output=True).stdout
 
-    raw = b""
-    for hw in (*_HWACCEL_TRY, []):
-        raw = _run(hw)
-        if len(raw) >= expected * count:
-            break
+    for name, hw, gpu in _modes():
+        raw = _run(hw, gpu)
+        _note(name, bool(raw))
+        # Fewer than *count* from a working mode means the file ends there.
+        if len(raw) >= expected:
+            return _split(raw, width, height)
+    return _split(_run([], False), width, height)
+
+
+def _split(raw: bytes, width: int, height: int) -> list[np.ndarray]:
+    expected = width * height * 3
     n = len(raw) // expected
     return [
         np.frombuffer(raw[i * expected : (i + 1) * expected], dtype=np.uint8).copy().reshape(height, width, 3)
@@ -160,23 +207,16 @@ class FrameDecoder:
     def close(self) -> None:
         if self._proc is None:
             return
-        if self._proc.stdout:
-            self._proc.stdout.close()
+        # Kill before closing the pipe: closing it while the prefetch thread
+        # is blocked in read() would wait on that read forever.
         if self._proc.poll() is None:
             self._proc.kill()
             self._proc.wait()
+        if self._proc.stdout:
+            self._proc.stdout.close()
         self._proc = None
 
-    def _vf(self) -> str:
-        parts: list[str] = []
-        rot = rotation_filter(self.rotation)
-        if rot:
-            parts.append(rot)
-        parts.append(f"fps={self.fps:g}")
-        parts.append(f"scale={self.width}:{self.height}")
-        return ",".join(parts)
-
-    def _cmd(self, hw: list[str]) -> list[str]:
+    def _cmd(self, hw: list[str], gpu: bool) -> list[str]:
         return [
             "ffmpeg",
             "-hide_banner",
@@ -187,7 +227,7 @@ class FrameDecoder:
             "-i",
             str(self.path),
             "-vf",
-            self._vf(),
+            filter_chain(self.width, self.height, self.rotation, self.fps, gpu),
             "-pix_fmt",
             "bgr24",
             "-f",
@@ -195,10 +235,10 @@ class FrameDecoder:
             "pipe:1",
         ]
 
-    def _iter(self, hw: list[str]) -> Iterator[Frame]:
+    def _iter(self, name: str, hw: list[str], gpu: bool) -> Iterator[Frame]:
         try:
             self._proc = subprocess.Popen(
-                self._cmd(hw),
+                self._cmd(hw, gpu),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
             )
@@ -206,42 +246,71 @@ class FrameDecoder:
             raise RuntimeError("ffmpeg not found on PATH") from exc
         assert self._proc.stdout is not None
         frame_bytes = self.width * self.height * 3
+        stdout = self._proc.stdout
+        # A reader thread keeps ffmpeg's pipe drained while the caller runs
+        # the detector, so decode and inference overlap.
+        buffered: queue.Queue[bytes | None] = queue.Queue(maxsize=_PREFETCH)
+        stop = threading.Event()
+
+        def _put(item: bytes | None) -> bool:
+            while not stop.is_set():
+                try:
+                    buffered.put(item, timeout=0.2)
+                    return True
+                except queue.Full:
+                    continue
+            return False
+
+        def _read() -> None:
+            try:
+                while True:
+                    buf = stdout.read(frame_bytes)
+                    if len(buf) < frame_bytes or not _put(buf):
+                        break
+            except (OSError, ValueError):
+                pass
+            finally:
+                _put(None)
+
+        reader = threading.Thread(target=_read, daemon=True)
+        reader.start()
         t = 0.0
         dt = 1.0 / self.fps if self.fps else 0.2
-        stdout = self._proc.stdout
         yielded = False
         try:
             while True:
                 if self.max_seconds is not None and t >= self.max_seconds:
                     break
-                buf = stdout.read(frame_bytes)
-                if len(buf) < frame_bytes:
+                buf = buffered.get()
+                if buf is None:
                     break
-                image = np.frombuffer(buf, dtype=np.uint8).copy().reshape(
-                    self.height, self.width, 3
-                )
+                image = np.frombuffer(buf, dtype=np.uint8).reshape(self.height, self.width, 3)
                 yielded = True
-                yield Frame(t=t, image=image)
+                yield Frame(t=t, image=image.copy())
                 t += dt
         finally:
+            stop.set()
             self.close()
+            reader.join(timeout=5.0)
         if not yielded and hw:
-            raise RuntimeError(f"{_hwaccel_name(hw)} decode produced no frames")
+            raise RuntimeError(f"{name} decode produced no frames")
 
     def frames(self) -> Iterator[Frame]:
         last: RuntimeError | None = None
-        for hw in _HWACCEL_TRY:
-            self.backend = _hwaccel_name(hw)
+        for name, hw, gpu in _modes():
+            self.backend = name
             self.hwaccel = True
             try:
-                yield from self._iter(hw)
+                yield from self._iter(name, hw, gpu)
+                _note(name, True)
                 return
             except RuntimeError as exc:
+                _note(name, False)
                 last = exc
         self.backend = "software"
         self.hwaccel = False
         try:
-            yield from self._iter([])
+            yield from self._iter("software", [], False)
         except RuntimeError:
             if last is not None:
                 raise last
