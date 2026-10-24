@@ -28,7 +28,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    scan = sub.add_parser("scan", help="Scan video files and export highlight clips")
+    scan = sub.add_parser(
+        "scan",
+        help="Analyse video files (events, clip windows, rider boxes) into scan.sqlite; cuts nothing",
+    )
     scan.add_argument(
         "inputs",
         nargs="+",
@@ -69,7 +72,6 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--device", default="auto", help="auto | mps | cpu | coreml")
     scan.add_argument("--conf", type=float, default=0.25, help="YOLO confidence threshold")
     scan.add_argument("--force", action="store_true", help="Reprocess recordings already in the SQLite log")
-    scan.add_argument("--no-clips", action="store_true", help="Detect only; do not cut clips")
     scan.add_argument("--previews", type=int, default=8, help="Annotated preview JPEGs per recording")
     scan.add_argument(
         "--lean-gate",
@@ -99,30 +101,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-clip-seconds",
         type=float,
         default=24.0,
-        help="Max length of each exported clip (default 24)",
+        help="Max length of each clip window (default 24)",
     )
     scan.add_argument(
         "--max-clips",
         type=int,
         default=12,
-        help="Max clips per recording (highest-scoring peaks, default 12)",
-    )
-    scan.add_argument(
-        "--no-overlay",
-        "--no-racebox",
-        dest="no_overlay",
-        action="store_true",
-        help="No overlays at all: skip the RaceBox stage and the date/time on verticals",
-    )
-    scan.add_argument(
-        "--no-vertical",
-        action="store_true",
-        help="Do not write 1080x1920 follow-cam copies of clips to <out>/vertical",
-    )
-    scan.add_argument(
-        "--no-landscape",
-        action="store_true",
-        help="Do not write landscape clips or RaceBox overlay renders (verticals only)",
+        help="Max clip windows per recording (highest-scoring peaks, default 12)",
     )
     scan.add_argument(
         "--no-fetch",
@@ -135,22 +120,44 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Directory of RaceBox .vbo sessions (default: <out>/sessions)",
     )
-    scan.add_argument(
-        "--font",
-        default="/System/Library/Fonts/Supplemental/Arial.ttf",
-        help="TTF font used for overlay text",
-    )
-    scan.add_argument(
-        "--stats",
-        type=Path,
-        default=None,
-        help="Stats SQLite for lap bests (default: <out>/stats.sqlite)",
-    )
-    scan.add_argument(
-        "--no-shorts",
-        action="store_true",
-        help="Do not build the per-day shorts under <out>/shorts after the scan",
-    )
+    # Clip options from when scan also cut clips; accepted so old command
+    # lines keep working, and ignored.
+    for flag in ("--no-clips", "--no-overlay", "--no-racebox", "--no-vertical", "--no-landscape", "--no-shorts"):
+        scan.add_argument(flag, action="store_true", dest=f"old_{flag[2:].replace('-', '_')}", help=argparse.SUPPRESS)
+
+    for name, what in (
+        ("horizontals", "landscape clips under <out>/clips plus the RaceBox overlay renders"),
+        ("verticals", "1080x1920 follow-cam clips under <out>/vertical"),
+    ):
+        cmd = sub.add_parser(name, help=f"Cut {what} from a finished scan")
+        cmd.add_argument("-o", "--out", type=Path, required=True, help="Scan output directory")
+        cmd.add_argument("--date", action="append", default=[], metavar="YYYY-MM-DD", help="Only this day (repeatable)")
+        cmd.add_argument(
+            "--no-overlay",
+            "--no-racebox",
+            dest="no_overlay",
+            action="store_true",
+            help="No overlays at all (RaceBox, telemetry, date/time)",
+        )
+        cmd.add_argument("--force", action="store_true", help="Cut clips again even if the file exists")
+        cmd.add_argument(
+            "--sessions-dir",
+            type=Path,
+            default=None,
+            help="Directory of RaceBox .vbo sessions (default: <out>/sessions)",
+        )
+        cmd.add_argument(
+            "--font",
+            default="/System/Library/Fonts/Supplemental/Arial.ttf",
+            help="TTF font used for overlay text",
+        )
+        if name == "horizontals":
+            cmd.add_argument(
+                "--stats",
+                type=Path,
+                default=None,
+                help="Stats SQLite for lap bests (default: <out>/stats.sqlite)",
+            )
 
     shorts = sub.add_parser(
         "shorts",
@@ -191,7 +198,7 @@ def shorts_cmd(args: argparse.Namespace) -> int:
     if not (out / "scan.sqlite").exists():
         print(f"no scan.sqlite in {out}", file=sys.stderr)
         return 1
-    built = build_shorts(
+    build_shorts(
         out,
         inputs=[p.expanduser() for p in args.inputs],
         sessions_dir=(args.sessions_dir or (out / "sessions")).expanduser(),
@@ -203,12 +210,27 @@ def shorts_cmd(args: argparse.Namespace) -> int:
         render=not args.dry_run,
         min_speed=args.min_speed,
     )
-    if built and not args.dry_run:
-        db = ScanDB.open(out / "scan.sqlite")
-        try:
-            db.clear_shorts_pending(list(built))
-        finally:
-            db.close()
+    return 0
+
+
+def exports_cmd(args: argparse.Namespace) -> int:
+    from videobrowser.exports import export_horizontals, export_verticals
+
+    out = args.out.expanduser().resolve()
+    if not (out / "scan.sqlite").exists():
+        print(f"no scan.sqlite in {out}", file=sys.stderr)
+        return 1
+    common = dict(
+        dates=args.date or None,
+        overlay=not args.no_overlay,
+        sessions_dir=(args.sessions_dir or (out / "sessions")).expanduser(),
+        font_path=args.font,
+        force=args.force,
+    )
+    if args.cmd == "horizontals":
+        export_horizontals(out, stats_path=args.stats, **common)
+    else:
+        export_verticals(out, **common)
     return 0
 
 
@@ -226,8 +248,6 @@ def scan_cmd(args: argparse.Namespace) -> int:
     if not paths:
         print("no video files found", file=sys.stderr)
         return 1
-    # Oldest first, so each day's shorts can be built as soon as its last
-    # recording is scanned instead of after the whole library.
     recordings = drop_duplicates(sort_by_start(group_recordings(paths, input_roots=inputs)))
     camera_map = CameraMap.load(args.map) if args.map else CameraMap({}, {})
     if args.map:
@@ -255,7 +275,6 @@ def scan_cmd(args: argparse.Namespace) -> int:
         device=device,
         conf=args.conf,
         force=args.force,
-        no_clips=args.no_clips,
         preview_limit=args.previews,
         lean_gate=args.lean_gate,
         max_seconds=args.max_seconds,
@@ -263,106 +282,34 @@ def scan_cmd(args: argparse.Namespace) -> int:
         min_speed=args.min_speed,
         max_clip_seconds=args.max_clip_seconds,
         max_clips=args.max_clips,
-        vertical=not args.no_vertical,
-        landscape=not args.no_landscape,
-        overlay=not args.no_overlay,
-        font_path=args.font,
     )
+    if any(v for k, v in vars(args).items() if k.startswith("old_")):
+        print("note: scan no longer cuts clips; use horizontals, verticals and shorts")
 
-    if not args.no_overlay:
-        try:
-            from videobrowser.racebox_stage import prepare
-
-            print("racebox: setting up overlays…", flush=True)
-            sessions_dir = (args.sessions_dir or (out / "sessions")).expanduser()
-            stats_path = (args.stats or (out / "stats.sqlite")).expanduser()
-            config.racebox = prepare(
-                out_dir=out,
-                sessions_dir=sessions_dir,
-                font_path=args.font,
-                stats_path=stats_path,
-                do_fetch=not args.no_fetch,
-            )
-        except Exception as exc:
-            print(f"racebox setup failed, continuing without overlays: {exc}")
-            config.racebox = None
-
-    shorts_on = not (args.no_shorts or args.no_vertical or args.no_clips)
+    # RaceBox speed and turns stand in for footage without GoPro GPS.
     sessions_dir = (args.sessions_dir or (out / "sessions")).expanduser()
-    # RaceBox speed and turns stand in for footage without GoPro GPS, also
-    # with overlays off.
-    from videobrowser.racebox_align import load_track, track_from_sessions
-
-    if config.racebox is None and args.no_overlay and not args.no_fetch:
+    if not args.no_fetch:
         try:
             from videobrowser.racebox_stage import fetch_sessions
 
             fetch_sessions(sessions_dir)
         except Exception as exc:
             print(f"racebox: fetch failed ({exc})")
-    config.racebox_track = (
-        track_from_sessions(config.racebox.sessions) if config.racebox else load_track(sessions_dir)
-    )
-    shorts_failed = False
-    attempted: set[str] = set()
+    from videobrowser.racebox_align import load_track
 
-    def build_days(dates: list[str]) -> None:
-        """Build shorts for *dates*; a day stays pending until its build finishes."""
-        nonlocal shorts_failed
-        if not (shorts_on and dates):
-            return
-        attempted.update(dates)
-        try:
-            from videobrowser.shorts import build_shorts
-
-            # --min-speed 0 turns the speed checks off in the shorts too.
-            track = DEFAULT_MIN_TRACK_KMH if args.min_speed > 0 else 0.0
-            build_shorts(out, sessions_dir=sessions_dir, dates=dates, min_speed=track)
-        except Exception as exc:
-            # Detection is already saved in scan.sqlite; the day stays pending
-            # so the next scan retries it.
-            print(f"shorts failed: {exc}", file=sys.stderr)
-            shorts_failed = True
-            return
-        db.clear_shorts_pending(dates)
-
-    def shorts_for(scanned: list[str]) -> None:
-        """Build shorts for the days the just-finished recordings landed on."""
-        dates = db.date_labels(scanned)
-        db.add_shorts_pending(dates)
-        build_days(dates)
+    config.racebox_track = load_track(sessions_dir)
 
     all_events = []
     try:
-        current_day: str | None = None
-        scanned: list[str] = []
         for recording in recordings:
-            day = recording_day(recording)
-            if day != current_day:
-                shorts_for(scanned)
-                current_day, scanned = day, []
-            skipped = db.is_processed(recording.recording_id) and not config.force
             all_events.extend(scan_recording(recording, config, db, tracker))
-            if not skipped:
-                scanned.append(recording.recording_id)
-        shorts_for(scanned)
-        # Days left over from an earlier scan whose shorts failed or were off.
-        build_days([d for d in db.shorts_pending() if d not in attempted])
     finally:
         db.close()
 
-    payload = events_to_json(
-        all_events,
-        clips=[
-            {"path": str(p)}
-            for p in sorted((out / "clips").rglob("*.mp4"))
-        ]
-        if (out / "clips").exists()
-        else [],
-    )
-    (out / "events.json").write_text(json.dumps(payload, indent=2))
+    (out / "events.json").write_text(json.dumps(events_to_json(all_events, clips=[]), indent=2))
     print(f"wrote {out / 'events.json'}  ({len(all_events)} events)")
-    return 1 if shorts_failed else 0
+    print("next: videobrowser horizontals / verticals / shorts -o " + str(out))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -372,5 +319,7 @@ def main(argv: list[str] | None = None) -> int:
         return scan_cmd(args)
     if args.cmd == "shorts":
         return shorts_cmd(args)
+    if args.cmd in ("horizontals", "verticals"):
+        return exports_cmd(args)
     parser.error(f"unknown command {args.cmd}")
     return 2

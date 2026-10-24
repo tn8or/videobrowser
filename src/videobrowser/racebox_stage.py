@@ -62,6 +62,8 @@ class RaceboxContext:
     highlights_dir: str = "highlights"
     full_dir: str = "full_sessions"
     fastest_dir: str = "fastest_laps"
+    # Leave renders whose file already exists (horizontals without --force).
+    keep_existing: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +539,8 @@ def _render_highlight(
     out_dir: Path,
 ) -> None:
     out_path = out_dir / _highlight_name(window)
+    if ctx.keep_existing and out_path.exists():
+        return
     with tempfile.TemporaryDirectory() as tmp:
         temp = Path(tmp) / "clip.mp4"
         try:
@@ -581,7 +585,7 @@ def _render_session_span(
     u1: float,
     out_path: Path,
 ) -> None:
-    if u1 - u0 < 1.0:
+    if u1 - u0 < 1.0 or (ctx.keep_existing and out_path.exists()):
         return
     g0 = u0 - rec_start_utc
     g1 = u1 - rec_start_utc

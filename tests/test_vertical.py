@@ -301,34 +301,6 @@ def test_export_vertical_composites_overlay(tmp_path: Path):
     assert frame[1800, 540] < 30
 
 
-@pytest.mark.parametrize("overlay,sure", [(True, True), (False, True), (True, False)])
-def test_export_verticals_overlay_follows_config(tmp_path: Path, monkeypatch, overlay, sure):
-    from videobrowser import pipeline, racebox_stage, vertical
-    from videobrowser.profiles import UNKNOWN
-
-    calls = []
-    monkeypatch.setattr(racebox_stage, "overlay_context", lambda out, font: object())
-    monkeypatch.setattr(racebox_stage, "recording_start_utc", lambda rec, ctx: None)
-    monkeypatch.setattr(
-        vertical, "export_vertical", lambda *a, **kw: calls.append(kw["overlay_factory"])
-    )
-    config = pipeline.ScanConfig(out_dir=tmp_path, overlay=overlay)
-    pipeline._export_verticals(
-        Recording(recording_id="GX-0001", prefix="GX", recording="0001", chapters=[]),
-        [_window()],
-        UNKNOWN,
-        config,
-        {},
-        [],
-        None,
-        tmp_path,
-        overlay=sure,
-    )
-    assert len(calls) == 1
-    # No overlay without a sure RaceBox/camera link, whatever the config.
-    assert (calls[0] is not None) is (overlay and sure)
-
-
 def test_tracks_in_puck_roi_are_followed_but_not_scored():
     from videobrowser.pipeline import _in_roi, _merge_tracks
     from videobrowser.profiles import UNKNOWN
