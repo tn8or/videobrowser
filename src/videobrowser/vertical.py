@@ -39,6 +39,9 @@ OUT_H = 1920
 
 # Boxes smaller than this (fraction of frame height) are too far away to follow.
 MIN_FOLLOW_HEIGHT_FRAC = 0.05
+# A rider already followed is kept down to this size, so the crop does not
+# drop them for the corner as they pull away.
+KEEP_FOLLOW_HEIGHT_FRAC = 0.03
 # Stay on the current target until another candidate is this much larger.
 SWITCH_RATIO = 0.5
 # Zero-phase smoothing time constant, seconds.
@@ -55,8 +58,11 @@ FULL_TURN_DEG_S = 25.0
 MAX_TURN_SHIFT = 0.35
 # A front camera looks this far ahead into the coming corner, seconds.
 TURN_LOOK_AHEAD_S = 0.7
-# A turn sample this close to a rider sample yields to the rider.
+# A turn sample this close before a rider sample yields to the rider.
 TURN_RIDER_GAP_S = 0.3
+# After the last sight of a rider the crop holds on them this long before it
+# turns into the corner: the tracker loses riders for a few frames at a time.
+RIDER_HOLD_S = 1.5
 # Vertical output bitrate (the landscape exports use 60M for full-res frames).
 _BITRATE = "20M"
 
@@ -98,7 +104,8 @@ def focus_samples(
     """Where the action is over *window*, one sample per analysed frame.
 
     Priority per frame: tracks named by the window's events, then any other
-    rider big enough to matter, then the corner ahead (*turns*). Among
+    rider big enough to matter, then the corner ahead (*turns*), which only
+    takes over once no rider has been seen for ``RIDER_HOLD_S``. Among
     candidates the largest box wins, but the current target is kept while it
     stays reasonably large so the crop does not flick between two riders side
     by side.
@@ -115,14 +122,19 @@ def focus_samples(
         for point in points:
             if not window.t_start <= point.t <= window.t_end:
                 continue
-            if point.height_frac < MIN_FOLLOW_HEIGHT_FRAC:
+            if point.height_frac < KEEP_FOLLOW_HEIGHT_FRAC:
                 continue
             by_t.setdefault(point.t, []).append(point)
 
     samples: list[FocusSample] = []
     current: int | None = None
     for t in sorted(by_t):
-        points = by_t[t]
+        # Small boxes only for the rider already followed.
+        points = [
+            p for p in by_t[t] if p.height_frac >= MIN_FOLLOW_HEIGHT_FRAC or p.track_id == current
+        ]
+        if not points:
+            continue
         primary = [p for p in points if p.track_id in event_ids]
         candidates = primary or points
         best = max(candidates, key=lambda p: p.area)
@@ -134,8 +146,12 @@ def focus_samples(
 
     rider_ts = np.array([s.t for s in samples], dtype=np.float64)
     for sample in turn_focus(turns or [], window.t_start, window.t_end, facing):
-        if len(rider_ts) and np.min(np.abs(rider_ts - sample.t)) < TURN_RIDER_GAP_S:
-            continue
+        if len(rider_ts):
+            # Riders win: just before one shows up, and for a while after one
+            # was last seen.
+            gap = rider_ts - sample.t
+            if np.any((gap >= 0) & (gap < TURN_RIDER_GAP_S)) or np.any((gap <= 0) & (gap > -RIDER_HOLD_S)):
+                continue
         samples.append(sample)
     samples.sort(key=lambda s: s.t)
     return samples
