@@ -145,6 +145,38 @@ class RiderTracker:
             ids = result.boxes.id.cpu().numpy()
         return self._points_from_result(result, image, ids)
 
+    def update_batch(self, images: list) -> list[list[TrackPoint]]:
+        """``update`` for several consecutive frames at once.
+
+        YOLO runs on the whole batch in one call, which removes most of the
+        per-call overhead (one frame per call left the GPU mostly waiting);
+        the tracker still steps through the frames in order. A TensorRT
+        engine is built for batch 1, so it takes them one by one.
+        """
+        self.load()
+        if self.engine or len(images) <= 1:
+            return [self.update(image) for image in images]
+        persist = self._started
+        self._started = True
+        results = self._model.track(
+            images,
+            persist=persist,
+            tracker="bytetrack.yaml",
+            conf=self.conf,
+            classes=list(self.classes),
+            imgsz=self.imgsz,
+            device=self._ultralytics_device(),
+            **self._precision(),
+            verbose=False,
+        )
+        out = []
+        for result, image in zip(results, images):
+            ids = None
+            if result.boxes is not None and result.boxes.id is not None:
+                ids = result.boxes.id.cpu().numpy()
+            out.append(self._points_from_result(result, image, ids))
+        return out
+
     def _points_from_result(self, result, image, ids) -> list[TrackPoint]:
         boxes = result.boxes
         if boxes is None or boxes.xyxy is None or len(boxes) == 0:

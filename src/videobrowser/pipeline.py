@@ -126,6 +126,10 @@ def _sample_times(recording: Recording) -> list[tuple[Chapter, float]]:
 # mostly start-up and waiting on the decoder.
 _SEEK_WORKERS = os.cpu_count() or 4
 
+# Frames sent to YOLO per call. One frame per call spent most of the time on
+# per-call overhead rather than on the GPU (~22 ms a frame on an RTX 5070).
+_DETECT_BATCH = 16
+
 
 def _parallel(work, items: list) -> list:
     """work(item) for each item, in order, a few at a time."""
@@ -432,8 +436,33 @@ def scan_recording(
                         return
                     yield frame
 
-            for frame in tqdm(
-                _frames(),
+            use_riders = "riders" in profile.pipelines and tracker is not None
+
+            def _detected():
+                """(frame, rider boxes) in order, YOLO run _DETECT_BATCH frames at a time."""
+                batch = []
+                for frame in _frames():
+                    batch.append(frame)
+                    if len(batch) < _DETECT_BATCH:
+                        continue
+                    yield from _flush(batch)
+                    batch = []
+                if batch:
+                    yield from _flush(batch)
+
+            def _flush(batch):
+                nonlocal detected
+                if not use_riders:
+                    for frame in batch:
+                        yield frame, []
+                    return
+                t0 = time.perf_counter()
+                found = tracker.update_batch([apply_ego_mask(f.image, profile) for f in batch])
+                detected += time.perf_counter() - t0
+                yield from zip(batch, found)
+
+            for frame, points in tqdm(
+                _detected(),
                 total=max(expected, 1),
                 desc=chapter.path.name,
                 unit="fr",
@@ -444,11 +473,7 @@ def scan_recording(
                         (global_t, scene_motion(prev_image, frame.image, profile.ego_masks))
                     )
                 prev_image = frame.image
-                if "riders" in profile.pipelines and tracker is not None:
-                    masked = apply_ego_mask(frame.image, profile)
-                    t0 = time.perf_counter()
-                    points = tracker.update(masked)
-                    detected += time.perf_counter() - t0
+                if use_riders:
                     road = road_colour(frame.image) if points else None
                     for point in points:
                         point.t = global_t
