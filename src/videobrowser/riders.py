@@ -89,7 +89,7 @@ class RiderTracker:
             classes=list(self.classes),
             imgsz=self.imgsz,
             device=self._ultralytics_device(),
-            half=self._half(),
+            **self._precision(),
             verbose=False,
         )
         return self._points_from_result(results[0], image, ids=None)
@@ -106,7 +106,7 @@ class RiderTracker:
             classes=list(self.classes),
             imgsz=self.imgsz,
             device=self._ultralytics_device(),
-            half=self._half(),
+            **self._precision(),
             verbose=False,
         )
         result = results[0]
@@ -144,9 +144,21 @@ class RiderTracker:
             )
         return points
 
-    def _half(self) -> bool:
-        # FP16 on NVIDIA roughly halves the time per frame for the same boxes.
-        return str(self.device).startswith("cuda")
+    def _precision(self) -> dict:
+        """FP16 on NVIDIA, which roughly halves the time per frame.
+
+        Newer ultralytics takes ``quantize=16`` and warns on every frame for
+        the older ``half=True``.
+        """
+        if not str(self.device).startswith("cuda"):
+            return {}
+        try:
+            from ultralytics.cfg import DEFAULT_CFG_DICT
+        except ImportError:
+            DEFAULT_CFG_DICT = {}
+        if "quantize" in DEFAULT_CFG_DICT:
+            return {"quantize": 16}
+        return {"half": True}
 
     def _ultralytics_device(self) -> str | int:
         if self.device == "coreml":

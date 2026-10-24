@@ -39,3 +39,20 @@ def test_own_exhaust_on_the_frame_edge_is_not_a_rider():
     assert score_tracks({1: exhaust}, "GX-0014") == []
     closing = [_pt(i * 0.2, 0.08 + i * 0.03) for i in range(20)]  # also on the edge, but growing
     assert not is_ego_track(closing)
+
+
+def test_fp16_uses_quantize_when_ultralytics_has_it(monkeypatch):
+    import sys
+    import types
+
+    from videobrowser.riders import RiderTracker
+
+    cfg = types.ModuleType("ultralytics.cfg")
+    monkeypatch.setitem(sys.modules, "ultralytics", types.ModuleType("ultralytics"))
+    monkeypatch.setitem(sys.modules, "ultralytics.cfg", cfg)
+    tracker = RiderTracker(model_path="x.pt", device="cuda", conf=0.25)
+    cfg.DEFAULT_CFG_DICT = {"quantize": None, "half": False}
+    assert tracker._precision() == {"quantize": 16}
+    cfg.DEFAULT_CFG_DICT = {"half": False}
+    assert tracker._precision() == {"half": True}
+    assert RiderTracker(model_path="x.pt", device="mps", conf=0.25)._precision() == {}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -120,9 +121,9 @@ def _sample_times(recording: Recording) -> list[tuple[Chapter, float]]:
     return picks
 
 
-# Short seeks run side by side: each is its own ffmpeg, mostly start-up and
-# waiting on the decoder, so a handful overlap well on GPU or CPU decode.
-_SEEK_WORKERS = 6
+# Short seeks run side by side, one per CPU thread: each is its own ffmpeg,
+# mostly start-up and waiting on the decoder.
+_SEEK_WORKERS = os.cpu_count() or 4
 
 
 def _parallel(work, items: list) -> list:
