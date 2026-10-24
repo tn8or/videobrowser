@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -414,10 +415,22 @@ def scan_recording(
             backend = decoder.backend
             print(f"  decode {backend} {decoder.width}x{decoder.height} @ {config.fps:g}fps")
 
+            # Where the chapter's time goes, logged after it: waiting on the
+            # decoder, in the detector, and the per-frame work around it.
+            waited = detected = 0.0
+            began = time.perf_counter()
+
             def _frames():
+                nonlocal waited
                 if first is not None:
                     yield first
-                    yield from frame_iter
+                while True:
+                    t0 = time.perf_counter()
+                    frame = next(frame_iter, None)
+                    waited += time.perf_counter() - t0
+                    if frame is None:
+                        return
+                    yield frame
 
             for frame in tqdm(
                 _frames(),
@@ -433,7 +446,9 @@ def scan_recording(
                 prev_image = frame.image
                 if "riders" in profile.pipelines and tracker is not None:
                     masked = apply_ego_mask(frame.image, profile)
+                    t0 = time.perf_counter()
                     points = tracker.update(masked)
+                    detected += time.perf_counter() - t0
                     road = road_colour(frame.image) if points else None
                     for point in points:
                         point.t = global_t
@@ -454,6 +469,11 @@ def scan_recording(
                         hit = detect_puck(frame.image, profile.puck_roi)
                         if hit:
                             puck_hits.append((global_t, hit.score))
+            total = time.perf_counter() - began
+            print(
+                f"  time {total:.0f}s: decode wait {waited:.0f}s, detector {detected:.0f}s, "
+                f"other {max(0.0, total - waited - detected):.0f}s"
+            )
         if remaining is not None:
             remaining -= chapter.duration
 
