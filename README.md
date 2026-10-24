@@ -264,7 +264,8 @@ log, with the votes). Without a clear reading the mount guess decides (`rear`,
 existing scan without a full `scan --force`. When a camera stays unclear,
 fix it by hand: `videobrowser facing -o output --set GX=front --set GH=rear`
 applies to every recording whose id contains that text, now and in later
-scans:
+scans. `videobrowser facing -o output --clear` forgets those and measures
+again:
 
 | Theme | Rule | Reliability |
 |-------|------|-------------|
