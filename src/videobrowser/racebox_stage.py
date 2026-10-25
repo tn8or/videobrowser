@@ -349,13 +349,13 @@ def _overlay_pass(
                     break
                 try:
                     proc.stdin.write(frame if frame is not None else empty)
-                except BrokenPipeError:
+                except OSError:  # BrokenPipeError; EINVAL on Windows
                     break
         finally:
             if proc.stdin:
                 try:
                     proc.stdin.close()
-                except BrokenPipeError:
+                except OSError:  # BrokenPipeError; EINVAL on Windows
                     pass
         ret = proc.wait()
     if ret != 0:

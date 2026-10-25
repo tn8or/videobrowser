@@ -1047,13 +1047,13 @@ def _run_clip_ffmpeg(
                 proc.stdin.write(frame if isinstance(frame, bytes) else frame.tobytes())
             else:
                 proc.stdin.write(empty_frame_bytes)
-        except BrokenPipeError:
+        except OSError:  # BrokenPipeError; EINVAL on Windows
             break
 
     if proc.stdin:
         try:
             proc.stdin.close()
-        except BrokenPipeError:
+        except OSError:  # BrokenPipeError; EINVAL on Windows
             pass
     ret = proc.wait()
     if ret != 0:
