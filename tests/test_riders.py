@@ -1,4 +1,4 @@
-from videobrowser.riders import TrackPoint, is_ego_track, score_tracks
+from videobrowser.riders import TrackPoint, is_ego_track, score_passes, score_tracks
 
 
 def _pt(t: float, height_frac: float, track_id: int = 1) -> TrackPoint:
@@ -161,3 +161,52 @@ def test_update_batch_runs_yolo_once_per_batch():
     assert calls == [(4, False), (4, True)]
     assert [len(p) for p in first] == [0, 1, 0, 1]
     assert first[1][0].track_id == 7 and len(second) == 4
+
+
+def _bike(t: float, height_frac: float, cx: float, track_id: int) -> TrackPoint:
+    fh, fw = 360, 640
+    h = height_frac * fh
+    w = h * 0.8
+    return TrackPoint(
+        t=t, x1=cx - w / 2, y1=150, x2=cx + w / 2, y2=150 + h, conf=0.8, cls=3,
+        track_id=track_id, frame_w=fw, frame_h=fh,
+    )
+
+
+def _pass(n: int = 25, ids: tuple[int, int] = (1, 2)):
+    """Rider 1 starts nearer and drops back; rider 2 comes past on the other side."""
+    a = [_bike(i * 0.2, 0.20 - i * 0.004, 250 + i * 6, ids[0]) for i in range(n)]
+    b = [_bike(i * 0.2, 0.12 + i * 0.004, 390 - i * 6, ids[1]) for i in range(n)]
+    return {ids[0]: a, ids[1]: b}
+
+
+def test_two_riders_swapping_places_is_a_pass():
+    events = score_passes(_pass(), "GX-0020")
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.type == "rider_pass" and ev.track_id == "1+2"
+    assert ev.extra["sideways"] and ev.score > 1.0
+    assert 1.0 < ev.t_start < ev.t_end < 4.0
+
+
+def test_riders_holding_their_order_are_not_a_pass():
+    a = [_bike(i * 0.2, 0.20, 250, 1) for i in range(25)]
+    b = [_bike(i * 0.2, 0.12 + i * 0.002, 390, 2) for i in range(25)]
+    assert score_passes({1: a, 2: b}, "GX-0020") == []
+
+
+def test_tracker_swapping_ids_is_not_a_pass():
+    near = [(0.20, 250), (0.10, 420)]
+    a, b = [], []
+    for i in range(20):
+        (ha, xa), (hb, xb) = near if i < 10 else near[::-1]
+        a.append(_bike(i * 0.2, ha, xa, 1))
+        b.append(_bike(i * 0.2, hb, xb, 2))
+    assert score_passes({1: a, 2: b}, "GX-0020") == []
+
+
+def test_person_boxes_do_not_pair_with_their_bike():
+    tracks = _pass()
+    for p in tracks[2]:
+        p.cls = 0
+    assert score_passes(tracks, "GX-0020") == []

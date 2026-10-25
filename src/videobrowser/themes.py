@@ -1,6 +1,6 @@
 """Turn per-camera events into themed moments on the day's shared clock.
 
-A scan finds the same four event types on every camera (``nearby_rider``,
+A scan finds the same event types on every camera (``nearby_rider``,
 ``approaching_rider``, ``receding_rider``, ``kneepuck_visible``). What they
 mean depends on which way the camera faces: a rider growing in a front camera
 is one being caught, in a rear camera one catching up. With all cameras on one
@@ -10,6 +10,8 @@ overtake apart from a rider merely closing in:
 - **overtake**: front ``approaching`` ends, then rear ``receding`` starts
 - **overtaken**: rear ``approaching`` ends, then front ``receding`` starts
 - **catching_up**: a sustained front ``approaching`` that is not an overtake
+- **duel**: ``rider_pass`` (two other riders swap places in view, see
+  ``riders.score_passes``)
 - **kneepuck**: ``kneepuck_visible``
 - **crash**: own crash from GoPro telemetry (hard jolt, then stopped on track)
 - **crash_other**: ``rider_down`` (another rider off the bike, see incidents.py)
@@ -30,6 +32,7 @@ LABELS = {
     "overtake": "OVERHALING",
     "overtaken": "BLIVER OVERHALET",
     "catching_up": "INDHENTER",
+    "duel": "DUEL",
     "kneepuck": "KNÆ I ASFALTEN",
     "crash": "STYRT",
     "crash_other": "MULIGT STYRT",
@@ -38,7 +41,7 @@ LABELS = {
 }
 # Order themed shorts are written in.
 THEME_ORDER = (
-    "overtake", "overtaken", "catching_up", "kneepuck", "crash", "crash_other", "off_track",
+    "overtake", "overtaken", "catching_up", "duel", "kneepuck", "crash", "crash_other", "off_track",
 )
 
 # Rear camera must pick the rider up within this window around the front
@@ -168,6 +171,10 @@ def find_moments(events: list[CamEvent]) -> list[Moment]:
     for ev in front_in:
         if id(ev) not in used and ev.duration >= MIN_CATCH_UP_S:
             moments.append(_single("catching_up", ev, 1.0, 1.0, ev.score * ev.duration))
+            used.add(id(ev))
+    for ev in events:
+        if ev.type == "rider_pass":
+            moments.append(_single("duel", ev, 2.0, 2.0))
             used.add(id(ev))
     for ev in events:
         if ev.type == "kneepuck_visible":

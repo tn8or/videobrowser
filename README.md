@@ -295,6 +295,7 @@ again:
 | Overhaling | front `approaching` ends, rear `receding` starts within -1.5..+5 s | good with front + rear |
 | Bliver overhalet | rear `approaching` ends, front `receding` starts within -1.5..+5 s | good with front + rear |
 | Indhenter | front `approaching` for 1.5 s+ that is not an overtake | good |
+| Duel | `rider_pass`: two other riders' bike boxes in view swap which one is nearer (box height, 15%+ apart, each order held 0.6 s, swap within 3 s); scores higher when they also swap left/right. Boxes that jump between frames (tracker swapped ids) do not count | needs tuning on real footage |
 | Knæ i asfalten | `kneepuck_visible` | as the puck detector |
 | Styrt (own) | accelerometer jolt >= 3x gravity, moving >= 30 km/h before, stopped after (GPS samples without a fix do not count, and the picture must stop moving too) | needs real crash data to tune |
 | Muligt styrt (others) | `rider_down`: a bike box loses its rider while a person box appears beside it, or the bike box turns low and wide while out on grass/gravel | candidates to check by hand |
@@ -302,7 +303,8 @@ again:
 | Action | any other event, for the mixed shorts | |
 
 `rider_down` and `off_track` are found during the scan (`incidents.py`), so
-footage scanned before they existed needs `scan --force` to get them. Each piece is the whole vertical clip that covers it (crop + HUD),
+footage scanned before they existed needs `scan --force` to get them; the
+same goes for `rider_pass`. Each piece is the whole vertical clip that covers it (crop + HUD),
 copied; `klip.txt` says which part the moment is. A piece no clip covers
 (e.g. the rear half of an overtake) is cut from the source with a crop that
 looks into the corner. For verticals without the telemetry HUD run
