@@ -327,12 +327,12 @@ def _run_with_overlay(
                 frame = source.frame_for(idx) if source is not None else None
                 try:
                     proc.stdin.write(frame if frame is not None else empty)  # type: ignore[union-attr]
-                except BrokenPipeError:
+                except OSError:  # BrokenPipeError; EINVAL on Windows
                     break
         finally:
             try:
                 proc.stdin.close()  # type: ignore[union-attr]
-            except BrokenPipeError:
+            except OSError:  # BrokenPipeError; EINVAL on Windows
                 pass
         ret = proc.wait()
         if ret != 0:

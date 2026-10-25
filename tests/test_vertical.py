@@ -337,3 +337,37 @@ def test_focus_ignores_the_cameras_own_exhaust_on_the_frame_edge():
     rider = [_pt(t / 5, 3, 0.85, h=0.08, w=0.04) for t in range(0, 16)]
     samples = focus_samples(_window(), {9: exhaust, 3: rider})
     assert samples and all(s.cx == pytest.approx(0.85) for s in samples)
+
+
+def test_dead_ffmpeg_pipe_on_windows_is_an_encode_failure(monkeypatch):
+    """Windows raises EINVAL, not BrokenPipeError, writing to a dead ffmpeg.
+
+    That must surface as the RuntimeError the pipeline loop retries on, so a
+    hardware encoder that is missing falls back to the next one.
+    """
+    import errno
+
+    from videobrowser import vertical
+
+    class _Stdin:
+        def write(self, _data):
+            raise OSError(errno.EINVAL, "Invalid argument")
+
+        def close(self):
+            raise OSError(errno.EINVAL, "Invalid argument")
+
+    class _Proc:
+        def __init__(self, cmd, stdin, stdout, stderr):
+            stderr.write(b"Unknown hwaccel videotoolbox")
+            self.stdin = _Stdin()
+
+        def wait(self):
+            return 1
+
+    class _Source:
+        def frame_for(self, _idx):
+            return None
+
+    monkeypatch.setattr(vertical.subprocess, "Popen", _Proc)
+    with pytest.raises(RuntimeError, match="videotoolbox"):
+        vertical._run_with_overlay(["ffmpeg"], lambda: _Source(), 3)
