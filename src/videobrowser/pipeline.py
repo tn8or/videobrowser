@@ -41,7 +41,7 @@ from videobrowser.profiles import (
 )
 from videobrowser.probe import local_date_label
 from videobrowser.puck import detect_puck
-from videobrowser.riders import RiderTracker, TrackPoint, score_tracks
+from videobrowser.riders import RiderTracker, TrackPoint, score_passes, score_tracks
 from videobrowser.telemetry import (
     STOPPED_KMH,
     LeanSample,
@@ -505,6 +505,7 @@ def scan_recording(
     events = []
     if "riders" in profile.pipelines:
         events.extend(score_tracks(tracks, recording.recording_id))
+        events.extend(score_passes(tracks, recording.recording_id))
         events.extend(score_incidents(tracks, recording.recording_id))
     if "puck" in profile.pipelines:
         events.extend(_puck_events(puck_hits, recording.recording_id))

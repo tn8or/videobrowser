@@ -85,3 +85,9 @@ def test_incident_events_become_their_own_themes():
     ]
     themes = sorted(m.theme for m in find_moments(events))
     assert themes == ["crash_other", "off_track"]
+
+
+def test_rider_pass_is_a_duel():
+    moments = find_moments([_ev("F", "front", "rider_pass", 30, 31.4, 1.5)])
+    assert [m.theme for m in moments] == ["duel"]
+    assert moments[0].label == "DUEL"

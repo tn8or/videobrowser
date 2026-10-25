@@ -356,3 +356,122 @@ def score_tracks(
                     )
                 )
     return events
+
+
+# --- other riders passing each other -----------------------------------------
+
+MOTORCYCLE = 3
+# Box heights (a stand-in for distance) must differ by this ratio before and
+# after a swap, so two riders side by side wobbling around 1:1 do not count.
+SWAP_MARGIN = 1.15
+# Each order must hold for this many shared frames (5 fps: 0.6 s).
+SWAP_HOLD_POINTS = 3
+# The swap itself, from the last frame in the old order to the first in the
+# new one, takes at most this long.
+SWAP_MAX_S = 3.0
+# A tracker that hands one rider's id to the other makes both boxes jump; a
+# real pass moves them smoothly. Largest step between frames, as a share of
+# the frame width (centre) and in log height.
+SWAP_MAX_STEP_X = 0.12
+SWAP_MAX_STEP_LOGH = 0.35
+# Left/right order compared this long before and after the swap.
+SWAP_SIDE_S = 2.0
+
+
+def _is_bike(points: list[TrackPoint]) -> bool:
+    return sum(p.cls == MOTORCYCLE for p in points) * 2 > len(points)
+
+
+def _smooth(values: np.ndarray) -> np.ndarray:
+    """Median of three, so one bad box does not flip the order."""
+    if len(values) < 3:
+        return values
+    padded = np.concatenate(([values[0]], values, [values[-1]]))
+    return np.median(np.stack([padded[:-2], padded[1:-1], padded[2:]]), axis=0)
+
+
+def _smooth_steps(points: list[TrackPoint]) -> bool:
+    for a, b in zip(points, points[1:]):
+        cx_a = 0.5 * (a.x1 + a.x2) / max(1, a.frame_w)
+        cx_b = 0.5 * (b.x1 + b.x2) / max(1, b.frame_w)
+        dh = abs(np.log(max(b.height, 1.0)) - np.log(max(a.height, 1.0)))
+        if abs(cx_b - cx_a) > SWAP_MAX_STEP_X or dh > SWAP_MAX_STEP_LOGH:
+            return False
+    return True
+
+
+def score_passes(
+    tracks: dict[int, list[TrackPoint]],
+    recording_id: str,
+    params: RiderParams | None = None,
+) -> list[Event]:
+    """``rider_pass``: two other riders in view swap places, one passing the other.
+
+    Box height stands in for distance, so the order that swaps is who is
+    nearer the camera. That holds whichever way the camera faces and does not
+    change when the bike leans; the left/right order does (a lean rotates the
+    picture), so a left/right swap at the same time only adds to the score.
+    Only motorcycle boxes count: a rider's person box rides on their bike box
+    and would pair up with it.
+    """
+    params = params or RiderParams()
+    keep = SWAP_HOLD_POINTS
+    margin = float(np.log(SWAP_MARGIN))
+    bikes: dict[int, dict[float, TrackPoint]] = {}
+    for track_id, raw in tracks.items():
+        if is_ego_track(raw) or not _is_bike(raw):
+            continue
+        points = [p for p in raw if p.height_frac >= params.min_box_height_frac]
+        if len(points) >= 2 * keep:
+            bikes[track_id] = {round(p.t, 3): p for p in points}
+
+    events: list[Event] = []
+    ids = sorted(bikes)
+    for i, a in enumerate(ids):
+        for b in ids[i + 1 :]:
+            shared = sorted(bikes[a].keys() & bikes[b].keys())
+            if len(shared) < 2 * keep:
+                continue
+            pa = [bikes[a][t] for t in shared]
+            pb = [bikes[b][t] for t in shared]
+            ratio = _smooth(
+                np.array([np.log(max(x.height, 1.0) / max(y.height, 1.0)) for x, y in zip(pa, pb)])
+            )
+            side = np.where(ratio >= margin, 1, np.where(ratio <= -margin, -1, 0))
+            last_end = -1.0
+            for j in range(keep, len(shared)):
+                if side[j] == 0 or shared[j] <= last_end:
+                    continue
+                # j is the first frame of a new order; find the old one before it.
+                k = j - 1
+                while k >= 0 and side[k] == 0:
+                    k -= 1
+                if k < keep - 1 or side[k] != -side[j]:
+                    continue
+                if shared[j] - shared[k] > SWAP_MAX_S:
+                    continue
+                before = side[k - keep + 1 : k + 1]
+                after = side[j : j + keep]
+                if len(after) < keep or not (np.all(before == side[k]) and np.all(after == side[j])):
+                    continue
+                lo, hi = k - keep + 1, j + keep
+                if not (_smooth_steps(pa[lo:hi]) and _smooth_steps(pb[lo:hi])):
+                    continue
+                # Left/right order a little before and after the swap.
+                first = next(n for n, t in enumerate(shared) if t >= shared[k] - SWAP_SIDE_S)
+                last = max(n for n, t in enumerate(shared) if t <= shared[j] + SWAP_SIDE_S)
+                dx = [0.5 * (pa[n].x1 + pa[n].x2 - pb[n].x1 - pb[n].x2) for n in (first, last)]
+                sideways = dx[0] * dx[1] < 0
+                events.append(
+                    Event(
+                        type="rider_pass",
+                        t_start=shared[k],
+                        t_end=shared[j],
+                        score=1.5 if sideways else 1.0,
+                        recording_id=recording_id,
+                        track_id=f"{a}+{b}",
+                        extra={"sideways": sideways},
+                    )
+                )
+                last_end = shared[j + keep - 1]
+    return events
