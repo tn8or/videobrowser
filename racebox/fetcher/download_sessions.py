@@ -10,7 +10,6 @@ import sys
 import time
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -24,6 +23,14 @@ def read_secret(path: Path) -> str:
     if not value:
         raise ValueError(f"Empty secret in {path}")
     return value
+
+
+def read_optional_secret(path: Path) -> str | None:
+    """Like read_secret, but None when the file is missing or empty."""
+    try:
+        return read_secret(path)
+    except (FileNotFoundError, ValueError):
+        return None
 
 
 class DownloadTracker:
@@ -154,16 +161,18 @@ def new_context(browser, auth_state: Path = AUTH_STATE_PATH):
     return browser.new_context(accept_downloads=True)
 
 
-def ensure_logged_in(page, username: str, password: str) -> None:
+def ensure_logged_in(page, username: str | None = None, password: str | None = None) -> None:
     """Use saved cookies if still valid, else try a scripted login; raise if both fail."""
     if is_logged_in(page):
         return
-    try:
-        login(page, username, password)
-    except Exception:
-        pass
+    if username and password:
+        try:
+            login(page, username, password)
+        except Exception:
+            pass
     if is_logged_in(page):
         page.context.storage_state(path=str(AUTH_STATE_PATH))
+        AUTH_STATE_PATH.chmod(0o600)
         return
     raise NotLoggedInError(
         "not logged in to racebox.pro (login is behind a Cloudflare captcha). "
@@ -171,7 +180,38 @@ def ensure_logged_in(page, username: str, password: str) -> None:
     )
 
 
-CHROME_BIN = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+def find_chrome() -> str:
+    """Path to a desktop Chrome/Chromium; CHROME_BIN overrides the search."""
+    import shutil
+
+    override = os.environ.get("CHROME_BIN")
+    if override:
+        if not Path(override).is_file():
+            raise FileNotFoundError(f"CHROME_BIN does not point to a file: {override}")
+        return override
+    candidates: list[str] = []
+    if sys.platform == "darwin":
+        candidates.append("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    elif os.name == "nt":
+        for base in (
+            os.environ.get("PROGRAMFILES"),
+            os.environ.get("PROGRAMFILES(X86)"),
+            os.environ.get("LOCALAPPDATA"),
+        ):
+            if base:
+                candidates.append(str(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"))
+    for path in candidates:
+        if Path(path).exists():
+            return path
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"):
+        found = shutil.which(name)
+        if found:
+            return found
+    raise FileNotFoundError(
+        "could not find Google Chrome; install it or set CHROME_BIN to its path"
+    )
+
+
 CHROME_PROFILE_DIR = Path(__file__).resolve().parent / "chrome_profile"
 CDP_PORT = 9333
 
@@ -206,11 +246,16 @@ def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
     import subprocess
     import urllib.request
 
+    chrome = find_chrome()
     CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     tty = _tty_state()
+    if os.name == "nt":
+        detach = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    else:
+        detach = {"start_new_session": True}
     proc = subprocess.Popen(
         [
-            CHROME_BIN,
+            chrome,
             f"--user-data-dir={CHROME_PROFILE_DIR}",
             f"--remote-debugging-port={CDP_PORT}",
             "--no-first-run",
@@ -220,7 +265,7 @@ def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **detach,
     )
     try:
         # Chrome can leave the terminal in raw mode (Enter shows as ^M).
@@ -251,8 +296,11 @@ def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
         # Chrome runs in its own session: stop the whole group, the terminal
         # closing no longer does.
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
+            if os.name == "nt":
+                proc.terminate()
+            else:
+                os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
             pass
 
 
@@ -297,23 +345,6 @@ def _ensure_unique_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
     return path
-
-
-def filename_from_headers(headers: dict, url: str) -> str:
-    content_disp = headers.get("content-disposition") or headers.get(
-        "Content-Disposition"
-    )
-    if content_disp:
-        match = re.search(
-            r"filename\*=UTF-8''([^;]+)|filename=\"?([^;\"]+)\"?", content_disp
-        )
-        if match:
-            name = match.group(1) or match.group(2)
-            if name:
-                return name
-    parsed = urlparse(url)
-    name = Path(parsed.path).name or "session.vbo"
-    return name
 
 
 def sanitize_filename(name: str) -> str:
@@ -642,12 +673,13 @@ def main() -> int:
     args = parser.parse_args()
 
     script_dir = Path(__file__).resolve().parent
-    username = read_secret(script_dir / "username")
-    password = read_secret(script_dir / "password")
-
     if args.login:
         interactive_login()
         return 0
+
+    # Optional: only used as a fallback when the saved login has expired.
+    username = read_optional_secret(script_dir / "username")
+    password = read_optional_secret(script_dir / "password")
 
     output_dir = Path(args.output_dir).resolve()
     tracker = DownloadTracker(script_dir / "downloads.db")

@@ -110,7 +110,7 @@ def test_failed_render_keeps_previous_short_and_drops_stale_ones(tmp_path, monke
     (day / "overhalinger-03" / "klip.txt").write_text("stale")
     (day / "action-02.mp4").write_bytes(b"old finished short")
 
-    def boom(plan, day_data, dest):
+    def boom(plan, day_data, dest, **kwargs):
         dest.mkdir(parents=True)
         (dest / "half.mp4").write_bytes(b"half")
         raise RuntimeError("ffmpeg died")
@@ -123,7 +123,7 @@ def test_failed_render_keeps_previous_short_and_drops_stale_ones(tmp_path, monke
     assert not list(day.glob(".*partial*"))
 
 
-def test_day_moments_drop_standing_still_and_mark_paddock_riding(monkeypatch):
+def test_day_moments_drop_standing_still_and_paddock_riding(monkeypatch):
     import videobrowser.shorts as shorts
     from videobrowser.sync import CameraClock
     from videobrowser.telemetry import SpeedSample
@@ -138,24 +138,28 @@ def test_day_moments_drop_standing_still_and_mark_paddock_riding(monkeypatch):
     # Paddock until 30 s, on track until 140 s, then parked (with GPS drift).
     speeds = [SpeedSample(t, 25.0 if t < 30 else 110.0 if t < 140 else 2.0) for t in range(200)]
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: (speeds, []))
-    found = {(m.theme, m.slow) for m in shorts.day_moments(day, crashes=False)}
-    assert found == {("action", True), ("catching_up", False), ("crash_other", True)}
+    found = {m.theme for m in shorts.day_moments(day, crashes=False)}
+    assert found == {"catching_up"}
     day.gps.clear()
     themes = sorted(m.theme for m in shorts.day_moments(day, crashes=False, min_speed=0))
     assert themes == ["action", "action", "catching_up", "crash_other"]
 
 
-def test_plan_takes_one_slow_moment_per_action_short_and_none_in_themes():
-    moments = [_moment("action", i * 100, 8, score=1) for i in range(4)]
-    slow = [_moment("action", 1000 + i * 100, 8, score=5) for i in range(3)]
-    slow += [_moment("overtake", 2000 + i * 100, 8, score=5) for i in range(2)]
-    for m in slow:
-        m.slow = True
-    plans = plan_shorts(moments + slow, max_seconds=40, max_action_shorts=6)
-    actions = [p for p in plans if p.theme == "action"]
-    assert actions and all(sum(m.slow for m in p.moments) <= 1 for p in actions)
-    assert sum(m.slow for p in actions for m in p.moments) >= 1
-    assert not any(p.theme == "overtake" for p in plans)
+def test_clip_drop_reason_matches_the_shorts(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+    from videobrowser.telemetry import SpeedSample
+
+    day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 300.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    # Parked until 30 s, paddock until 100 s, then on track; a van at 250 s.
+    speeds = [SpeedSample(t, 2.0 if t < 30 else 25.0 if t < 100 else 110.0) for t in range(300)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: (speeds, []))
+    day.vehicles["F"] = [(t + 0.5, 1.0 if t >= 250 else 0.0) for t in range(300)]
+    assert shorts.clip_drop_reason(day, "F", 5.0, 20.0) == "standing still"
+    assert shorts.clip_drop_reason(day, "F", 50.0, 70.0) == "below 40 km/h"
+    assert shorts.clip_drop_reason(day, "F", 150.0, 170.0) is None
+    assert shorts.clip_drop_reason(day, "F", 255.0, 270.0) == "car in view"
+    assert shorts.clip_drop_reason(day, "F", 50.0, 70.0, min_speed=0, max_vehicle_share=0) is None
 
 
 
@@ -172,8 +176,26 @@ def test_day_moments_fall_back_to_scene_motion_without_gps(monkeypatch):
     # Parked until 40 s, rolling slowly until 100 s, then on track.
     day.motion["F"] = [(t + 0.5, 1.0 if t < 40 else 6.0 if t < 100 else 15.0) for t in range(200)]
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
-    found = {(m.theme, m.slow) for m in shorts.day_moments(day, crashes=False)}
-    assert found == {("action", True), ("catching_up", False)}
+    found = {m.theme for m in shorts.day_moments(day, crashes=False)}
+    assert found == {"catching_up"}
+
+
+def test_day_moments_leave_out_moments_with_a_car_in_view(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 200.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    day.events = [
+        {"recording_id": "F", "type": "nearby_rider", "t_start": 20.0, "t_end": 22.0, "score": 0.5},
+        {"recording_id": "F", "type": "approaching_rider", "t_start": 120.0, "t_end": 123.0, "score": 0.9},
+    ]
+    day.motion["F"] = [(t + 0.5, 15.0) for t in range(200)]
+    # A van in view until 40 s (the paddock), then a car for one second.
+    day.vehicles["F"] = [(t + 0.5, 1.0 if t < 40 or t == 121 else 0.0) for t in range(200)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    assert [m.theme for m in shorts.day_moments(day, crashes=False)] == ["catching_up"]
+    kept = shorts.day_moments(day, crashes=False, max_vehicle_share=0)
+    assert sorted(m.theme for m in kept) == ["action", "catching_up"]
 
 
 def test_recording_without_gps_takes_racebox_time_speed_and_turns(monkeypatch):
@@ -270,3 +292,36 @@ def test_a_crash_needs_the_picture_to_stop_too():
     assert _moving_after(streaming, 10.0)
     assert not _moving_after(parked, 10.0)
     assert not _moving_after(None, 10.0)  # no scene motion: trust the GPS
+
+
+def test_collect_short_cuts_in_parallel_and_keeps_order(tmp_path, monkeypatch):
+    import threading
+
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    day = shorts.DayData("2026-08-01", {"A": CameraClock("A", 1000.0, 100.0, [])}, {"A": "cockpit"}, {"A": 0}, [], [])
+    started = threading.Barrier(3, timeout=5)
+
+    def cut(day_data, segment, dest):
+        started.wait()  # all three cuts must be running at once
+        dest.write_bytes(b"clip")
+        return dest
+
+    monkeypatch.setattr(shorts, "_from_source", cut)
+    plan = shorts.ShortPlan(
+        "action-01", "action", [_moment("action", t, 5, 1.0) for t in (10, 30, 50)]
+    )
+    out = shorts.collect_short(plan, day, tmp_path / "action-01", jobs=3)
+    listed = (out / "klip.txt").read_text().splitlines()[2:]
+    assert [line.split("_")[0] for line in listed] == ["01", "02", "03"]
+    assert len(list(out.glob("*.mp4"))) == 3
+
+    def broken(day_data, segment, dest):
+        if segment.t_start == 30:
+            raise RuntimeError("ffmpeg died")
+        return dest
+
+    monkeypatch.setattr(shorts, "_from_source", broken)
+    with pytest.raises(RuntimeError, match="A@30s"):
+        shorts.collect_short(plan, day, tmp_path / "action-02", jobs=3)

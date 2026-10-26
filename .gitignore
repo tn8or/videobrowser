@@ -28,3 +28,7 @@ inputclips/
 *.MP4
 *.MOV
 racebox/fetcher/downloads.db
+racebox/fetcher/username
+racebox/fetcher/password
+racebox/fetcher/auth_state.json
+racebox/fetcher/chrome_profile/

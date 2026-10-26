@@ -24,7 +24,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Optional
 
@@ -64,6 +66,9 @@ class RaceboxContext:
     fastest_dir: str = "fastest_laps"
     # Leave renders whose file already exists (horizontals without --force).
     keep_existing: bool = False
+    # Renders run side by side (horizontals --jobs): each is an ffmpeg
+    # decode + encode fed by Python-drawn overlay frames.
+    jobs: int = 1
 
 
 # ---------------------------------------------------------------------------
@@ -81,8 +86,12 @@ def fetch_sessions(sessions_dir: Path, headful: bool = False, max_clicks: int = 
     fetcher_dir = root / "fetcher"
     user_f = fetcher_dir / "username"
     pass_f = fetcher_dir / "password"
-    if not user_f.exists() or not pass_f.exists():
-        print("racebox: fetch skipped (missing fetcher/username or fetcher/password)")
+    auth_f = fetcher_dir / "auth_state.json"
+    if not auth_f.exists() and not (user_f.exists() and pass_f.exists()):
+        print(
+            "racebox: fetch skipped (not logged in; run "
+            "python racebox/fetcher/download_sessions.py --login)"
+        )
         return
     try:
         if str(fetcher_dir) not in sys.path:
@@ -99,8 +108,8 @@ def fetch_sessions(sessions_dir: Path, headful: bool = False, max_clicks: int = 
         # fresh sessions dir actually re-downloads, rather than being skipped
         # because the file was previously saved somewhere else.
         tracker = dl.DownloadTracker(sessions_dir / "downloads.db")
-        username = dl.read_secret(user_f)
-        password = dl.read_secret(pass_f)
+        username = dl.read_optional_secret(user_f)
+        password = dl.read_optional_secret(pass_f)
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=not headful)
             context = dl.new_context(browser)
@@ -345,13 +354,13 @@ def _overlay_pass(
                     break
                 try:
                     proc.stdin.write(frame if frame is not None else empty)
-                except BrokenPipeError:
+                except OSError:  # BrokenPipeError; EINVAL on Windows
                     break
         finally:
             if proc.stdin:
                 try:
                     proc.stdin.close()
-                except BrokenPipeError:
+                except OSError:  # BrokenPipeError; EINVAL on Windows
                     pass
         ret = proc.wait()
     if ret != 0:
@@ -681,6 +690,23 @@ def _render_fastest_lap(
 # ---------------------------------------------------------------------------
 
 
+def _run_renders(renders: list, jobs: int) -> None:
+    """Call each render, *jobs* at a time; one failing does not stop the rest."""
+
+    def run(render) -> None:
+        try:
+            render()
+        except Exception as exc:
+            print(f"  racebox: render failed ({exc})")
+
+    if jobs <= 1 or len(renders) <= 1:
+        for render in renders:
+            run(render)
+        return
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        list(pool.map(run, renders))
+
+
 def run_for_recording(
     recording: Recording,
     windows: list[ClipWindow],
@@ -710,31 +736,21 @@ def run_for_recording(
     )
 
     highlights_dir = out_dir / ctx.highlights_dir / date_label
-    for window in windows:
-        _render_highlight(ctx, recording, window, rotation, rec_start_utc, highlights_dir)
+    renders = [
+        partial(_render_highlight, ctx, recording, window, rotation, rec_start_utc, highlights_dir)
+        for window in windows
+    ]
 
-    if rec_start_utc is None or rec_end_utc is None or not ctx.sessions:
-        return rec_start_utc
-
-    matched = _sessions_overlapping(ctx.sessions, rec_start_utc, rec_end_utc)
-    for session in matched:
-        session_date = local_date_label(session.session_start_utc.timestamp())
-        _render_full_session(
-            ctx,
-            recording,
-            session,
-            rotation,
-            rec_start_utc,
-            rec_end_utc,
-            out_dir / ctx.full_dir / session_date,
-        )
-        _render_fastest_lap(
-            ctx,
-            recording,
-            session,
-            rotation,
-            rec_start_utc,
-            rec_end_utc,
-            out_dir / ctx.fastest_dir / session_date,
-        )
+    if rec_start_utc is not None and rec_end_utc is not None and ctx.sessions:
+        for session in _sessions_overlapping(ctx.sessions, rec_start_utc, rec_end_utc):
+            session_date = local_date_label(session.session_start_utc.timestamp())
+            renders.append(partial(
+                _render_full_session, ctx, recording, session, rotation,
+                rec_start_utc, rec_end_utc, out_dir / ctx.full_dir / session_date,
+            ))
+            renders.append(partial(
+                _render_fastest_lap, ctx, recording, session, rotation,
+                rec_start_utc, rec_end_utc, out_dir / ctx.fastest_dir / session_date,
+            ))
+    _run_renders(renders, ctx.jobs)
     return rec_start_utc

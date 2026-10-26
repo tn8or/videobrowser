@@ -157,7 +157,8 @@ def test_export_clip_skips_timecode_track(tmp_path: Path):
     assert out.codec
 
 
-def test_reencode_pipelines_skips_videotoolbox_for_90_270():
+def test_reencode_pipelines_skips_videotoolbox_for_90_270(monkeypatch):
+    monkeypatch.setattr("videobrowser.clips.sys.platform", "darwin")
     hw_90 = _reencode_pipelines(90)
     hw_270 = _reencode_pipelines(270)
     hw_180 = _reencode_pipelines(180)
@@ -296,3 +297,11 @@ def test_probe_display_matrix_rotation_is_clockwise(tmp_path: Path):
     ours = rotate_bgr(stored.astype(np.uint8), info.rotation).astype(int)
     assert rotation_filter(info.rotation) == "transpose=2"
     assert np.abs(ours - shown).mean() < 2.0
+
+
+def test_reencode_pipelines_skip_videotoolbox_off_macos(monkeypatch):
+    monkeypatch.setattr("videobrowser.clips.sys.platform", "win32")
+    blob = " ".join(" ".join(a + b) for a, b in _reencode_pipelines(0))
+    assert "videotoolbox" not in blob
+    assert "h264_nvenc" in blob
+    assert "libx264" in blob

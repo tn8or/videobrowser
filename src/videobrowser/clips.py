@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -66,9 +67,10 @@ def _reencode_pipelines(rotation: int) -> tuple[tuple[list[str], list[str]], ...
     writes the unrotated landscape buffer into the 9:16 size (stretched,
     still sideways). NVENC does not have that bug, so it stays in the stack.
     180 stays 16:9 and VideoToolbox does apply the filter; leftover Display
-    Matrix is stripped separately in ``_reencode``.
+    Matrix is stripped separately in ``_reencode``. VideoToolbox only exists
+    on macOS, so elsewhere it is never tried.
     """
-    if rotation % 180:
+    if rotation % 180 or sys.platform != "darwin":
         return tuple(
             p for p in _REENCODE_PIPELINES if "videotoolbox" not in " ".join(p[0] + p[1])
         )

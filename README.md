@@ -25,7 +25,10 @@ Design criteria and product decisions live in [INSTRUCTIONS.md](INSTRUCTIONS.md)
 - Python 3.11–3.14
 - `ffmpeg` and `ffprobe` on your `PATH`
   - macOS: VideoToolbox decode/encode when available
-  - Windows/Linux with NVIDIA: CUDA decode + NVENC encode (`h264_nvenc` / `hevc_nvenc`)
+  - Windows/Linux with NVIDIA: CUDA decode + NVENC encode (`h264_nvenc` / `hevc_nvenc`).
+    Scan scales frames on the GPU (`scale_cuda`, in the gyan.dev and BtbN
+    Windows builds) and logs `decode cuda`; `decode cuda-copy` means the build
+    lacks it and frames are scaled on the CPU instead.
   - otherwise software (`libx264` / `libx265`)
 - Python packages (installed with the project):
   - `ultralytics`, `torch`, `opencv-python-headless`, `numpy`, `tqdm`, `lap` — detection
@@ -46,8 +49,28 @@ pip install -e ".[fetch]"
 playwright install chromium
 ```
 
-Credentials for auto-fetch (optional): put the racebox.pro login in
-`racebox/fetcher/username` and `racebox/fetcher/password`.
+On Windows/Linux with an NVIDIA card, pip installs a CPU-only `torch`. Swap it
+for a CUDA build so the detector runs on the GPU (`cu128` covers RTX 50-series):
+
+```bash
+pip uninstall -y torch torchvision
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+python -c "import torch; print(torch.cuda.is_available())"   # should print True
+```
+
+`scan --tensorrt` then runs the detector as a TensorRT FP16 engine, usually
+2-3x faster than PyTorch on RTX cards. The first run builds
+`yolo11n-640-fp16.engine` next to the model, which takes a few minutes, and
+ultralytics installs `tensorrt` and `onnx` itself if they are missing. Delete
+the `.engine` file after a driver or TensorRT update. If the build fails, scan
+falls back to PyTorch.
+
+`scan` then logs `detector: yolo11n.pt on cuda`.
+
+Log in to racebox.pro once for auto-fetch: `python racebox/fetcher/download_sessions.py --login`
+opens Chrome, you log in (and solve the captcha), and the session is saved to
+`racebox/fetcher/auth_state.json`. No username/password files are needed; set
+`CHROME_BIN` if Chrome isn't found.
 
 ---
 
@@ -151,10 +174,9 @@ videobrowser scan inputclips -o output
 videobrowser horizontals -o output
 ```
 
-Auto-fetch needs credentials in `racebox/fetcher/username` and
-`racebox/fetcher/password` plus `playwright install chromium`. If they are
-missing, fetching is skipped with a message and the scan continues using whatever
-`.vbo` files are already present.
+Auto-fetch needs a saved login (`download_sessions.py --login`) plus
+`playwright install chromium`. If there is no login, fetching is skipped with a
+message and the scan continues using whatever `.vbo` files are already present.
 
 ### 2. Use local sessions, no download
 
@@ -197,7 +219,7 @@ track days.
 | `--profile` | `auto` | Camera mount profile (`auto`, `cockpit`, `side`, `rear`, `ground`, ...) |
 | `--map` | none | `cameras.json` mount override |
 | `--model` | `yolo11n.pt` | Ultralytics model |
-| `--device` | `auto` | `auto` / `mps` / `cpu` / `coreml` |
+| `--device` | `auto` | `auto` / `cuda` / `mps` / `cpu` / `coreml` |
 | `--conf` | 0.25 | YOLO confidence threshold |
 | `--exclude` | none | Repeatable; skip files/folders whose path contains the text |
 | `--date YYYY-MM-DD` | all days | Repeatable; only scan recordings from that day |
@@ -212,7 +234,10 @@ track days.
 The clip options scan used to take (`--no-overlay`, `--no-vertical`,
 `--no-landscape`, `--no-clips`, `--no-shorts`) are still accepted and ignored.
 `horizontals` and `verticals` take `--date`, `--no-overlay` (alias
-`--no-racebox`), `--force`, `--sessions-dir` and `--font`; `horizontals` also
+`--no-racebox`), `--force`, `--sessions-dir`, `--font` and `--jobs` (clips cut
+at once, default CPU threads / 4, at most 4), plus `--min-speed` (40) and
+`--max-vehicle-share` (0.4), which leave out clips standing still or in the
+paddock, as the shorts do; `horizontals` also
 `--stats` (default `<out>/stats.sqlite`). Run `videobrowser <command> --help`
 for the complete list.
 
@@ -272,6 +297,7 @@ again:
 | Overhaling | front `approaching` ends, rear `receding` starts within -1.5..+5 s | good with front + rear |
 | Bliver overhalet | rear `approaching` ends, front `receding` starts within -1.5..+5 s | good with front + rear |
 | Indhenter | front `approaching` for 1.5 s+ that is not an overtake | good |
+| Duel | `rider_pass`: two other riders' bike boxes in view swap which one is nearer (box height, 15%+ apart, each order held 0.6 s, swap within 3 s); scores higher when they also swap left/right. Boxes that jump between frames (tracker swapped ids) do not count | needs tuning on real footage |
 | Knæ i asfalten | `kneepuck_visible` | as the puck detector |
 | Styrt (own) | accelerometer jolt >= 3x gravity, moving >= 30 km/h before, stopped after (GPS samples without a fix do not count, and the picture must stop moving too) | needs real crash data to tune |
 | Muligt styrt (others) | `rider_down`: a bike box loses its rider while a person box appears beside it, or the bike box turns low and wide while out on grass/gravel | candidates to check by hand |
@@ -279,19 +305,31 @@ again:
 | Action | any other event, for the mixed shorts | |
 
 `rider_down` and `off_track` are found during the scan (`incidents.py`), so
-footage scanned before they existed needs `scan --force` to get them. Each piece is the whole vertical clip that covers it (crop + HUD),
+footage scanned before they existed needs `scan --force` to get them; the
+same goes for `rider_pass`. Each piece is the whole vertical clip that covers it (crop + HUD),
 copied; `klip.txt` says which part the moment is. A piece no clip covers
 (e.g. the rear half of an overtake) is cut from the source with a crop that
 looks into the corner. For verticals without the telemetry HUD run
 `verticals --no-overlay`.
 The scan drops events where the bike stands still (below 10 km/h GoPro GPS
-speed, `scan --min-speed`). In the shorts, moments where the bike stands
-still are left out, and moments below 40 km/h (paddock, pit lane;
-`shorts --min-speed`) get at most one per action short and none in the
-theme shorts. Only own crashes skip this check. Footage without GPS (e.g.
+speed, `scan --min-speed`). `horizontals`, `verticals` and the shorts then
+all leave out clips and moments where the bike stands still or rides below
+40 km/h (paddock, pit lane; `--min-speed` on each), by the same rule; the
+shorts only cut tighter. Only own crashes skip this check. Footage without GPS (e.g.
 `.mov` files re-wrapped by Final Cut, which drop the GoPro telemetry track)
 falls back to the scene motion measured during the scan (stored from this
 version on, so rescan with `--force`). `--min-speed 0` turns the checks off.
+
+Cars, vans and trucks mark the paddock: there are none on track. The scan
+asks the detector for them beside the riders (they never become rider
+tracks) and drops events with a vehicle in view at least 40% of the time
+(`scan --max-vehicle-share`), so they never become clip windows for
+`horizontals`, `verticals` or the shorts. The shorts check their moments
+again from the per-second share stored in the scan (`shorts
+--max-vehicle-share`). Only boxes at least 8% of the frame high count, so a
+car far off behind the fence does not, and riding past a marshal's car for a
+second or two stays under the share. `0` turns the check off; days scanned
+before this need `scan --force`.
 
 With RaceBox sessions in `--sessions-dir` (default `<out>/sessions`), footage without GoPro GPS is laid on the RaceBox log by
 matching its scene motion against the RaceBox speed (pit stops and out-laps
@@ -311,8 +349,8 @@ included. That placement is only good to a minute or so at session edges, so
 it supplies speed (paddock or track) but not start time or turn rate. A
 recording still unplaced is checked against the RaceBox log at both readings
 of its camera clock: a moment with the bike in under both is dropped as
-standing still, and one where it may be riding counts as slow (at most one
-per action short), since it is not sure.
+standing still, and one where it may be riding counts as slow and is
+left out too, since it is not sure.
 
 Overlays (RaceBox and telemetry HUD) only go on footage whose link to the
 RaceBox log is sure: GoPro GPS time, or a clear scene-motion match. Other
@@ -328,8 +366,9 @@ the source folders once: `videobrowser shorts -o output inputclips`.
 | `--max-action` | 6 | Max mixed action shorts per day |
 | `--no-audio-sync` | off | Sync cameras by GPS only |
 | `--no-crash` | off | Skip crash detection |
-| `--min-speed` | 40 | Track speed (km/h): slower moments get at most one per action short, none in theme shorts |
+| `--min-speed` | 40 | Track speed (km/h): slower moments (standing still, paddock) are left out |
 | `--dry-run` | off | Only write `moments.json` and `index.html` |
+| `--jobs` | CPU threads / 4, max 4 | Clips cut from the GoPro files at once |
 
 ---
 

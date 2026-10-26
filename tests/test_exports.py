@@ -84,6 +84,24 @@ def test_horizontals_cut_windows_and_drop_files_of_old_windows(tmp_path, monkeyp
     assert exports.export_horizontals(out, force=True) == 1
 
 
+def test_exports_leave_out_standing_still_like_the_shorts(tmp_path, monkeypatch):
+    import videobrowser.clips as clips
+    import videobrowser.exports as exports
+
+    out = tmp_path / "out"
+    _scan(out, "clock")
+    db = ScanDB.open(out / "scan.sqlite")
+    db.save_motion("R", [(t + 0.5, 1.0) for t in range(60)])  # parked: no scene motion
+    db.close()
+    monkeypatch.setattr(exports, "recording_from_meta", _recording)
+    stale = out / "clips" / "2026-08-01" / "R_00005_approaching_rider.mp4"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"old")
+    monkeypatch.setattr(clips, "export_clip", lambda rec, w, dest, rotation=0: dest.write_bytes(b"c"))
+    assert exports.export_horizontals(out) == 0 and not stale.exists()
+    assert exports.export_horizontals(out, min_speed=0) == 1
+
+
 def test_horizontals_render_overlays_even_when_clips_exist(tmp_path, monkeypatch):
     import types
 
@@ -103,3 +121,36 @@ def test_horizontals_render_overlays_even_when_clips_exist(tmp_path, monkeypatch
     (out / "clips" / "2026-08-01" / "R_00005_approaching_rider.mp4").write_bytes(b"old")
     assert exports.export_horizontals(out) == 0
     assert runs == [True]  # missing overlay renders still get made
+
+
+def test_run_jobs_keeps_order_and_errors():
+    from videobrowser.exports import _run_jobs
+
+    def work(n):
+        if n == 2:
+            raise RuntimeError("boom")
+        return n * 10
+
+    for jobs in (1, 3):
+        out = list(_run_jobs([1, 2, 3], work, jobs))
+        assert [item for item, _, _ in out] == [1, 2, 3]
+        assert [result for _, result, _ in out] == [10, None, 30]
+        assert str(out[1][2]) == "boom"
+
+
+def test_racebox_renders_run_side_by_side_and_survive_a_failure():
+    import threading
+
+    from videobrowser.racebox_stage import _run_renders
+
+    together = threading.Barrier(3, timeout=5)
+    done = []
+
+    def render(n):
+        together.wait()  # all three must run at once
+        if n == 1:
+            raise RuntimeError("ffmpeg died")
+        done.append(n)
+
+    _run_renders([lambda n=n: render(n) for n in range(3)], jobs=3)
+    assert sorted(done) == [0, 2]

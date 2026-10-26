@@ -10,6 +10,7 @@ from videobrowser.events import Event
 from videobrowser.gopro import Recording, chapter_at
 from videobrowser.profiles import Profile, Rect, apply_ego_mask
 from videobrowser.puck import detect_puck
+from videobrowser.vehicles import is_vehicle
 
 
 def _annotate_riders(image: np.ndarray, boxes: list[tuple[int, int, int, int, str]]) -> np.ndarray:
@@ -81,7 +82,7 @@ def write_previews(
             continue
         if event.type.endswith("rider") and tracker is not None:
             masked = apply_ego_mask(image, profile)
-            points = tracker.detect(masked)
+            points = [p for p in tracker.detect(masked) if not is_vehicle(p)]
             boxes = [
                 (int(p.x1), int(p.y1), int(p.x2), int(p.y2), f"id{p.track_id}")
                 for p in points

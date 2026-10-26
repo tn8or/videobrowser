@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 
 # Filesystems where SQLite WAL (mmap of the -shm sidecar) can hang forever.
 _REMOTE_FS_TYPES = frozenset(
@@ -50,6 +51,10 @@ _LOCAL_FS_TYPES = frozenset(
 )
 _remote_dev_cache: dict[int, bool] = {}
 _warned_remote: set[str] = set()
+# Copies in and out of the network file, so a thread never reads one that
+# another thread is half-way through writing.
+_mirror_lock = threading.Lock()
+_DRIVE_REMOTE = 4
 _SQLITE_TIMEOUT_S = 30.0
 
 
@@ -112,6 +117,19 @@ def _fstype_from_mount(path: Path) -> str:
     return best_type
 
 
+def _windows_is_remote(path: Path) -> bool:
+    """True for a UNC path or a mapped network drive (GetDriveTypeW)."""
+    anchor = Path(os.path.abspath(path)).anchor
+    if anchor.startswith(("\\\\", "//")):
+        return True
+    try:
+        import ctypes
+
+        return ctypes.windll.kernel32.GetDriveTypeW(anchor) == _DRIVE_REMOTE  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return False
+
+
 def is_remote_filesystem(path: Path) -> bool:
     """True when *path* is on SMB/NFS/AFP or another non-local volume.
 
@@ -122,6 +140,11 @@ def is_remote_filesystem(path: Path) -> bool:
     macOS SMB mounts often report a bogus type from ``stat -f %T`` (``/`` or
     ``???``); the mount table is the reliable signal.
     """
+    if sys.platform == "win32":
+        # There is no ``mount`` to read, and a local D: has its own st_dev,
+        # so the home-device fallback below would call every non-C: drive
+        # remote.
+        return _windows_is_remote(path)
     probe = _existing_ancestor(path)
     try:
         probe = probe.resolve()
@@ -169,8 +192,16 @@ def _copy_sqlite_main_and_wal(src: Path, dest: Path) -> None:
 
 
 def _local_mirror_path(remote: Path) -> Path:
+    """A working copy of *remote* that only this store uses.
+
+    Overlay renderers open the stats file from several threads at once
+    (``--jobs``); a shared copy was overwritten while another connection had
+    it open ("file is not a database", or WinError 32 on Windows).
+    """
     key = hashlib.sha1(os.fsencode(str(remote.resolve()))).hexdigest()[:16]
-    return Path(tempfile.gettempdir()) / "videobrowser-sqlite" / key / remote.name
+    root = Path(tempfile.gettempdir()) / "videobrowser-sqlite" / key
+    root.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(dir=root)) / remote.name
 
 
 def _warn_remote_once(path: Path) -> None:
@@ -213,7 +244,8 @@ class StatsStore:
         if is_remote_filesystem(requested):
             _warn_remote_once(requested)
             working = _local_mirror_path(requested)
-            _copy_sqlite_main_and_wal(requested, working)
+            with _mirror_lock:
+                _copy_sqlite_main_and_wal(requested, working)
             self.db_path = working
             self._sync_back_to = requested
         else:
@@ -237,17 +269,23 @@ class StatsStore:
         conn = getattr(self, "conn", None)
         if conn is None:
             return
+        changed = False
         try:
             if self._sync_back_to is None:
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            changed = conn.total_changes > 0
             conn.close()
         finally:
             self.conn = None
         if self._sync_back_to is not None:
-            _copy_sqlite_main_and_wal(self.db_path, self._sync_back_to)
-            wal, shm = _sqlite_sidecars(self._sync_back_to)
-            wal.unlink(missing_ok=True)
-            shm.unlink(missing_ok=True)
+            # Readers (the overlay renderers) leave the network file alone.
+            if changed:
+                with _mirror_lock:
+                    _copy_sqlite_main_and_wal(self.db_path, self._sync_back_to)
+                    wal, shm = _sqlite_sidecars(self._sync_back_to)
+                    wal.unlink(missing_ok=True)
+                    shm.unlink(missing_ok=True)
+            shutil.rmtree(self.db_path.parent, ignore_errors=True)
 
     def __enter__(self) -> "StatsStore":
         return self

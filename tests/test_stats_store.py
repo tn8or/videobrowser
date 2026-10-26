@@ -133,3 +133,40 @@ def test_remote_open_replays_existing_wal(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(stats, "is_remote_filesystem", lambda path: True)
     with stats.StatsStore(remote) as store:
         assert store.session_exists("padborg", started)
+
+
+def test_windows_local_drive_is_not_remote(tmp_path: Path, monkeypatch):
+    stats = _stats()
+    monkeypatch.setattr(stats.sys, "platform", "win32")
+    monkeypatch.setattr(stats, "_windows_is_remote", lambda path: False)
+    assert stats.is_remote_filesystem(tmp_path / "stats.sqlite") is False
+
+
+def test_windows_unc_path_is_remote(monkeypatch):
+    stats = _stats()
+    monkeypatch.setattr(stats.os.path, "abspath", lambda p: str(p))
+    assert stats._windows_is_remote(Path("//nas/share/stats.sqlite")) is True
+
+
+def test_remote_stores_get_separate_working_copies(tmp_path: Path, monkeypatch):
+    """Parallel renderers each open the stats file; one must not clobber another."""
+    stats = _stats()
+    remote = tmp_path / "share" / "stats.sqlite"
+    remote.parent.mkdir()
+    started = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
+    with stats.StatsStore(remote) as store:
+        store.create_session("padborg", started, "x.vbo")
+    before = remote.stat().st_mtime_ns
+
+    monkeypatch.setattr(stats, "is_remote_filesystem", lambda path: True)
+    a = stats.StatsStore(remote)
+    b = stats.StatsStore(remote)
+    try:
+        assert a.db_path != b.db_path
+        a.close()
+        assert b.session_exists("padborg", started)
+    finally:
+        b.close()
+    # Read-only stores do not copy back over the network file.
+    assert remote.stat().st_mtime_ns == before
+    assert not a.db_path.exists() and not b.db_path.exists()

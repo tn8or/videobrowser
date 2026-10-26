@@ -19,6 +19,7 @@ from videobrowser.pipeline import ScanConfig, pick_device, scan_recording
 from videobrowser.profiles import CameraMap
 from videobrowser.riders import RiderTracker
 from videobrowser.telemetry import DEFAULT_MIN_TRACK_KMH, STOPPED_KMH
+from videobrowser.vehicles import DEFAULT_MAX_SHARE
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -76,8 +77,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional cameras.json override. Not inferred from GoPro filenames.",
     )
     scan.add_argument("--model", default="yolo11n.pt", help="Ultralytics model path or name")
-    scan.add_argument("--device", default="auto", help="auto | mps | cpu | coreml")
+    scan.add_argument("--device", default="auto", help="auto | cuda | mps | cpu | coreml")
     scan.add_argument("--conf", type=float, default=0.25, help="YOLO confidence threshold")
+    scan.add_argument(
+        "--tensorrt",
+        action="store_true",
+        help="On cuda: run the detector as a TensorRT FP16 engine (built once next to the model)",
+    )
     scan.add_argument("--force", action="store_true", help="Reprocess recordings already in the SQLite log")
     scan.add_argument("--previews", type=int, default=8, help="Annotated preview JPEGs per recording")
     scan.add_argument(
@@ -103,6 +109,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=STOPPED_KMH,
         help="Drop events below this GoPro GPS speed in km/h, i.e. standing still (0 disables). Default 10.",
+    )
+    scan.add_argument(
+        "--max-vehicle-share",
+        type=float,
+        default=DEFAULT_MAX_SHARE,
+        help="Drop events with a car, van or truck in view this share of the time, i.e. the paddock (0 disables). Default 0.4.",
     )
     scan.add_argument(
         "--max-clip-seconds",
@@ -140,6 +152,12 @@ def build_parser() -> argparse.ArgumentParser:
         cmd.add_argument("-o", "--out", type=Path, required=True, help="Scan output directory")
         cmd.add_argument("--date", action="append", default=[], metavar="YYYY-MM-DD", help="Only this day (repeatable)")
         cmd.add_argument(
+            "--jobs",
+            type=int,
+            default=None,
+            help="Clips cut at once (default: CPU threads / 4, at most 4)",
+        )
+        cmd.add_argument(
             "--no-overlay",
             "--no-racebox",
             dest="no_overlay",
@@ -147,6 +165,19 @@ def build_parser() -> argparse.ArgumentParser:
             help="No overlays at all (RaceBox, telemetry, date/time)",
         )
         cmd.add_argument("--force", action="store_true", help="Cut clips again even if the file exists")
+        cmd.add_argument(
+            "--min-speed",
+            type=float,
+            default=DEFAULT_MIN_TRACK_KMH,
+            help="Leave out clips below this speed in km/h (standing still, paddock, pit lane), "
+            "as the shorts do (0 disables). Default 40.",
+        )
+        cmd.add_argument(
+            "--max-vehicle-share",
+            type=float,
+            default=DEFAULT_MAX_SHARE,
+            help="Leave out clips with a car, van or truck in view this share of the time (0 disables). Default 0.4.",
+        )
         cmd.add_argument(
             "--sessions-dir",
             type=Path,
@@ -208,9 +239,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-speed",
         type=float,
         default=DEFAULT_MIN_TRACK_KMH,
-        help="Track speed in km/h: slower moments (paddock, pit lane) get at most one per action short and none in theme shorts (0 disables). Default 40.",
+        help="Track speed in km/h: slower moments (standing still, paddock, pit lane) are left out (0 disables). Default 40.",
+    )
+    shorts.add_argument(
+        "--max-vehicle-share",
+        type=float,
+        default=DEFAULT_MAX_SHARE,
+        help="Drop moments with a car, van or truck in view this share of the time, i.e. the paddock (0 disables). Default 0.4.",
     )
     shorts.add_argument("--dry-run", action="store_true", help="Write moments.json and index.html only")
+    shorts.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        help="Clips cut from the GoPro files at once (default: CPU threads / 4, at most 4)",
+    )
     shorts.add_argument(
         "--sessions-dir",
         type=Path,
@@ -221,6 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def shorts_cmd(args: argparse.Namespace) -> int:
+    from videobrowser.exports import default_jobs
     from videobrowser.shorts import build_shorts
 
     out = args.out.expanduser().resolve()
@@ -238,6 +282,8 @@ def shorts_cmd(args: argparse.Namespace) -> int:
         crashes=not args.no_crash,
         render=not args.dry_run,
         min_speed=args.min_speed,
+        max_vehicle_share=args.max_vehicle_share,
+        jobs=max(1, args.jobs) if args.jobs else default_jobs(),
     )
     return 0
 
@@ -291,7 +337,7 @@ def facing_cmd(args: argparse.Namespace) -> int:
 
 
 def exports_cmd(args: argparse.Namespace) -> int:
-    from videobrowser.exports import export_horizontals, export_verticals
+    from videobrowser.exports import default_jobs, export_horizontals, export_verticals
 
     out = args.out.expanduser().resolve()
     if not (out / "scan.sqlite").exists():
@@ -303,6 +349,9 @@ def exports_cmd(args: argparse.Namespace) -> int:
         sessions_dir=(args.sessions_dir or (out / "sessions")).expanduser(),
         font_path=args.font,
         force=args.force,
+        jobs=max(1, args.jobs) if args.jobs else default_jobs(),
+        min_speed=args.min_speed,
+        max_vehicle_share=args.max_vehicle_share,
     )
     if args.cmd == "horizontals":
         export_horizontals(out, stats_path=args.stats, **common)
@@ -344,8 +393,12 @@ def scan_cmd(args: argparse.Namespace) -> int:
     out.mkdir(parents=True, exist_ok=True)
     db = ScanDB.open(out / "scan.sqlite")
     device = pick_device(args.device)
-    tracker = RiderTracker(model_path=args.model, device=device, conf=args.conf, imgsz=args.size)
-    print(f"detector: {args.model} on {device}")
+    tracker = RiderTracker(
+        model_path=args.model, device=device, conf=args.conf, imgsz=args.size, tensorrt=args.tensorrt
+    )
+    if args.tensorrt and device == "cuda":
+        tracker.load()
+    print(f"detector: {args.model} on {device}{' (TensorRT)' if getattr(tracker, 'engine', False) else ''}")
 
     config = ScanConfig(
         out_dir=out,
@@ -363,6 +416,7 @@ def scan_cmd(args: argparse.Namespace) -> int:
         max_seconds=args.max_seconds,
         min_motion=args.min_motion,
         min_speed=args.min_speed,
+        max_vehicle_share=args.max_vehicle_share,
         max_clip_seconds=args.max_clip_seconds,
         max_clips=args.max_clips,
     )

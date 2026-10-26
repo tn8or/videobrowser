@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -38,7 +41,7 @@ from videobrowser.profiles import (
 )
 from videobrowser.probe import local_date_label
 from videobrowser.puck import detect_puck
-from videobrowser.riders import RiderTracker, TrackPoint, score_tracks
+from videobrowser.riders import RiderTracker, TrackPoint, score_passes, score_tracks
 from videobrowser.telemetry import (
     STOPPED_KMH,
     LeanSample,
@@ -52,6 +55,14 @@ from videobrowser.telemetry import (
     turn_series,
 )
 from videobrowser.themes import facing
+from videobrowser.vehicles import (
+    DEFAULT_MAX_SHARE,
+    EVENT_PAD_S,
+    in_paddock,
+    is_vehicle,
+    vehicle_in_view,
+)
+from videobrowser.vehicles import per_second as vehicles_per_second
 
 
 @dataclass
@@ -73,6 +84,9 @@ class ScanConfig:
     # Drop events below this GPS speed (standing still); 0 disables. The
     # shorts apply the stricter track speed, so paddock clips stay available.
     min_speed: float = STOPPED_KMH
+    # Drop events with a car, van or truck in view this share of the time
+    # (the paddock); 0 disables.
+    max_vehicle_share: float = DEFAULT_MAX_SHARE
     max_clip_seconds: float = 24.0
     max_clips: int = 12
     # RaceBox speed/turn track (racebox_align.RaceboxTrack) for footage
@@ -86,6 +100,8 @@ def pick_device(requested: str) -> str:
     try:
         import torch
 
+        if torch.cuda.is_available():
+            return "cuda"
         if torch.backends.mps.is_available():
             return "mps"
     except Exception:
@@ -117,10 +133,27 @@ def _sample_times(recording: Recording) -> list[tuple[Chapter, float]]:
     return picks
 
 
+# Short seeks run side by side, one per CPU thread: each is its own ffmpeg,
+# mostly start-up and waiting on the decoder.
+_SEEK_WORKERS = os.cpu_count() or 4
+
+# Frames sent to YOLO per call. One frame per call spent most of the time on
+# per-call overhead rather than on the GPU (~22 ms a frame on an RTX 5070).
+_DETECT_BATCH = 16
+
+
+def _parallel(work, items: list) -> list:
+    """work(item) for each item, in order, a few at a time."""
+    if len(items) <= 1:
+        return [work(item) for item in items]
+    with ThreadPoolExecutor(max_workers=_SEEK_WORKERS) as pool:
+        return list(pool.map(work, items))
+
+
 def _sample_frames(recording: Recording, max_side: int, rotation: int = 0) -> list:
-    frames = []
-    for chapter, t in _sample_times(recording):
-        image = decode_one_frame(
+    def _one(pick):
+        chapter, t = pick
+        return decode_one_frame(
             chapter.path,
             t,
             max_side,
@@ -128,9 +161,8 @@ def _sample_frames(recording: Recording, max_side: int, rotation: int = 0) -> li
             chapter.info.height,
             rotation=rotation,
         )
-        if image is not None:
-            frames.append(image)
-    return frames
+
+    return [image for image in _parallel(_one, _sample_times(recording)) if image is not None]
 
 
 # Moments sampled for which way the camera looks (the ones in the pits or
@@ -143,21 +175,26 @@ def facing_for_recording(recording: Recording, max_side: int, profile: Profile) 
     frames at moments spread over the recording, else None (the mount guess
     from ``profile`` stands). Logs the votes either way."""
     duration = recording.duration or 0.0
-    divergences: list[float] = []
+    picks = []
     for k in range(_FACING_SAMPLES):
         t = duration * (k + 0.5) / _FACING_SAMPLES
         chapter = chapter_at(recording, t)
         if chapter is None:
             continue
         local = min(max(t - chapter.offset, 0.0), max(0.0, chapter.duration - 0.5))
+        picks.append((chapter, local))
+
+    def _one(pick):
+        chapter, local = pick
         pair = decode_frames(
             chapter.path, local, 2, max_side, chapter.info.width, chapter.info.height,
             rotation=profile.rotation,
         )
         if len(pair) == 2:
-            div = flow_divergence(pair[0], pair[1], profile.ego_masks)
-            if div is not None:
-                divergences.append(div)
+            return flow_divergence(pair[0], pair[1], profile.ego_masks)
+        return None
+
+    divergences = [d for d in _parallel(_one, picks) if d is not None]
     found = facing_from_flow(divergences)
     ahead = sum(1 for d in divergences if d > FACING_MIN_DIVERGENCE)
     back = sum(1 for d in divergences if d < -FACING_MIN_DIVERGENCE)
@@ -367,6 +404,8 @@ def scan_recording(
     focus_tracks: dict[int, list[TrackPoint]] = {}
     puck_hits: list[tuple[float, float]] = []
     motion_samples: list[tuple[float, float]] = []
+    # (t, vehicle in view) per frame the detector saw.
+    vehicle_samples: list[tuple[float, bool]] = []
     prev_image = None
     lean_samples = _lean_for_recording(recording) if "puck" in profile.pipelines else []
 
@@ -393,13 +432,50 @@ def scan_recording(
             backend = decoder.backend
             print(f"  decode {backend} {decoder.width}x{decoder.height} @ {config.fps:g}fps")
 
+            # Where the chapter's time goes, logged after it: waiting on the
+            # decoder, in the detector, and the per-frame work around it.
+            waited = detected = 0.0
+            began = time.perf_counter()
+
             def _frames():
+                nonlocal waited
                 if first is not None:
                     yield first
-                    yield from frame_iter
+                while True:
+                    t0 = time.perf_counter()
+                    frame = next(frame_iter, None)
+                    waited += time.perf_counter() - t0
+                    if frame is None:
+                        return
+                    yield frame
 
-            for frame in tqdm(
-                _frames(),
+            use_riders = "riders" in profile.pipelines and tracker is not None
+
+            def _detected():
+                """(frame, rider boxes) in order, YOLO run _DETECT_BATCH frames at a time."""
+                batch = []
+                for frame in _frames():
+                    batch.append(frame)
+                    if len(batch) < _DETECT_BATCH:
+                        continue
+                    yield from _flush(batch)
+                    batch = []
+                if batch:
+                    yield from _flush(batch)
+
+            def _flush(batch):
+                nonlocal detected
+                if not use_riders:
+                    for frame in batch:
+                        yield frame, []
+                    return
+                t0 = time.perf_counter()
+                found = tracker.update_batch([apply_ego_mask(f.image, profile) for f in batch])
+                detected += time.perf_counter() - t0
+                yield from zip(batch, found)
+
+            for frame, points in tqdm(
+                _detected(),
                 total=max(expected, 1),
                 desc=chapter.path.name,
                 unit="fr",
@@ -410,9 +486,9 @@ def scan_recording(
                         (global_t, scene_motion(prev_image, frame.image, profile.ego_masks))
                     )
                 prev_image = frame.image
-                if "riders" in profile.pipelines and tracker is not None:
-                    masked = apply_ego_mask(frame.image, profile)
-                    points = tracker.update(masked)
+                if use_riders:
+                    vehicle_samples.append((global_t, vehicle_in_view(points)))
+                    points = [p for p in points if not is_vehicle(p)]
                     road = road_colour(frame.image) if points else None
                     for point in points:
                         point.t = global_t
@@ -433,12 +509,18 @@ def scan_recording(
                         hit = detect_puck(frame.image, profile.puck_roi)
                         if hit:
                             puck_hits.append((global_t, hit.score))
+            total = time.perf_counter() - began
+            print(
+                f"  time {total:.0f}s: decode wait {waited:.0f}s, detector {detected:.0f}s, "
+                f"other {max(0.0, total - waited - detected):.0f}s"
+            )
         if remaining is not None:
             remaining -= chapter.duration
 
     events = []
     if "riders" in profile.pipelines:
         events.extend(score_tracks(tracks, recording.recording_id))
+        events.extend(score_passes(tracks, recording.recording_id))
         events.extend(score_incidents(tracks, recording.recording_id))
     if "puck" in profile.pipelines:
         events.extend(_puck_events(puck_hits, recording.recording_id))
@@ -446,6 +528,20 @@ def scan_recording(
     before_motion = len(events)
     events = [e for e in events if event_is_moving(e, motion_samples, config.min_motion)]
     dropped = before_motion - len(events)
+    if config.max_vehicle_share > 0 and events:
+        before_vehicles = len(events)
+        events = [
+            e
+            for e in events
+            if not in_paddock(
+                vehicle_samples,
+                [(e.t_start - EVENT_PAD_S, e.t_end + EVENT_PAD_S)],
+                config.max_vehicle_share,
+            )
+        ]
+        parked = before_vehicles - len(events)
+        if parked:
+            print(f"  dropped {parked} with a car in view (paddock)")
     start_utc = (
         creation_utc_prefer_gps(recording.chapters[0].info) if recording.chapters else None
     )
@@ -538,6 +634,7 @@ def scan_recording(
         facing=camera_facing,
     )
     db.save_motion(recording.recording_id, per_second(motion_samples))
+    db.save_vehicles(recording.recording_id, vehicles_per_second(vehicle_samples))
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=True)
     extra = f"  dropped {dropped} stationary" if dropped else ""
     print(

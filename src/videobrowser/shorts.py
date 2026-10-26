@@ -17,10 +17,11 @@ follow-cam clip that covers it (crop and HUD included), copied whole. A piece
 no vertical clip covers (a rear-camera hand-over that did not make the clip
 list, an own crash) is cut from the source with a 9:16 crop instead, which
 looks into the corner like the scan's clips do.
-Moments where the bike stands still are left out. Moments below
-``--min-speed`` (GoPro GPS; paddock, pit lane) get at most one per action
-short and none in the theme shorts. Without GPS the scan's scene motion
-stands in for speed.
+Moments where the bike stands still or rides below ``--min-speed`` (GoPro
+GPS; paddock, pit lane) are left out, the same rule ``verticals`` and
+``horizontals`` use (``clip_drop_reason``). Without GPS the scan's scene
+motion stands in for speed. Moments with a car, van or truck in view most of the
+time (``--max-vehicle-share``) are in the paddock and left out.
 """
 
 from __future__ import annotations
@@ -30,8 +31,10 @@ import json
 import os
 import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -41,7 +44,7 @@ from videobrowser.db import ScanDB
 from videobrowser.events import ClipWindow
 from videobrowser.motion import DEFAULT_THRESHOLD, TRACK_MOTION
 from videobrowser.probe import ProbeError, local_date_label, probe
-from videobrowser.sync import CameraClock, ChapterRef, align
+from videobrowser.sync import CameraClock, ChapterRef, align, parallel
 from videobrowser.telemetry import DEFAULT_MIN_TRACK_KMH, STOPPED_KMH
 from videobrowser.themes import (
     LABELS,
@@ -54,6 +57,8 @@ from videobrowser.themes import (
     facing,
     find_moments,
 )
+from videobrowser.vehicles import DEFAULT_MAX_SHARE
+from videobrowser.vehicles import share as vehicle_share
 
 # Label shown at the start of each piece, seconds.
 LABEL_S = 1.8
@@ -62,6 +67,7 @@ FILE_NAMES = {
     "overtake": "overhalinger",
     "overtaken": "overhalet",
     "catching_up": "indhentninger",
+    "duel": "dueller",
     "kneepuck": "knae",
     "crash": "styrt",
     "crash_other": "mulige-styrt",
@@ -70,8 +76,6 @@ FILE_NAMES = {
 # Themes need this many moments for a short of their own (a crash or an
 # off-track excursion needs one).
 MIN_THEME_MOMENTS = {"crash": 1, "crash_other": 1, "off_track": 1}
-# Slow (paddock, pit lane) moments allowed in one action short.
-MAX_SLOW_PER_SHORT = 1
 # Own crashes end stopped, so they skip the pace check. Other riders "down"
 # while we stand still are almost always people beside bikes in the paddock.
 SPEED_EXEMPT_THEMES = frozenset({"crash"})
@@ -102,14 +106,8 @@ class ClipRow:
 # --- planning --------------------------------------------------------------
 
 
-def _pack(
-    moments: list[Moment], max_seconds: float, max_slow: int | None = None
-) -> list[list[Moment]]:
-    """Greedy fill, in the given order, into lists of at most *max_seconds*.
-
-    With *max_slow*, a slow moment that would go over that many in its list
-    is left out.
-    """
+def _pack(moments: list[Moment], max_seconds: float) -> list[list[Moment]]:
+    """Greedy fill, in the given order, into lists of at most *max_seconds*."""
     shorts: list[list[Moment]] = []
     current: list[Moment] = []
     length = 0.0
@@ -117,8 +115,6 @@ def _pack(
         if current and length + m.duration > max_seconds:
             shorts.append(current)
             current, length = [], 0.0
-        if max_slow is not None and m.slow and sum(c.slow for c in current) >= max_slow:
-            continue
         current.append(m)
         length += m.duration
     if current:
@@ -130,15 +126,14 @@ def plan_shorts(
     moments: list[Moment], max_seconds: float = 50.0, max_action_shorts: int = 6
 ) -> list[ShortPlan]:
     plans: list[ShortPlan] = []
-    # Slow moments rank lower, so paddock riding fills in rather than leads.
-    best_first = sorted(moments, key=lambda m: -m.score * (0.5 if m.slow else 1.0))
-    packed = _pack(best_first, max_seconds, MAX_SLOW_PER_SHORT)
+    best_first = sorted(moments, key=lambda m: -m.score)
+    packed = _pack(best_first, max_seconds)
     for i, group in enumerate(packed[:max_action_shorts], start=1):
         group.sort(key=lambda m: m.utc_start)
         plans.append(ShortPlan(f"{FILE_NAMES['action']}-{i:02d}", "action", group))
     for theme in THEME_ORDER:
         themed = sorted(
-            (m for m in moments if m.theme == theme and not m.slow), key=lambda m: m.utc_start
+            (m for m in moments if m.theme == theme), key=lambda m: m.utc_start
         )
         if len(themed) < MIN_THEME_MOMENTS.get(theme, 2):
             continue
@@ -218,6 +213,8 @@ class DayData:
     gps: dict = field(default_factory=dict)
     # recording id -> per-second scene motion from the scan.
     motion: dict = field(default_factory=dict)
+    # recording id -> per-second share of frames with a car in view.
+    vehicles: dict = field(default_factory=dict)
     # RaceBox log of the day, when there is one (``place_without_gps``).
     track: object = None
     # recording id -> camera-clock readings, for recordings without GPS the
@@ -250,6 +247,9 @@ def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
     for rid, samples in db.motion().items():
         if rid in owner:
             owner[rid].motion[rid] = samples
+    for rid, samples in db.vehicles().items():
+        if rid in owner:
+            owner[rid].vehicles[rid] = samples
     for row in db.all_events():
         if row["recording_id"] in owner:
             owner[row["recording_id"]].events.append(row)
@@ -425,6 +425,9 @@ def place_without_gps(day: DayData, track) -> None:
     if track is None:
         return
     day.track = track
+    missing = [rid for rid in day.clocks if rid not in day.gps]
+    for rid, gps in zip(missing, parallel(lambda rid: _recording_gps(day.clocks[rid]), missing)):
+        day.gps[rid] = gps
     cameras: dict[str, list[str]] = {}
     for rid, clock in day.clocks.items():
         if rid in day.motion and clock.start_utc is not None and not _day_gps(day, rid)[0]:
@@ -476,7 +479,7 @@ def _unplaced_pace(m: Moment, day: DayData) -> str | None:
     The camera clock is right to a few seconds under one of its two
     readings. When the log shows the bike in (or standing) under every
     reading, the moment is in the paddock. Otherwise it may be on track, but
-    that is not sure, so it counts as slow (at most one per action short).
+    that is not sure, so it counts as slow and is left out too.
     """
     seg = next((s for s in m.segments if s.recording_id in day.unplaced), None)
     if seg is None or day.track is None:
@@ -492,8 +495,22 @@ def _unplaced_pace(m: Moment, day: DayData) -> str | None:
     return "stopped"
 
 
+def _moment_vehicles(m: Moment, day: DayData) -> float | None:
+    """Share of the moment's time with a car in view, None if not stored."""
+    total = weight = 0.0
+    for seg in m.segments:
+        found = vehicle_share(day.vehicles.get(seg.recording_id, []), [(seg.t_start, seg.t_end)])
+        if found is not None:
+            total += found * seg.duration
+            weight += seg.duration
+    return total / weight if weight > 0 else None
+
+
 def day_moments(
-    day: DayData, crashes: bool = True, min_speed: float = DEFAULT_MIN_TRACK_KMH
+    day: DayData,
+    crashes: bool = True,
+    min_speed: float = DEFAULT_MIN_TRACK_KMH,
+    max_vehicle_share: float = DEFAULT_MAX_SHARE,
 ) -> list[Moment]:
     events = [
         CamEvent(
@@ -510,6 +527,16 @@ def day_moments(
     moments = find_moments(events)
     if crashes:
         moments.extend(_crash_moments(day))
+    if max_vehicle_share > 0:
+        before = len(moments)
+        moments = [
+            m
+            for m in moments
+            if m.theme in SPEED_EXEMPT_THEMES
+            or (_moment_vehicles(m, day) or 0.0) < max_vehicle_share
+        ]
+        if len(moments) < before:
+            print(f"  {before - len(moments)} moment(s) with a car in view left out (paddock)")
     if min_speed <= 0:
         return moments
     kept: list[Moment] = []
@@ -518,14 +545,40 @@ def day_moments(
         pace = None if m.theme in SPEED_EXEMPT_THEMES else _moment_pace(m, day, min_speed)
         if pace == "stopped":
             stopped += 1
-            continue
-        if pace == "slow":
-            m.slow = True
+        elif pace == "slow":
             slow += 1
-        kept.append(m)
+        else:
+            kept.append(m)
     if stopped or slow:
-        print(f"  {stopped} moment(s) standing still left out, {slow} below {min_speed:g} km/h")
+        print(f"  left out: {stopped} moment(s) standing still, {slow} below {min_speed:g} km/h (paddock)")
     return kept
+
+
+def clip_drop_reason(
+    day: DayData,
+    rid: str,
+    t_start: float,
+    t_end: float,
+    min_speed: float = DEFAULT_MIN_TRACK_KMH,
+    max_vehicle_share: float = DEFAULT_MAX_SHARE,
+) -> str | None:
+    """Why a scan clip window is left out of the exports, None to keep it.
+
+    The same tests ``day_moments`` puts a moment of other riders through: a
+    car in view, the bike standing still or riding below *min_speed*.
+    """
+    start = day.clocks[rid].start_utc or 0.0
+    m = Moment("action", start + t_start, start + t_end, 0.0, [Segment(rid, t_start, t_end)])
+    if max_vehicle_share > 0 and (_moment_vehicles(m, day) or 0.0) >= max_vehicle_share:
+        return "car in view"
+    if min_speed <= 0:
+        return None
+    pace = _moment_pace(m, day, min_speed)
+    if pace == "stopped":
+        return "standing still"
+    if pace == "slow":
+        return f"below {min_speed:g} km/h"
+    return None
 
 
 # --- rendering -------------------------------------------------------------
@@ -558,6 +611,10 @@ def _source_for(segment: Segment, clips: list[ClipRow]) -> tuple[Path, float, fl
     return clip.vertical_path, lo - clip.t_start, hi - lo
 
 
+# Every cut used to probe its recording's files again, over the network share.
+_probe_once = lru_cache(maxsize=None)(probe)
+
+
 def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
     """9:16 cut straight from the GoPro files (no HUD), looking into corners."""
     from videobrowser.gopro import Chapter, Recording
@@ -566,7 +623,7 @@ def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
     clock = day.clocks[segment.recording_id]
     recording = Recording(segment.recording_id, "", segment.recording_id)
     for i, ref in enumerate(clock.chapters, start=1):
-        info = probe(ref.path)
+        info = _probe_once(ref.path)
         recording.chapters.append(
             Chapter(ref.path, "", i, segment.recording_id, ref.duration, ref.offset, info)
         )
@@ -577,17 +634,18 @@ def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
     return export_vertical(recording, window, dest, day.rotations[segment.recording_id], focus)
 
 
-def collect_short(plan: ShortPlan, day: DayData, dest: Path) -> Path | None:
+def collect_short(plan: ShortPlan, day: DayData, dest: Path, jobs: int = 1) -> Path | None:
     """Folder with the source clips of *plan*, in order, for editing by hand.
 
     Each moment's camera pieces are copied whole from the scan's vertical
     clips (no cuts, so no audio clicks at the joins); a piece no clip covers
-    is cut from the GoPro files. ``klip.txt`` lists each file with the part
-    the plan would use.
+    is cut from the GoPro files, *jobs* of those cuts at a time. ``klip.txt``
+    lists each file with the part the plan would use.
     """
     dest.mkdir(parents=True, exist_ok=True)
     lines = [f"{plan.name}: {len(plan.moments)} moments, {plan.duration:.0f} s", ""]
     copied: dict[Path, str] = {}
+    cuts: list[tuple[Segment, str]] = []
     for i, moment in enumerate(plan.moments, start=1):
         for j, segment in enumerate(moment.segments):
             cam = day.facing(segment.recording_id)
@@ -597,7 +655,7 @@ def collect_short(plan: ShortPlan, day: DayData, dest: Path) -> Path | None:
             try:
                 if found is None:
                     name = f"{stem}.mp4"
-                    _from_source(day, segment, dest / name)
+                    cuts.append((segment, name))
                     use = "whole file"
                 else:
                     src, start, duration = found
@@ -612,6 +670,23 @@ def collect_short(plan: ShortPlan, day: DayData, dest: Path) -> Path | None:
             lines.append(f"{name}  ({moment.label}, {_clock_label(moment.utc_start)}, use {use})")
     if len(lines) == 2:
         return None
+
+    def cut(item: tuple[Segment, str]) -> None:
+        segment, name = item
+        try:
+            _from_source(day, segment, dest / name)
+        except Exception as exc:
+            raise RuntimeError(f"{segment.recording_id}@{segment.t_start:.0f}s: {exc}") from exc
+
+    # Each cut is an ffmpeg decode + encode that mostly waits on NVDEC/NVENC
+    # or the network, so several run side by side.
+    if jobs > 1 and len(cuts) > 1:
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            for _ in pool.map(cut, cuts):
+                pass
+    else:
+        for item in cuts:
+            cut(item)
     (dest / "klip.txt").write_text("\n".join(lines) + "\n")
     return dest
 
@@ -626,7 +701,6 @@ def _moment_json(m: Moment, day: DayData) -> dict:
         "time": _clock_label(m.utc_start),
         "utc_start": round(m.utc_start, 2),
         "score": round(m.score, 3),
-        "slow": m.slow,
         "segments": [
             {
                 "recording_id": s.recording_id,
@@ -679,6 +753,7 @@ def write_index(
         "approaching_rider": "Rytter nærmer sig",
         "receding_rider": "Rytter fjerner sig",
         "nearby_rider": "Rytter tæt på",
+        "rider_pass": "Ryttere bytter plads",
         "kneepuck_visible": "Knæ i asfalten",
         "rider_down": "Muligt styrt",
         "off_track": "Ude i gruset",
@@ -735,6 +810,8 @@ def build_shorts(
     crashes: bool = True,
     render: bool = True,
     min_speed: float = DEFAULT_MIN_TRACK_KMH,
+    jobs: int = 1,
+    max_vehicle_share: float = DEFAULT_MAX_SHARE,
 ) -> dict[str, list[Path]]:
     db = ScanDB.open(out_dir / "scan.sqlite")
     try:
@@ -757,7 +834,9 @@ def build_shorts(
         print(f"shorts {label}: {len(day.clocks)} camera recording(s), {len(day.events)} events")
         place_without_gps(day, track)
         align(list(day.clocks.values()), racebox_offset=rb_offset, use_audio=audio_sync)
-        moments = day_moments(day, crashes=crashes, min_speed=min_speed)
+        moments = day_moments(
+            day, crashes=crashes, min_speed=min_speed, max_vehicle_share=max_vehicle_share
+        )
         plans = plan_shorts(moments, max_seconds, max_action_shorts)
         day_dir = out_dir / "shorts" / label
         day_dir.mkdir(parents=True, exist_ok=True)
@@ -795,7 +874,7 @@ def build_shorts(
                 partial = day_dir / f".{plan.name}.partial"
                 shutil.rmtree(partial, ignore_errors=True)
                 try:
-                    path = collect_short(plan, day, partial)
+                    path = collect_short(plan, day, partial, jobs=jobs)
                 except Exception as exc:
                     print(f"  short {plan.name} failed: {exc}")
                     shutil.rmtree(partial, ignore_errors=True)

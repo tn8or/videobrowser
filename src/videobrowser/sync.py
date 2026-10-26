@@ -18,7 +18,9 @@ line them up:
 
 from __future__ import annotations
 
+import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,6 +64,18 @@ class CameraClock:
 
     def utc(self, t: float) -> float:
         return float(self.start_utc or 0.0) + t
+
+
+def parallel(work, items: list) -> list:
+    """work(item) for each item, in order, one thread per CPU thread.
+
+    The per-camera work here (GPMD extraction, audio decode) is ffmpeg and
+    file reads over the network share, so it overlaps well.
+    """
+    if len(items) <= 1:
+        return [work(item) for item in items]
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
+        return list(pool.map(work, items))
 
 
 def _chapter_blob(chapter: ChapterRef) -> bytes | None:
@@ -220,17 +234,21 @@ def align(
     log (absolute time); without it cameras are aligned to each other only.
     """
     rb: dict[str, float] = {}
+    timed = [clock for clock in clocks if clock.start_utc is not None]
     if racebox_offset is not None:
-        for clock in clocks:
-            if clock.start_utc is None:
-                continue
+
+        def _rb(clock: CameraClock) -> float | None:
             try:
-                offset = racebox_offset(clock)
+                return racebox_offset(clock)
             except Exception as exc:
                 print(f"  sync {clock.recording_id}: racebox failed ({exc})")
-                offset = None
+                return None
+
+        for clock, offset in zip(timed, parallel(_rb, timed)):
             if offset:
                 rb[clock.recording_id] = offset
+    # Every camera's GPS track is read below; read them all at once first.
+    parallel(camera_fixes, timed)
 
     for group in clusters(clocks):
         if len(group) == 1:
@@ -251,9 +269,9 @@ def align(
         if ref_shift:
             reference.start_utc += ref_shift
             reference.source = "racebox"
-        for clock in group:
-            if clock is reference:
-                continue
+
+        def _place(clock: CameraClock) -> None:
+            # Each worker moves only its own clock; the reference stays put.
             if clock.recording_id in rb:
                 clock.start_utc += rb[clock.recording_id]
                 clock.source = "racebox"
@@ -267,6 +285,10 @@ def align(
                 if lag is not None:
                     clock.start_utc += lag
                     clock.source += "+audio"
+
+        others = [clock for clock in group if clock is not reference]
+        parallel(_place, others)
+        for clock in others:
             print(
                 f"  sync {clock.recording_id} -> {reference.recording_id}: {clock.source}"
             )

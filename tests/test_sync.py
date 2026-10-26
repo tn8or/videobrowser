@@ -36,3 +36,24 @@ def test_track_offset_lines_up_two_cameras():
     # Same ride, but this camera's clock reads 2.4 s late.
     other = np.column_stack([1000 + t + 2.4, lat, lon])
     assert abs(track_offset(other, reference) + 2.4) < 0.06
+
+
+def test_align_checks_cameras_side_by_side(monkeypatch):
+    import threading
+
+    import videobrowser.sync as sync
+
+    together = threading.Barrier(3, timeout=5)
+    lags = {"B": 0.5, "C": None, "D": -0.25}
+
+    def audio(reference, clock):
+        together.wait()  # B, C and D must be checked at once
+        return lags[clock.recording_id]
+
+    monkeypatch.setattr(sync, "audio_offset", audio)
+    clocks = [_clock(rid, 1000.0, 300.0) for rid in "ABCD"]
+    sync.align(clocks)
+    by_id = {c.recording_id: c for c in clocks}
+    assert by_id["B"].start_utc == 1000.5 and by_id["B"].source == "gps+audio"
+    assert by_id["C"].start_utc == 1000.0 and by_id["C"].source == "gps"
+    assert by_id["D"].start_utc == 999.75
