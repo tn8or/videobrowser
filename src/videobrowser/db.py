@@ -54,6 +54,13 @@ CREATE TABLE IF NOT EXISTS motion (
     samples TEXT NOT NULL
 );
 
+-- Share of frames per second with a car, van or truck in view (JSON
+-- [[t, share], ...]): tells the shorts when the bike is in the paddock.
+CREATE TABLE IF NOT EXISTS vehicles (
+    recording_id TEXT PRIMARY KEY,
+    samples TEXT NOT NULL
+);
+
 -- Rider boxes inside the clip windows (JSON [[track_id, t, x1, y1, x2, y2,
 -- frame_w, frame_h], ...]): what the vertical crop follows, without
 -- re-running the detector.
@@ -287,6 +294,19 @@ class ScanDB:
         return {
             row["recording_id"]: [(float(t), float(m)) for t, m in json.loads(row["samples"])]
             for row in self.conn.execute("SELECT * FROM motion")
+        }
+
+    def save_vehicles(self, recording_id: str, samples: list[tuple[float, float]]) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO vehicles(recording_id, samples) VALUES (?, ?)",
+            (recording_id, json.dumps([[round(t, 1), round(v, 2)] for t, v in samples])),
+        )
+        self.conn.commit()
+
+    def vehicles(self) -> dict[str, list[tuple[float, float]]]:
+        return {
+            row["recording_id"]: [(float(t), float(v)) for t, v in json.loads(row["samples"])]
+            for row in self.conn.execute("SELECT * FROM vehicles")
         }
 
     def recording_metas(self) -> list[sqlite3.Row]:

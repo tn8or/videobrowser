@@ -55,6 +55,14 @@ from videobrowser.telemetry import (
     turn_series,
 )
 from videobrowser.themes import facing
+from videobrowser.vehicles import (
+    DEFAULT_MAX_SHARE,
+    EVENT_PAD_S,
+    in_paddock,
+    is_vehicle,
+    vehicle_in_view,
+)
+from videobrowser.vehicles import per_second as vehicles_per_second
 
 
 @dataclass
@@ -76,6 +84,9 @@ class ScanConfig:
     # Drop events below this GPS speed (standing still); 0 disables. The
     # shorts apply the stricter track speed, so paddock clips stay available.
     min_speed: float = STOPPED_KMH
+    # Drop events with a car, van or truck in view this share of the time
+    # (the paddock); 0 disables.
+    max_vehicle_share: float = DEFAULT_MAX_SHARE
     max_clip_seconds: float = 24.0
     max_clips: int = 12
     # RaceBox speed/turn track (racebox_align.RaceboxTrack) for footage
@@ -393,6 +404,8 @@ def scan_recording(
     focus_tracks: dict[int, list[TrackPoint]] = {}
     puck_hits: list[tuple[float, float]] = []
     motion_samples: list[tuple[float, float]] = []
+    # (t, vehicle in view) per frame the detector saw.
+    vehicle_samples: list[tuple[float, bool]] = []
     prev_image = None
     lean_samples = _lean_for_recording(recording) if "puck" in profile.pipelines else []
 
@@ -474,6 +487,8 @@ def scan_recording(
                     )
                 prev_image = frame.image
                 if use_riders:
+                    vehicle_samples.append((global_t, vehicle_in_view(points)))
+                    points = [p for p in points if not is_vehicle(p)]
                     road = road_colour(frame.image) if points else None
                     for point in points:
                         point.t = global_t
@@ -513,6 +528,20 @@ def scan_recording(
     before_motion = len(events)
     events = [e for e in events if event_is_moving(e, motion_samples, config.min_motion)]
     dropped = before_motion - len(events)
+    if config.max_vehicle_share > 0 and events:
+        before_vehicles = len(events)
+        events = [
+            e
+            for e in events
+            if not in_paddock(
+                vehicle_samples,
+                [(e.t_start - EVENT_PAD_S, e.t_end + EVENT_PAD_S)],
+                config.max_vehicle_share,
+            )
+        ]
+        parked = before_vehicles - len(events)
+        if parked:
+            print(f"  dropped {parked} with a car in view (paddock)")
     start_utc = (
         creation_utc_prefer_gps(recording.chapters[0].info) if recording.chapters else None
     )
@@ -605,6 +634,7 @@ def scan_recording(
         facing=camera_facing,
     )
     db.save_motion(recording.recording_id, per_second(motion_samples))
+    db.save_vehicles(recording.recording_id, vehicles_per_second(vehicle_samples))
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=True)
     extra = f"  dropped {dropped} stationary" if dropped else ""
     print(

@@ -19,6 +19,7 @@ from videobrowser.pipeline import ScanConfig, pick_device, scan_recording
 from videobrowser.profiles import CameraMap
 from videobrowser.riders import RiderTracker
 from videobrowser.telemetry import DEFAULT_MIN_TRACK_KMH, STOPPED_KMH
+from videobrowser.vehicles import DEFAULT_MAX_SHARE
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,6 +109,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=STOPPED_KMH,
         help="Drop events below this GoPro GPS speed in km/h, i.e. standing still (0 disables). Default 10.",
+    )
+    scan.add_argument(
+        "--max-vehicle-share",
+        type=float,
+        default=DEFAULT_MAX_SHARE,
+        help="Drop events with a car, van or truck in view this share of the time, i.e. the paddock (0 disables). Default 0.4.",
     )
     scan.add_argument(
         "--max-clip-seconds",
@@ -221,6 +228,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MIN_TRACK_KMH,
         help="Track speed in km/h: slower moments (paddock, pit lane) get at most one per action short and none in theme shorts (0 disables). Default 40.",
     )
+    shorts.add_argument(
+        "--max-vehicle-share",
+        type=float,
+        default=DEFAULT_MAX_SHARE,
+        help="Drop moments with a car, van or truck in view this share of the time, i.e. the paddock (0 disables). Default 0.4.",
+    )
     shorts.add_argument("--dry-run", action="store_true", help="Write moments.json and index.html only")
     shorts.add_argument(
         "--jobs",
@@ -256,6 +269,7 @@ def shorts_cmd(args: argparse.Namespace) -> int:
         crashes=not args.no_crash,
         render=not args.dry_run,
         min_speed=args.min_speed,
+        max_vehicle_share=args.max_vehicle_share,
         jobs=max(1, args.jobs) if args.jobs else default_jobs(),
     )
     return 0
@@ -387,6 +401,7 @@ def scan_cmd(args: argparse.Namespace) -> int:
         max_seconds=args.max_seconds,
         min_motion=args.min_motion,
         min_speed=args.min_speed,
+        max_vehicle_share=args.max_vehicle_share,
         max_clip_seconds=args.max_clip_seconds,
         max_clips=args.max_clips,
     )
