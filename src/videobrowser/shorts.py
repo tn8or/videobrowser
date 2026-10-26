@@ -828,10 +828,12 @@ def build_shorts(
 
     track = load_track(sessions_dir)
     results: dict[str, list[Path]] = {}
-    for label, day in sorted(days.items()):
-        if dates and label not in dates:
-            continue
-        print(f"shorts {label}: {len(day.clocks)} camera recording(s), {len(day.events)} events")
+    picked = [(label, day) for label, day in sorted(days.items()) if not dates or label in dates]
+    for d, (label, day) in enumerate(picked, 1):
+        print(
+            f"[day {d} of {len(picked)}] shorts {label}: "
+            f"{len(day.clocks)} camera recording(s), {len(day.events)} events"
+        )
         place_without_gps(day, track)
         align(list(day.clocks.values()), racebox_offset=rb_offset, use_audio=audio_sync)
         moments = day_moments(
@@ -867,7 +869,7 @@ def build_shorts(
         print("  moments: " + ", ".join(f"{t}={n}" for t, n in counts.items() if n))
         written: dict[str, Path] = {}
         if render:
-            for plan in plans:
+            for n, plan in enumerate(plans, 1):
                 # Fill a folder beside the old one and swap it in only once
                 # complete, so a failed or interrupted run keeps the previous one.
                 final = day_dir / plan.name
@@ -876,7 +878,7 @@ def build_shorts(
                 try:
                     path = collect_short(plan, day, partial, jobs=jobs)
                 except Exception as exc:
-                    print(f"  short {plan.name} failed: {exc}")
+                    print(f"  [short {n} of {len(plans)}] {plan.name} failed: {exc}")
                     shutil.rmtree(partial, ignore_errors=True)
                     continue
                 if path is None:
@@ -891,7 +893,7 @@ def build_shorts(
                 os.replace(partial, final)
                 shutil.rmtree(aside, ignore_errors=True)
                 written[plan.name] = final
-                print(f"  wrote {final.relative_to(out_dir)}/ ({plan.duration:.0f}s)")
+                print(f"  [short {n} of {len(plans)}] wrote {final.relative_to(out_dir)}/ ({plan.duration:.0f}s)")
             # Shorts this plan no longer produces (fewer moments than last
             # run), and finished .mp4 shorts from before the folders.
             names = {plan.name for plan in plans}

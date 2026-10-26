@@ -212,15 +212,17 @@ def export_horizontals(
     db = ScanDB.open(out_dir / "scan.sqlite")
     try:
         days = _track_days(db, out_dir, dates, sessions_dir, min_speed, max_vehicle_share)
-        for meta in _days(db, dates):
+        metas = list(_days(db, dates))
+        for i, meta in enumerate(metas, 1):
             rid = meta["recording_id"]
+            at = f"[file {i} of {len(metas)}]"
             pairs = windows_for(db, rid)
             if not pairs:
                 continue
             try:
                 recording = recording_from_meta(meta)
             except (ProbeError, OSError) as exc:
-                print(f"{rid}: source unavailable ({exc}); skipped")
+                print(f"{at} {rid}: source unavailable ({exc}); skipped")
                 continue
             pairs = _on_track(db, days, meta, pairs, "clip_path", min_speed, max_vehicle_share)
             clip_dir = out_dir / "clips" / meta["date_label"]
@@ -246,7 +248,7 @@ def export_horizontals(
                 db.set_clip_path(row["id"], "clip_path", str(dest))
                 new += 1
             cut += new
-            print(f"{rid}: {new} landscape clip(s) cut, {len(pairs) - new} kept")
+            print(f"{at} {rid}: {new} landscape clip(s) cut, {len(pairs) - new} kept")
             if not overlay:
                 continue
             source = start_source(meta, recording)
@@ -293,15 +295,17 @@ def export_verticals(
     db = ScanDB.open(out_dir / "scan.sqlite")
     try:
         days = _track_days(db, out_dir, dates, sessions_dir, min_speed, max_vehicle_share)
-        for meta in _days(db, dates):
+        metas = list(_days(db, dates))
+        for i, meta in enumerate(metas, 1):
             rid = meta["recording_id"]
+            at = f"[file {i} of {len(metas)}]"
             pairs = windows_for(db, rid)
             if not pairs:
                 continue
             try:
                 recording = recording_from_meta(meta)
             except (ProbeError, OSError) as exc:
-                print(f"{rid}: source unavailable ({exc}); skipped")
+                print(f"{at} {rid}: source unavailable ({exc}); skipped")
                 continue
             pairs = _on_track(db, days, meta, pairs, "vertical_path", min_speed, max_vehicle_share)
             vdir = out_dir / "vertical" / meta["date_label"]
@@ -313,7 +317,7 @@ def export_verticals(
                 else:
                     db.set_clip_path(row["id"], "vertical_path", str(vdir / _clip_name(window)))
             if not todo:
-                print(f"{rid}: {len(pairs)} vertical clip(s) kept")
+                print(f"{at} {rid}: {len(pairs)} vertical clip(s) kept")
                 continue
 
             source = start_source(meta, recording)
@@ -374,7 +378,7 @@ def export_verticals(
                 db.set_clip_path(row["id"], "vertical_path", str(dest))
                 new += 1
             cut += new
-            print(f"{rid}: {new} vertical clip(s) cut, {len(pairs) - len(todo)} kept")
+            print(f"{at} {rid}: {new} vertical clip(s) cut, {len(pairs) - len(todo)} kept")
     finally:
         db.close()
     return cut

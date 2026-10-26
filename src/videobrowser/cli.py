@@ -324,21 +324,21 @@ def facing_cmd(args: argparse.Namespace) -> int:
             db.clear_facing_overrides()
         for camera, way in overrides:
             db.set_facing_override(camera, way)
-        for meta in db.recording_metas():
-            if args.date and meta["date_label"] not in args.date:
-                continue
+        metas = [m for m in db.recording_metas() if not args.date or m["date_label"] in args.date]
+        for i, meta in enumerate(metas, 1):
             rid = meta["recording_id"]
+            at = f"[file {i} of {len(metas)}]"
             fixed = db.facing_override(rid)
             if fixed:
-                print(f"{rid}: {fixed} (set by hand)")
+                print(f"{at} {rid}: {fixed} (set by hand)")
                 db.set_facing(rid, fixed)
                 continue
             try:
                 recording = recording_from_meta(meta)
             except (ProbeError, OSError) as exc:
-                print(f"{rid}: source unavailable ({exc}); skipped")
+                print(f"{at} {rid}: source unavailable ({exc}); skipped")
                 continue
-            print(rid)
+            print(f"{at} {rid}")
             profile = replace(PROFILES.get(meta["profile"], UNKNOWN), rotation=int(meta["rotation"]))
             db.set_facing(rid, facing_for_recording(recording, args.size, profile))
     finally:
@@ -449,8 +449,9 @@ def scan_cmd(args: argparse.Namespace) -> int:
 
     all_events = []
     try:
-        for recording in recordings:
-            all_events.extend(scan_recording(recording, config, db, tracker))
+        for i, recording in enumerate(recordings, 1):
+            position = f"[file {i} of {len(recordings)}] "
+            all_events.extend(scan_recording(recording, config, db, tracker, position))
     finally:
         db.close()
 

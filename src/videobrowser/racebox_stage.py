@@ -168,7 +168,7 @@ def prepare(
         store = StatsStore(stats_path)
     try:
         for i, vbo in enumerate(vbos, 1):
-            print(f"racebox: [{i}/{len(vbos)}] {vbo.name}", flush=True)
+            print(f"racebox: [file {i} of {len(vbos)}] {vbo.name}", flush=True)
             try:
                 session = parse_vbo(str(vbo))
             except Exception as exc:
