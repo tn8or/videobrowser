@@ -84,6 +84,24 @@ def test_horizontals_cut_windows_and_drop_files_of_old_windows(tmp_path, monkeyp
     assert exports.export_horizontals(out, force=True) == 1
 
 
+def test_exports_leave_out_standing_still_like_the_shorts(tmp_path, monkeypatch):
+    import videobrowser.clips as clips
+    import videobrowser.exports as exports
+
+    out = tmp_path / "out"
+    _scan(out, "clock")
+    db = ScanDB.open(out / "scan.sqlite")
+    db.save_motion("R", [(t + 0.5, 1.0) for t in range(60)])  # parked: no scene motion
+    db.close()
+    monkeypatch.setattr(exports, "recording_from_meta", _recording)
+    stale = out / "clips" / "2026-08-01" / "R_00005_approaching_rider.mp4"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"old")
+    monkeypatch.setattr(clips, "export_clip", lambda rec, w, dest, rotation=0: dest.write_bytes(b"c"))
+    assert exports.export_horizontals(out) == 0 and not stale.exists()
+    assert exports.export_horizontals(out, min_speed=0) == 1
+
+
 def test_horizontals_render_overlays_even_when_clips_exist(tmp_path, monkeypatch):
     import types
 

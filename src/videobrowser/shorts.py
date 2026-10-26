@@ -17,10 +17,10 @@ follow-cam clip that covers it (crop and HUD included), copied whole. A piece
 no vertical clip covers (a rear-camera hand-over that did not make the clip
 list, an own crash) is cut from the source with a 9:16 crop instead, which
 looks into the corner like the scan's clips do.
-Moments where the bike stands still are left out. Moments below
-``--min-speed`` (GoPro GPS; paddock, pit lane) get at most one per action
-short and none in the theme shorts. Without GPS the scan's scene motion
-stands in for speed. Moments with a car, van or truck in view most of the
+Moments where the bike stands still or rides below ``--min-speed`` (GoPro
+GPS; paddock, pit lane) are left out, the same rule ``verticals`` and
+``horizontals`` use (``clip_drop_reason``). Without GPS the scan's scene
+motion stands in for speed. Moments with a car, van or truck in view most of the
 time (``--max-vehicle-share``) are in the paddock and left out.
 """
 
@@ -76,8 +76,6 @@ FILE_NAMES = {
 # Themes need this many moments for a short of their own (a crash or an
 # off-track excursion needs one).
 MIN_THEME_MOMENTS = {"crash": 1, "crash_other": 1, "off_track": 1}
-# Slow (paddock, pit lane) moments allowed in one action short.
-MAX_SLOW_PER_SHORT = 1
 # Own crashes end stopped, so they skip the pace check. Other riders "down"
 # while we stand still are almost always people beside bikes in the paddock.
 SPEED_EXEMPT_THEMES = frozenset({"crash"})
@@ -108,14 +106,8 @@ class ClipRow:
 # --- planning --------------------------------------------------------------
 
 
-def _pack(
-    moments: list[Moment], max_seconds: float, max_slow: int | None = None
-) -> list[list[Moment]]:
-    """Greedy fill, in the given order, into lists of at most *max_seconds*.
-
-    With *max_slow*, a slow moment that would go over that many in its list
-    is left out.
-    """
+def _pack(moments: list[Moment], max_seconds: float) -> list[list[Moment]]:
+    """Greedy fill, in the given order, into lists of at most *max_seconds*."""
     shorts: list[list[Moment]] = []
     current: list[Moment] = []
     length = 0.0
@@ -123,8 +115,6 @@ def _pack(
         if current and length + m.duration > max_seconds:
             shorts.append(current)
             current, length = [], 0.0
-        if max_slow is not None and m.slow and sum(c.slow for c in current) >= max_slow:
-            continue
         current.append(m)
         length += m.duration
     if current:
@@ -136,15 +126,14 @@ def plan_shorts(
     moments: list[Moment], max_seconds: float = 50.0, max_action_shorts: int = 6
 ) -> list[ShortPlan]:
     plans: list[ShortPlan] = []
-    # Slow moments rank lower, so paddock riding fills in rather than leads.
-    best_first = sorted(moments, key=lambda m: -m.score * (0.5 if m.slow else 1.0))
-    packed = _pack(best_first, max_seconds, MAX_SLOW_PER_SHORT)
+    best_first = sorted(moments, key=lambda m: -m.score)
+    packed = _pack(best_first, max_seconds)
     for i, group in enumerate(packed[:max_action_shorts], start=1):
         group.sort(key=lambda m: m.utc_start)
         plans.append(ShortPlan(f"{FILE_NAMES['action']}-{i:02d}", "action", group))
     for theme in THEME_ORDER:
         themed = sorted(
-            (m for m in moments if m.theme == theme and not m.slow), key=lambda m: m.utc_start
+            (m for m in moments if m.theme == theme), key=lambda m: m.utc_start
         )
         if len(themed) < MIN_THEME_MOMENTS.get(theme, 2):
             continue
@@ -490,7 +479,7 @@ def _unplaced_pace(m: Moment, day: DayData) -> str | None:
     The camera clock is right to a few seconds under one of its two
     readings. When the log shows the bike in (or standing) under every
     reading, the moment is in the paddock. Otherwise it may be on track, but
-    that is not sure, so it counts as slow (at most one per action short).
+    that is not sure, so it counts as slow and is left out too.
     """
     seg = next((s for s in m.segments if s.recording_id in day.unplaced), None)
     if seg is None or day.track is None:
@@ -556,14 +545,40 @@ def day_moments(
         pace = None if m.theme in SPEED_EXEMPT_THEMES else _moment_pace(m, day, min_speed)
         if pace == "stopped":
             stopped += 1
-            continue
-        if pace == "slow":
-            m.slow = True
+        elif pace == "slow":
             slow += 1
-        kept.append(m)
+        else:
+            kept.append(m)
     if stopped or slow:
-        print(f"  {stopped} moment(s) standing still left out, {slow} below {min_speed:g} km/h")
+        print(f"  left out: {stopped} moment(s) standing still, {slow} below {min_speed:g} km/h (paddock)")
     return kept
+
+
+def clip_drop_reason(
+    day: DayData,
+    rid: str,
+    t_start: float,
+    t_end: float,
+    min_speed: float = DEFAULT_MIN_TRACK_KMH,
+    max_vehicle_share: float = DEFAULT_MAX_SHARE,
+) -> str | None:
+    """Why a scan clip window is left out of the exports, None to keep it.
+
+    The same tests ``day_moments`` puts a moment of other riders through: a
+    car in view, the bike standing still or riding below *min_speed*.
+    """
+    start = day.clocks[rid].start_utc or 0.0
+    m = Moment("action", start + t_start, start + t_end, 0.0, [Segment(rid, t_start, t_end)])
+    if max_vehicle_share > 0 and (_moment_vehicles(m, day) or 0.0) >= max_vehicle_share:
+        return "car in view"
+    if min_speed <= 0:
+        return None
+    pace = _moment_pace(m, day, min_speed)
+    if pace == "stopped":
+        return "standing still"
+    if pace == "slow":
+        return f"below {min_speed:g} km/h"
+    return None
 
 
 # --- rendering -------------------------------------------------------------
@@ -686,7 +701,6 @@ def _moment_json(m: Moment, day: DayData) -> dict:
         "time": _clock_label(m.utc_start),
         "utc_start": round(m.utc_start, 2),
         "score": round(m.score, 3),
-        "slow": m.slow,
         "segments": [
             {
                 "recording_id": s.recording_id,

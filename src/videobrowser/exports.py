@@ -8,6 +8,9 @@ boxes and scene motion in ``scan.sqlite``. These commands cut from that:
 - ``videobrowser verticals -o <out>``: 1080x1920 follow-cam clips under
   ``vertical/``, the crop following the riders found by the scan
 
+Windows where the bike stands still, rides below ``--min-speed`` or has a
+car in view (the paddock) are left out, by the same rule the shorts use.
+
 Overlays go only on recordings whose start time is sure (GoPro GPS time or
 a clear RaceBox match); ``--no-overlay`` turns them off altogether. A clip
 whose file already exists is kept unless ``--force``; files of windows a
@@ -29,6 +32,8 @@ from videobrowser.gopro import Chapter, Recording
 from videobrowser.pipeline import _clip_name, turns_for_recording
 from videobrowser.probe import ProbeError, probe
 from videobrowser.riders import TrackPoint
+from videobrowser.telemetry import DEFAULT_MIN_TRACK_KMH
+from videobrowser.vehicles import DEFAULT_MAX_SHARE
 
 DEFAULT_FONT = "/System/Library/Fonts/Supplemental/Arial.ttf"
 
@@ -128,6 +133,47 @@ def _days(db: ScanDB, dates: list[str] | None):
         yield row
 
 
+def _track_days(
+    db: ScanDB, out_dir: Path, dates: list[str] | None, sessions_dir: Path, min_speed: float, max_share: float
+):
+    """The scan's days with speed laid on (GoPro GPS, else RaceBox), for
+    ``_on_track``; None when both checks are off."""
+    if min_speed <= 0 and max_share <= 0:
+        return None
+    from videobrowser.racebox_align import load_track
+    from videobrowser.shorts import load_days, place_without_gps
+
+    days = load_days(db, out_dir)
+    track = load_track(sessions_dir)
+    for label, day in days.items():
+        if not dates or label in dates:
+            place_without_gps(day, track)
+    return days
+
+
+def _on_track(
+    db: ScanDB, days, meta, pairs: list, column: str, min_speed: float, max_share: float
+) -> list:
+    """*pairs* without the windows the shorts would leave out (standing
+    still, paddock); their file paths are cleared."""
+    if days is None:
+        return pairs
+    from videobrowser.shorts import clip_drop_reason
+
+    day = days[meta["date_label"]]
+    kept, dropped = [], {}
+    for row, window in pairs:
+        why = clip_drop_reason(day, meta["recording_id"], window.t_start, window.t_end, min_speed, max_share)
+        if why is None:
+            kept.append((row, window))
+            continue
+        dropped[why] = dropped.get(why, 0) + 1
+        db.set_clip_path(row["id"], column, None)
+    if dropped:
+        print(f"{meta['recording_id']}: left out " + ", ".join(f"{n} {why}" for why, n in dropped.items()))
+    return kept
+
+
 def _racebox_context(out_dir: Path, sessions_dir: Path, font_path: str, stats_path: Path | None):
     """Overlay context with the RaceBox sessions, or a session-less one."""
     from videobrowser import racebox_stage as rbs
@@ -154,6 +200,8 @@ def export_horizontals(
     stats_path: Path | None = None,
     force: bool = False,
     jobs: int = 1,
+    min_speed: float = DEFAULT_MIN_TRACK_KMH,
+    max_vehicle_share: float = DEFAULT_MAX_SHARE,
 ) -> int:
     """Cut landscape clips (and RaceBox overlay renders); returns how many were cut."""
     from videobrowser.clips import export_clip
@@ -163,6 +211,7 @@ def export_horizontals(
     cut = 0
     db = ScanDB.open(out_dir / "scan.sqlite")
     try:
+        days = _track_days(db, out_dir, dates, sessions_dir, min_speed, max_vehicle_share)
         for meta in _days(db, dates):
             rid = meta["recording_id"]
             pairs = windows_for(db, rid)
@@ -173,6 +222,7 @@ def export_horizontals(
             except (ProbeError, OSError) as exc:
                 print(f"{rid}: source unavailable ({exc}); skipped")
                 continue
+            pairs = _on_track(db, days, meta, pairs, "clip_path", min_speed, max_vehicle_share)
             clip_dir = out_dir / "clips" / meta["date_label"]
             _clear_others(clip_dir, rid, {_clip_name(w) for _, w in pairs})
             todo = []
@@ -227,6 +277,8 @@ def export_verticals(
     font_path: str = DEFAULT_FONT,
     force: bool = False,
     jobs: int = 1,
+    min_speed: float = DEFAULT_MIN_TRACK_KMH,
+    max_vehicle_share: float = DEFAULT_MAX_SHARE,
 ) -> int:
     """Cut 1080x1920 follow-cam clips; returns how many were cut."""
     from videobrowser.racebox_align import load_track
@@ -240,6 +292,7 @@ def export_verticals(
     cut = 0
     db = ScanDB.open(out_dir / "scan.sqlite")
     try:
+        days = _track_days(db, out_dir, dates, sessions_dir, min_speed, max_vehicle_share)
         for meta in _days(db, dates):
             rid = meta["recording_id"]
             pairs = windows_for(db, rid)
@@ -250,6 +303,7 @@ def export_verticals(
             except (ProbeError, OSError) as exc:
                 print(f"{rid}: source unavailable ({exc}); skipped")
                 continue
+            pairs = _on_track(db, days, meta, pairs, "vertical_path", min_speed, max_vehicle_share)
             vdir = out_dir / "vertical" / meta["date_label"]
             _clear_others(vdir, rid, {_clip_name(w) for _, w in pairs})
             todo = []
