@@ -101,8 +101,6 @@ class Moment:
     utc_end: float
     score: float
     segments: list[Segment] = field(default_factory=list)
-    # Ridden below track speed (paddock, pit lane); see shorts.plan_shorts.
-    slow: bool = False
 
     @property
     def duration(self) -> float:

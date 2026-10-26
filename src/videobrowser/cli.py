@@ -166,6 +166,19 @@ def build_parser() -> argparse.ArgumentParser:
         )
         cmd.add_argument("--force", action="store_true", help="Cut clips again even if the file exists")
         cmd.add_argument(
+            "--min-speed",
+            type=float,
+            default=DEFAULT_MIN_TRACK_KMH,
+            help="Leave out clips below this speed in km/h (standing still, paddock, pit lane), "
+            "as the shorts do (0 disables). Default 40.",
+        )
+        cmd.add_argument(
+            "--max-vehicle-share",
+            type=float,
+            default=DEFAULT_MAX_SHARE,
+            help="Leave out clips with a car, van or truck in view this share of the time (0 disables). Default 0.4.",
+        )
+        cmd.add_argument(
             "--sessions-dir",
             type=Path,
             default=None,
@@ -226,7 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-speed",
         type=float,
         default=DEFAULT_MIN_TRACK_KMH,
-        help="Track speed in km/h: slower moments (paddock, pit lane) get at most one per action short and none in theme shorts (0 disables). Default 40.",
+        help="Track speed in km/h: slower moments (standing still, paddock, pit lane) are left out (0 disables). Default 40.",
     )
     shorts.add_argument(
         "--max-vehicle-share",
@@ -337,6 +350,8 @@ def exports_cmd(args: argparse.Namespace) -> int:
         font_path=args.font,
         force=args.force,
         jobs=max(1, args.jobs) if args.jobs else default_jobs(),
+        min_speed=args.min_speed,
+        max_vehicle_share=args.max_vehicle_share,
     )
     if args.cmd == "horizontals":
         export_horizontals(out, stats_path=args.stats, **common)

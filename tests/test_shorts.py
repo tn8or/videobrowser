@@ -123,7 +123,7 @@ def test_failed_render_keeps_previous_short_and_drops_stale_ones(tmp_path, monke
     assert not list(day.glob(".*partial*"))
 
 
-def test_day_moments_drop_standing_still_and_mark_paddock_riding(monkeypatch):
+def test_day_moments_drop_standing_still_and_paddock_riding(monkeypatch):
     import videobrowser.shorts as shorts
     from videobrowser.sync import CameraClock
     from videobrowser.telemetry import SpeedSample
@@ -138,24 +138,28 @@ def test_day_moments_drop_standing_still_and_mark_paddock_riding(monkeypatch):
     # Paddock until 30 s, on track until 140 s, then parked (with GPS drift).
     speeds = [SpeedSample(t, 25.0 if t < 30 else 110.0 if t < 140 else 2.0) for t in range(200)]
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: (speeds, []))
-    found = {(m.theme, m.slow) for m in shorts.day_moments(day, crashes=False)}
-    assert found == {("action", True), ("catching_up", False), ("crash_other", True)}
+    found = {m.theme for m in shorts.day_moments(day, crashes=False)}
+    assert found == {"catching_up"}
     day.gps.clear()
     themes = sorted(m.theme for m in shorts.day_moments(day, crashes=False, min_speed=0))
     assert themes == ["action", "action", "catching_up", "crash_other"]
 
 
-def test_plan_takes_one_slow_moment_per_action_short_and_none_in_themes():
-    moments = [_moment("action", i * 100, 8, score=1) for i in range(4)]
-    slow = [_moment("action", 1000 + i * 100, 8, score=5) for i in range(3)]
-    slow += [_moment("overtake", 2000 + i * 100, 8, score=5) for i in range(2)]
-    for m in slow:
-        m.slow = True
-    plans = plan_shorts(moments + slow, max_seconds=40, max_action_shorts=6)
-    actions = [p for p in plans if p.theme == "action"]
-    assert actions and all(sum(m.slow for m in p.moments) <= 1 for p in actions)
-    assert sum(m.slow for p in actions for m in p.moments) >= 1
-    assert not any(p.theme == "overtake" for p in plans)
+def test_clip_drop_reason_matches_the_shorts(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+    from videobrowser.telemetry import SpeedSample
+
+    day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 300.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    # Parked until 30 s, paddock until 100 s, then on track; a van at 250 s.
+    speeds = [SpeedSample(t, 2.0 if t < 30 else 25.0 if t < 100 else 110.0) for t in range(300)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: (speeds, []))
+    day.vehicles["F"] = [(t + 0.5, 1.0 if t >= 250 else 0.0) for t in range(300)]
+    assert shorts.clip_drop_reason(day, "F", 5.0, 20.0) == "standing still"
+    assert shorts.clip_drop_reason(day, "F", 50.0, 70.0) == "below 40 km/h"
+    assert shorts.clip_drop_reason(day, "F", 150.0, 170.0) is None
+    assert shorts.clip_drop_reason(day, "F", 255.0, 270.0) == "car in view"
+    assert shorts.clip_drop_reason(day, "F", 50.0, 70.0, min_speed=0, max_vehicle_share=0) is None
 
 
 
@@ -172,8 +176,8 @@ def test_day_moments_fall_back_to_scene_motion_without_gps(monkeypatch):
     # Parked until 40 s, rolling slowly until 100 s, then on track.
     day.motion["F"] = [(t + 0.5, 1.0 if t < 40 else 6.0 if t < 100 else 15.0) for t in range(200)]
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
-    found = {(m.theme, m.slow) for m in shorts.day_moments(day, crashes=False)}
-    assert found == {("action", True), ("catching_up", False)}
+    found = {m.theme for m in shorts.day_moments(day, crashes=False)}
+    assert found == {"catching_up"}
 
 
 def test_day_moments_leave_out_moments_with_a_car_in_view(monkeypatch):

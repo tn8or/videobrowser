@@ -235,7 +235,9 @@ The clip options scan used to take (`--no-overlay`, `--no-vertical`,
 `--no-landscape`, `--no-clips`, `--no-shorts`) are still accepted and ignored.
 `horizontals` and `verticals` take `--date`, `--no-overlay` (alias
 `--no-racebox`), `--force`, `--sessions-dir`, `--font` and `--jobs` (clips cut
-at once, default CPU threads / 4, at most 4); `horizontals` also
+at once, default CPU threads / 4, at most 4), plus `--min-speed` (40) and
+`--max-vehicle-share` (0.4), which leave out clips standing still or in the
+paddock, as the shorts do; `horizontals` also
 `--stats` (default `<out>/stats.sqlite`). Run `videobrowser <command> --help`
 for the complete list.
 
@@ -310,10 +312,10 @@ copied; `klip.txt` says which part the moment is. A piece no clip covers
 looks into the corner. For verticals without the telemetry HUD run
 `verticals --no-overlay`.
 The scan drops events where the bike stands still (below 10 km/h GoPro GPS
-speed, `scan --min-speed`). In the shorts, moments where the bike stands
-still are left out, and moments below 40 km/h (paddock, pit lane;
-`shorts --min-speed`) get at most one per action short and none in the
-theme shorts. Only own crashes skip this check. Footage without GPS (e.g.
+speed, `scan --min-speed`). `horizontals`, `verticals` and the shorts then
+all leave out clips and moments where the bike stands still or rides below
+40 km/h (paddock, pit lane; `--min-speed` on each), by the same rule; the
+shorts only cut tighter. Only own crashes skip this check. Footage without GPS (e.g.
 `.mov` files re-wrapped by Final Cut, which drop the GoPro telemetry track)
 falls back to the scene motion measured during the scan (stored from this
 version on, so rescan with `--force`). `--min-speed 0` turns the checks off.
@@ -364,7 +366,7 @@ the source folders once: `videobrowser shorts -o output inputclips`.
 | `--max-action` | 6 | Max mixed action shorts per day |
 | `--no-audio-sync` | off | Sync cameras by GPS only |
 | `--no-crash` | off | Skip crash detection |
-| `--min-speed` | 40 | Track speed (km/h): slower moments get at most one per action short, none in theme shorts |
+| `--min-speed` | 40 | Track speed (km/h): slower moments (standing still, paddock) are left out |
 | `--dry-run` | off | Only write `moments.json` and `index.html` |
 | `--jobs` | CPU threads / 4, max 4 | Clips cut from the GoPro files at once |
 
