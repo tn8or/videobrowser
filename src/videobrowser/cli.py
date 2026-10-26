@@ -223,6 +223,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     shorts.add_argument("--dry-run", action="store_true", help="Write moments.json and index.html only")
     shorts.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        help="Clips cut from the GoPro files at once (default: CPU threads / 4, at most 4)",
+    )
+    shorts.add_argument(
         "--sessions-dir",
         type=Path,
         default=None,
@@ -232,6 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def shorts_cmd(args: argparse.Namespace) -> int:
+    from videobrowser.exports import default_jobs
     from videobrowser.shorts import build_shorts
 
     out = args.out.expanduser().resolve()
@@ -249,6 +256,7 @@ def shorts_cmd(args: argparse.Namespace) -> int:
         crashes=not args.no_crash,
         render=not args.dry_run,
         min_speed=args.min_speed,
+        jobs=max(1, args.jobs) if args.jobs else default_jobs(),
     )
     return 0
 
