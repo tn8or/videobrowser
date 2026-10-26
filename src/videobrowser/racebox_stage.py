@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -35,8 +34,20 @@ import numpy as np
 from videobrowser.clips import display_rotation_args, export_clip
 from videobrowser.events import ClipWindow
 from videobrowser.gopro import Recording, chapter_at
-from videobrowser.overlay_bridge import ensure_on_path, load as _load_bridge
 from videobrowser.probe import ProbeError, probe, local_date_label
+from videobrowser.racebox.overlay_render import FrameState, RenderConfig, render_frame
+from videobrowser.racebox.session_stats import capture_stats, ingest_session_stats
+from videobrowser.racebox.stats import StatsStore
+from videobrowser.racebox.track_map import TrackMap
+from videobrowser.racebox.vbo_parser import parse_vbo
+from videobrowser.racebox.video_compositor import (
+    SessionRenderer,
+    build_filter_complex,
+    detect_gpu_capabilities,
+    fps_fraction,
+    resolve_gpu_decode_args,
+    select_encoder_args,
+)
 from videobrowser.telemetry import (
     creation_utc_prefer_gps,
     extract_gpmd_bytes,
@@ -58,7 +69,6 @@ class RaceboxContext:
     stats_path: Path
     font_path: str
     out_dir: str
-    rb: dict
     gpu_caps: Any
     enabled: bool = True
     highlights_dir: str = "highlights"
@@ -76,30 +86,19 @@ class RaceboxContext:
 # ---------------------------------------------------------------------------
 
 
-def _rb() -> dict:
-    return _load_bridge()
-
 
 def fetch_sessions(sessions_dir: Path, headful: bool = False, max_clicks: int = 200) -> None:
     """Download new RaceBox VBO sessions into *sessions_dir* (best effort)."""
-    root = ensure_on_path()
-    fetcher_dir = root / "fetcher"
-    user_f = fetcher_dir / "username"
-    pass_f = fetcher_dir / "password"
-    auth_f = fetcher_dir / "auth_state.json"
-    if not auth_f.exists() and not (user_f.exists() and pass_f.exists()):
-        print(
-            "racebox: fetch skipped (not logged in; run "
-            "python racebox/fetcher/download_sessions.py --login)"
-        )
-        return
     try:
-        if str(fetcher_dir) not in sys.path:
-            sys.path.insert(0, str(fetcher_dir))
-        import download_sessions as dl  # type: ignore
         from playwright.sync_api import sync_playwright  # type: ignore
+
+        from videobrowser.racebox import fetch as dl
     except Exception as exc:  # pragma: no cover - depends on env
         print(f"racebox: fetch skipped ({exc})")
+        return
+    dl.migrate_legacy_auth()
+    if not dl.AUTH_STATE_PATH.exists():
+        print("racebox: fetch skipped (not logged in; run videobrowser racebox-login)")
         return
 
     sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -108,14 +107,12 @@ def fetch_sessions(sessions_dir: Path, headful: bool = False, max_clicks: int = 
         # fresh sessions dir actually re-downloads, rather than being skipped
         # because the file was previously saved somewhere else.
         tracker = dl.DownloadTracker(sessions_dir / "downloads.db")
-        username = dl.read_optional_secret(user_f)
-        password = dl.read_optional_secret(pass_f)
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=not headful)
             context = dl.new_context(browser)
             page = context.new_page()
             try:
-                dl.ensure_logged_in(page, username, password)
+                dl.ensure_logged_in(page)
                 dl.load_all_sessions(page)
                 downloaded, skipped = dl.download_via_clicks(
                     page, sessions_dir, False, max_clicks, tracker
@@ -128,25 +125,23 @@ def fetch_sessions(sessions_dir: Path, headful: bool = False, max_clicks: int = 
 
 
 def load_sessions(sessions_dir: Path) -> list:
-    rb = _rb()
     sessions: list = []
     if not sessions_dir.exists():
         return sessions
     for vbo in sorted(sessions_dir.glob("*.vbo")):
         try:
-            sessions.append(rb["parse_vbo"](str(vbo)))
+            sessions.append(parse_vbo(str(vbo)))
         except Exception as exc:
             print(f"racebox: skip {vbo.name} ({exc})")
     return sessions
 
 
 def import_stats(sessions_dir: Path, stats_path: Path) -> None:
-    rb = _rb()
     if not sessions_dir.exists():
         return
     for vbo in sorted(sessions_dir.glob("*.vbo")):
         try:
-            rb["capture_stats"](vbo, stats_path)
+            capture_stats(vbo, stats_path)
         except Exception as exc:
             print(f"racebox: stats import skipped for {vbo.name} ({exc})")
 
@@ -160,7 +155,6 @@ def prepare(
     headful: bool = False,
 ) -> RaceboxContext:
     """Fetch/load sessions, import stats, and build a ready-to-use context."""
-    rb = _rb()
     print(f"racebox: sessions dir {sessions_dir}", flush=True)
     sessions_dir.mkdir(parents=True, exist_ok=True)
     if do_fetch:
@@ -171,19 +165,19 @@ def prepare(
     store = None
     if vbos:
         print(f"racebox: opening stats {stats_path}", flush=True)
-        store = rb["StatsStore"](stats_path)
+        store = StatsStore(stats_path)
     try:
         for i, vbo in enumerate(vbos, 1):
             print(f"racebox: [{i}/{len(vbos)}] {vbo.name}", flush=True)
             try:
-                session = rb["parse_vbo"](str(vbo))
+                session = parse_vbo(str(vbo))
             except Exception as exc:
                 print(f"racebox: skip {vbo.name} ({exc})")
                 continue
             sessions.append(session)
             if store is not None:
                 try:
-                    rb["ingest_session_stats"](session, store)
+                    ingest_session_stats(session, store)
                 except Exception as exc:
                     print(f"racebox: stats import skipped for {vbo.name} ({exc})")
     finally:
@@ -191,7 +185,7 @@ def prepare(
             store.close()
     print(f"racebox: {len(sessions)} session(s) loaded from {sessions_dir}", flush=True)
     try:
-        gpu_caps = rb["detect_gpu_capabilities"]()
+        gpu_caps = detect_gpu_capabilities()
     except Exception:
         gpu_caps = None
     return RaceboxContext(
@@ -199,7 +193,6 @@ def prepare(
         stats_path=stats_path,
         font_path=font_path or _DEFAULT_FONT,
         out_dir=str(out_dir),
-        rb=rb,
         gpu_caps=gpu_caps,
     )
 
@@ -210,7 +203,7 @@ def prepare(
 
 
 class _SessionFrameSource:
-    """Wraps a RaceBox ``_SessionRenderer`` keyed to absolute UTC time."""
+    """Wraps a RaceBox ``SessionRenderer`` keyed to absolute UTC time."""
 
     def __init__(self, renderer, start_utc: float, fps: float) -> None:
         self.renderer = renderer
@@ -237,14 +230,13 @@ class _GpmdFrameSource:
         fps: float,
         clip_start_utc: Optional[float],
     ) -> None:
-        self.rb = ctx.rb
         self.config = config
         self.lean_samples = lean_samples
         self.speed_samples = speed_samples
         self.local_start = local_start
         self.fps = fps
         self.clip_start_utc = clip_start_utc
-        self._empty_map = self.rb["TrackMap"](
+        self._empty_map = TrackMap(
             points=np.zeros((0, 2), dtype=np.float32), bounds=(0.0, 0.0, 1.0, 1.0)
         )
 
@@ -255,7 +247,7 @@ class _GpmdFrameSource:
         wall = self.clip_start_utc + idx / self.fps if self.clip_start_utc is not None else None
         if lean is None and speed is None and wall is None:
             return None
-        state = self.rb["FrameState"](
+        state = FrameState(
             lap_number=None,
             lap_time=None,
             on_track_faster=None,
@@ -268,7 +260,7 @@ class _GpmdFrameSource:
             is_in_lap=False,
             wall_time_utc=wall,
         )
-        frame = self.rb["render_frame"](self.config, self._empty_map, state)
+        frame = render_frame(self.config, self._empty_map, state)
         return frame if isinstance(frame, bytes) else frame.tobytes()
 
 
@@ -278,7 +270,7 @@ class _GpmdFrameSource:
 
 
 def _render_config(ctx: RaceboxContext, width: int, height: int, fps: float, variant: str):
-    return ctx.rb["RenderConfig"](
+    return RenderConfig(
         width=width,
         height=height,
         fps=max(1, int(round(fps))),
@@ -300,14 +292,13 @@ def _overlay_pass(
     source,
 ) -> bool:
     """Composite overlay frames from *source* onto *src*, writing *out_path*."""
-    rb = ctx.rb
-    encoder_args, encoder_desc = rb["select_encoder_args"](codec, ctx.gpu_caps)
-    fps_num, fps_den = rb["fps_fraction"](fps)
-    filter_complex = rb["build_filter_complex"](width, height, width, height, False)
+    encoder_args, encoder_desc = select_encoder_args(codec, ctx.gpu_caps)
+    fps_num, fps_den = fps_fraction(fps)
+    filter_complex = build_filter_complex(width, height, width, height, False)
     # Decode the source video on the hardware media engine when possible; the
     # frames are copied to system memory so the software overlay filter still
     # works. This keeps CPU usage down for the decode half of the pass.
-    hw_decode = rb["resolve_gpu_decode_args"](codec, ctx.gpu_caps, False)
+    hw_decode = resolve_gpu_decode_args(codec, ctx.gpu_caps, False)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -427,7 +418,7 @@ def _sessions_overlapping(sessions: list, t0: float, t1: float) -> list:
 
 
 def _new_session_renderer(ctx: RaceboxContext, session, config, start_utc: float):
-    renderer = ctx.rb["SessionRenderer"](session, config, ctx.stats_path)
+    renderer = SessionRenderer(session, config, ctx.stats_path)
     if start_utc > renderer.t_start:
         renderer.skip_to(start_utc)
     return renderer
@@ -492,7 +483,6 @@ def overlay_context(out_dir: Path, font_path: str) -> RaceboxContext:
         stats_path=Path(out_dir) / "stats.sqlite",
         font_path=font_path or _DEFAULT_FONT,
         out_dir=str(out_dir),
-        rb=_rb(),
         gpu_caps=None,
     )
 
@@ -663,7 +653,7 @@ def _render_fastest_lap(
     # Build a throwaway renderer just to reuse its lap detection.
     probe_config = _render_config(ctx, 16, 16, 30.0, "full")
     try:
-        laps = ctx.rb["SessionRenderer"](session, probe_config, ctx.stats_path).laps
+        laps = SessionRenderer(session, probe_config, ctx.stats_path).laps
     except Exception as exc:
         print(f"  racebox: lap detection failed for {Path(session.path).name}: {exc}")
         return

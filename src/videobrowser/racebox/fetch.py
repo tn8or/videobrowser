@@ -1,36 +1,23 @@
-#!/usr/bin/env python3
+"""Download RaceBox ``.vbo`` sessions from racebox.pro with Playwright.
+
+Needs the ``fetch`` extra (``pip install -e ".[fetch]"`` and
+``playwright install chromium``) and a saved login from
+``videobrowser racebox-login``.
+"""
+
 from __future__ import annotations
 
-import argparse
 import os
 import re
+import shutil
 import signal
 import sqlite3
 import sys
 import time
 from pathlib import Path
-from typing import Iterable
-
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from playwright.sync_api import sync_playwright
 
 LOGIN_URL = "https://www.racebox.pro/webapp/login"
 SESSIONS_URL = "https://www.racebox.pro/webapp/sessions"
-
-
-def read_secret(path: Path) -> str:
-    value = path.read_text(encoding="utf-8").strip()
-    if not value:
-        raise ValueError(f"Empty secret in {path}")
-    return value
-
-
-def read_optional_secret(path: Path) -> str | None:
-    """Like read_secret, but None when the file is missing or empty."""
-    try:
-        return read_secret(path)
-    except (FileNotFoundError, ValueError):
-        return None
 
 
 class DownloadTracker:
@@ -74,74 +61,31 @@ def extract_session_id(url: str) -> str:
     return match.group(1) if match else url
 
 
-def find_first_visible(page, selectors: Iterable[str]):
-    for selector in selectors:
-        locator = page.locator(selector)
-        if locator.count() > 0 and locator.first.is_visible():
-            return locator.first
-    return None
-
-
-def login(page, username: str, password: str) -> None:
-    page.goto(LOGIN_URL, wait_until="domcontentloaded")
-
-    accept = page.locator("button:has-text('I ACCEPT'), button:has-text('Accept')")
-    if accept.count() > 0:
-        try:
-            accept.first.click(timeout=3000)
-            time.sleep(0.5)
-        except Exception:
-            pass
-
-    user_input = find_first_visible(
-        page,
-        [
-            "input[type='email']",
-            "input[name='email']",
-            "input[autocomplete='username']",
-            "input[name='username']",
-        ],
-    )
-    if not user_input:
-        raise RuntimeError("Could not find username/email input on login page")
-    user_input.fill(username)
-
-    pass_input = find_first_visible(
-        page,
-        [
-            "input[type='password']",
-            "input[name='password']",
-            "input[autocomplete='current-password']",
-        ],
-    )
-    if not pass_input:
-        raise RuntimeError("Could not find password input on login page")
-    pass_input.fill(password)
-
-    submit = find_first_visible(
-        page,
-        [
-            "button:has-text('Log in')",
-            "button:has-text('Login')",
-            "button:has-text('Sign in')",
-            "input[type='submit']",
-        ],
-    )
-    if submit:
-        submit.click()
-    else:
-        pass_input.press("Enter")
-
-    try:
-        page.wait_for_url("**/sessions**", timeout=20000)
-    except PlaywrightTimeoutError:
-        page.goto(SESSIONS_URL, wait_until="domcontentloaded")
-
-
 # RaceBox put a Cloudflare Turnstile challenge on the login form, which an
-# automated browser can't pass. We log in once interactively (``--login``),
-# persist the cookies here, and reuse them for headless runs.
-AUTH_STATE_PATH = Path(__file__).resolve().parent / "auth_state.json"
+# automated browser can't pass. We log in once interactively
+# (``videobrowser racebox-login``), persist the cookies here, and reuse them
+# for headless runs.
+CONFIG_DIR = Path.home() / ".videobrowser"
+AUTH_STATE_PATH = CONFIG_DIR / "racebox_auth.json"
+CHROME_PROFILE_DIR = CONFIG_DIR / "racebox_chrome_profile"
+# Where the login lived before the fetcher moved into the package.
+LEGACY_AUTH_STATE_PATH = (
+    Path(__file__).resolve().parents[3] / "racebox" / "fetcher" / "auth_state.json"
+)
+
+
+def migrate_legacy_auth(
+    auth_state: Path | None = None, legacy: Path | None = None
+) -> None:
+    """Copy a login saved under ``racebox/fetcher/`` to its new place, once."""
+    auth_state = auth_state or AUTH_STATE_PATH
+    legacy = legacy or LEGACY_AUTH_STATE_PATH
+    if auth_state.exists() or not legacy.is_file():
+        return
+    auth_state.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(legacy, auth_state)
+    auth_state.chmod(0o600)
+    print(f"racebox: copied saved login from {legacy} to {auth_state}")
 
 
 class NotLoggedInError(RuntimeError):
@@ -153,7 +97,8 @@ def is_logged_in(page) -> bool:
     return "/webapp/login" not in page.url
 
 
-def new_context(browser, auth_state: Path = AUTH_STATE_PATH):
+def new_context(browser, auth_state: Path | None = None):
+    auth_state = auth_state or AUTH_STATE_PATH
     if auth_state.exists():
         return browser.new_context(
             accept_downloads=True, storage_state=str(auth_state)
@@ -161,29 +106,18 @@ def new_context(browser, auth_state: Path = AUTH_STATE_PATH):
     return browser.new_context(accept_downloads=True)
 
 
-def ensure_logged_in(page, username: str | None = None, password: str | None = None) -> None:
-    """Use saved cookies if still valid, else try a scripted login; raise if both fail."""
+def ensure_logged_in(page) -> None:
+    """Raise unless the saved cookies still give a logged-in session."""
     if is_logged_in(page):
-        return
-    if username and password:
-        try:
-            login(page, username, password)
-        except Exception:
-            pass
-    if is_logged_in(page):
-        page.context.storage_state(path=str(AUTH_STATE_PATH))
-        AUTH_STATE_PATH.chmod(0o600)
         return
     raise NotLoggedInError(
         "not logged in to racebox.pro (login is behind a Cloudflare captcha). "
-        "Run once interactively: python racebox/fetcher/download_sessions.py --login"
+        "Run once: videobrowser racebox-login"
     )
 
 
 def find_chrome() -> str:
     """Path to a desktop Chrome/Chromium; CHROME_BIN overrides the search."""
-    import shutil
-
     override = os.environ.get("CHROME_BIN")
     if override:
         if not Path(override).is_file():
@@ -212,7 +146,6 @@ def find_chrome() -> str:
     )
 
 
-CHROME_PROFILE_DIR = Path(__file__).resolve().parent / "chrome_profile"
 CDP_PORT = 9333
 
 
@@ -236,7 +169,7 @@ def _restore_tty(state) -> None:
         pass
 
 
-def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
+def interactive_login(auth_state: Path | None = None) -> None:
     """Log in by hand in a plain (non-automated) Chrome, then copy its cookies.
 
     Turnstile rejects Playwright-launched browsers even when a human clicks, so
@@ -246,6 +179,9 @@ def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
     import subprocess
     import urllib.request
 
+    from playwright.sync_api import sync_playwright
+
+    auth_state = auth_state or AUTH_STATE_PATH
     chrome = find_chrome()
     CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     tty = _tty_state()
@@ -286,7 +222,7 @@ def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
             context = browser.contexts[0]
             page = context.new_page()
             if not is_logged_in(page):
-                raise NotLoggedInError("still not logged in; try --login again")
+                raise NotLoggedInError("still not logged in; run videobrowser racebox-login again")
             auth_state.parent.mkdir(parents=True, exist_ok=True)
             context.storage_state(path=str(auth_state))
             auth_state.chmod(0o600)
@@ -562,6 +498,8 @@ def download_via_clicks(
     page, output_dir: Path, overwrite: bool, max_clicks: int, tracker: DownloadTracker,
     debug: bool = False,
 ) -> tuple[int, int]:
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
     output_dir.mkdir(parents=True, exist_ok=True)
     downloaded = 0
     skipped = 0
@@ -640,74 +578,3 @@ def download_via_clicks(
 
     return downloaded, skipped
 
-
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Download RaceBox VBO sessions (Bike Mode)"
-    )
-    parser.add_argument(
-        "--output-dir", default=".", help="Directory to save .vbo files"
-    )
-    parser.add_argument(
-        "--overwrite", action="store_true", help="Overwrite existing files"
-    )
-    parser.add_argument(
-        "--headful", action="store_true", help="Run browser in headful mode"
-    )
-    parser.add_argument(
-        "--max-clicks",
-        type=int,
-        default=200,
-        help="Max download/export buttons to click",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Save debug screenshots when UI elements are not found",
-    )
-    parser.add_argument(
-        "--login",
-        action="store_true",
-        help="Log in interactively (solve the captcha) and save cookies for later runs",
-    )
-    args = parser.parse_args()
-
-    script_dir = Path(__file__).resolve().parent
-    if args.login:
-        interactive_login()
-        return 0
-
-    # Optional: only used as a fallback when the saved login has expired.
-    username = read_optional_secret(script_dir / "username")
-    password = read_optional_secret(script_dir / "password")
-
-    output_dir = Path(args.output_dir).resolve()
-    tracker = DownloadTracker(script_dir / "downloads.db")
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=not args.headful)
-        context = new_context(browser)
-        page = context.new_page()
-
-        try:
-            ensure_logged_in(page, username, password)
-        except NotLoggedInError as exc:
-            print(exc)
-            browser.close()
-            return 1
-        load_all_sessions(page)
-
-        print("Clicking through sessions to download VBO files...")
-        downloaded, skipped = download_via_clicks(
-            page, output_dir, args.overwrite, args.max_clicks, tracker,
-            debug=args.debug,
-        )
-        print(f"Downloaded: {downloaded}, Skipped: {skipped}")
-
-        browser.close()
-
-    return 0 if downloaded > 0 else 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

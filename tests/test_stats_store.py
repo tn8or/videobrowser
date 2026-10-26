@@ -1,12 +1,9 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from videobrowser.overlay_bridge import ensure_on_path
-
 
 def _stats():
-    ensure_on_path()
-    from overlay import stats as stats_mod
+    from videobrowser.racebox import stats as stats_mod
 
     stats_mod._remote_dev_cache.clear()
     return stats_mod

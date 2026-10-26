@@ -1,11 +1,8 @@
 from datetime import datetime, timezone
 
-from videobrowser.overlay_bridge import ensure_on_path
-
 
 def _overlay_render():
-    ensure_on_path()
-    from overlay import overlay_render
+    from videobrowser.racebox import overlay_render
 
     return overlay_render
 

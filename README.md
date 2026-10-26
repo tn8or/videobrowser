@@ -67,10 +67,12 @@ falls back to PyTorch.
 
 `scan` then logs `detector: yolo11n.pt on cuda`.
 
-Log in to racebox.pro once for auto-fetch: `python racebox/fetcher/download_sessions.py --login`
+Log in to racebox.pro once for auto-fetch: `videobrowser racebox-login`
 opens Chrome, you log in (and solve the captcha), and the session is saved to
-`racebox/fetcher/auth_state.json`. No username/password files are needed; set
-`CHROME_BIN` if Chrome isn't found.
+`~/.videobrowser/racebox_auth.json`. Set `CHROME_BIN` if Chrome isn't found.
+A login saved by older versions in `racebox/fetcher/auth_state.json` is copied
+there automatically on the first fetch; after that the old `racebox/` folder
+can be deleted.
 
 ---
 
@@ -174,7 +176,7 @@ videobrowser scan inputclips -o output
 videobrowser horizontals -o output
 ```
 
-Auto-fetch needs a saved login (`download_sessions.py --login`) plus
+Auto-fetch needs a saved login (`videobrowser racebox-login`) plus
 `playwright install chromium`. If there is no login, fetching is skipped with a
 message and the scan continues using whatever `.vbo` files are already present.
 
@@ -385,15 +387,10 @@ clip, automatically.
 ## Project layout
 
 ```
-src/videobrowser/     # CLI, scan pipeline, clip cutting, RaceBox stage bridge
-racebox/overlay/      # VBO parser, lap timing, Cairo overlay renderer
-racebox/fetcher/      # Playwright downloader for racebox.pro sessions
-tests/                # pytest suite
+src/videobrowser/          # CLI, scan pipeline, clip cutting, RaceBox stage
+src/videobrowser/racebox/  # VBO parser, lap timing, stats, Cairo overlay renderer, racebox.pro fetcher
+tests/                     # pytest suite
 ```
-
-The scan pipeline drives everything through `videobrowser`. Overlay rendering
-code still lives under `racebox/` and is loaded via
-`videobrowser.overlay_bridge`.
 
 ---
 
@@ -402,7 +399,7 @@ code still lives under `racebox/` and is loaded via
 `videobrowser scan` fetches new sessions itself. To download them on their own:
 
 ```bash
-python racebox/fetcher/download_sessions.py --output-dir output/sessions
+videobrowser racebox-fetch output/sessions
 # add --headful to watch the browser (e.g. if Bike Mode needs a manual click)
 ```
 

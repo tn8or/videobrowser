@@ -5,7 +5,7 @@ Per-session overlay rendering and ffmpeg encoder/GPU helpers used by
 ``videobrowser``'s RaceBox stage.
 
 * VBO ``time`` column is already stored as UTC epoch seconds (see vbo_parser.py).
-* ``_SessionRenderer`` looks up the VBO sample nearest a given UTC time and
+* ``SessionRenderer`` looks up the VBO sample nearest a given UTC time and
   renders the overlay frame for it.
 """
 
@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from zoneinfo import ZoneInfo
 
-from .cli import (
+from .session_stats import (
     CornerEvent,
     _build_lap_distance,
     _color_for_corner,
@@ -86,7 +86,7 @@ class GpuCapabilities:
     has_videotoolbox: bool = False
 
 
-def _detect_gpu_capabilities() -> GpuCapabilities:
+def detect_gpu_capabilities() -> GpuCapabilities:
     encoders = _get_available_encoders()
     hwaccels = _get_hwaccels()
     caps = GpuCapabilities()
@@ -98,7 +98,7 @@ def _detect_gpu_capabilities() -> GpuCapabilities:
     return caps
 
 
-def _fps_fraction(fps: float) -> Tuple[int, int]:
+def fps_fraction(fps: float) -> Tuple[int, int]:
     """Convert float fps to an integer num/den pair."""
     if abs(fps - round(fps)) < 0.01:
         return int(round(fps)), 1
@@ -112,7 +112,7 @@ def _fps_fraction(fps: float) -> Tuple[int, int]:
     return int(round(fps * 1000)), 1000
 
 
-def _select_encoder_args(
+def select_encoder_args(
     codec: str, gpu_caps: Optional[GpuCapabilities] = None
 ) -> Tuple[List[str], str]:
     """
@@ -126,7 +126,7 @@ def _select_encoder_args(
     YUV pixel formats are used for maximum hardware compatibility.
     """
     if gpu_caps is None:
-        gpu_caps = _detect_gpu_capabilities()
+        gpu_caps = detect_gpu_capabilities()
 
     if platform.system() == "Darwin":
         if codec in ("hevc", "h265") and gpu_caps.has_videotoolbox:
@@ -193,7 +193,7 @@ def _select_encoder_args(
 # ---------------------------------------------------------------------------
 
 
-def _build_filter_complex(
+def build_filter_complex(
     out_w: int,
     out_h: int,
     video_width: int,
@@ -218,7 +218,7 @@ def _build_filter_complex(
     return "[0:v][1:v]overlay=0:0:format=auto[vout]"
 
 
-def _resolve_gpu_decode_args(
+def resolve_gpu_decode_args(
     codec: str, gpu_caps: GpuCapabilities, use_cuda_overlay: bool
 ) -> List[str]:
     if platform.system() == "Darwin" and codec in ("hevc", "h265", "h264", "avc"):
@@ -238,7 +238,7 @@ def _resolve_gpu_decode_args(
 # ---------------------------------------------------------------------------
 
 
-class _SessionRenderer:
+class SessionRenderer:
     """
     Builds all pre-computed state for one VBO session and exposes
     ``get_frame(t)`` to render the overlay at an arbitrary UTC timestamp.
