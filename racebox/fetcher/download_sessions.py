@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -65,13 +65,6 @@ def extract_session_id(url: str) -> str:
     """Extract session ID from URL like /webapp/sessions/12345"""
     match = re.search(r"/sessions/(\d+)", url)
     return match.group(1) if match else url
-
-
-def read_secret(path: Path) -> str:
-    value = path.read_text(encoding="utf-8").strip()
-    if not value:
-        raise ValueError(f"Empty secret in {path}")
-    return value
 
 
 def find_first_visible(page, selectors: Iterable[str]):
@@ -263,26 +256,6 @@ def interactive_login(auth_state: Path = AUTH_STATE_PATH) -> None:
             pass
 
 
-def try_enable_bike_mode(page) -> None:
-    candidates = [
-        "text=/Bike Mode/i",
-        "text=/Bike/i",
-        "[role='button']:has-text('Bike')",
-        "button:has-text('Bike')",
-    ]
-    for selector in candidates:
-        locator = page.locator(selector)
-        if locator.count() == 0:
-            continue
-        try:
-            if locator.first.is_visible():
-                locator.first.click()
-                time.sleep(1)
-                return
-        except Exception:
-            continue
-
-
 def load_all_sessions(page, max_scrolls: int = 20) -> None:
     page.goto(SESSIONS_URL, wait_until="domcontentloaded")
     accept = page.locator("button:has-text('I ACCEPT'), button:has-text('Accept')")
@@ -311,31 +284,6 @@ def load_all_sessions(page, max_scrolls: int = 20) -> None:
         if count == last_count:
             break
         last_count = count
-
-
-def collect_session_items(page) -> list:
-    links = page.evaluate(
-        """
-() => {
-    const sessions = [];
-    const items = Array.from(document.querySelectorAll("[role='listitem'], tr, .session-item, [class*='session'], [class*='list-item']"));
-    for (const item of items) {
-        const link = item.querySelector("a");
-        if (link && link.href) {
-            sessions.push({url: link.href, text: item.textContent});
-        } else if (item.onclick || (item.classList && Array.from(item.classList).some(c => c.includes('clickable') || c.includes('item')))) {
-            sessions.push({element: item, text: item.textContent});
-        }
-    }
-    return sessions;
-}
-"""
-    )
-    result = []
-    for item in links:
-        if "url" in item:
-            result.append(urljoin(page.url, item["url"]))
-    return result
 
 
 def _ensure_unique_path(path: Path) -> Path:
@@ -371,48 +319,6 @@ def filename_from_headers(headers: dict, url: str) -> str:
 def sanitize_filename(name: str) -> str:
     name = re.sub(r"[\\/:*?\"<>|]", "_", name)
     return name
-
-
-def download_all(
-    context, urls: list[str], output_dir: Path, overwrite: bool
-) -> tuple[int, int]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    downloaded = 0
-    skipped = 0
-
-    for url in urls:
-        try:
-            response = context.request.get(url)
-        except Exception as exc:
-            print(f"Failed to fetch {url}: {exc}")
-            continue
-
-        if not response.ok:
-            print(f"Non-200 for {url}: {response.status}")
-            continue
-
-        filename = sanitize_filename(filename_from_headers(response.headers, url))
-        target = output_dir / filename
-        if target.exists() and not overwrite:
-            skipped += 1
-            continue
-
-        try:
-            target.write_bytes(response.body())
-            downloaded += 1
-            print(f"Saved {target.name}")
-        except Exception as exc:
-            print(f"Failed to write {target}: {exc}")
-
-    return downloaded, skipped
-
-
-def _session_rows_locator(page):
-    return (
-        page.locator("div, tr")
-        .filter(has_text=re.compile(r"#\d+", re.IGNORECASE))
-        .filter(has_text=re.compile(r"\d{1,2}:\d{2}|laps?", re.IGNORECASE))
-    )
 
 
 def _click_bike_mode_checkbox(page) -> bool:
@@ -545,20 +451,6 @@ def _click_download_vbo(page) -> bool:
         return bool(clicked)
     except Exception:
         return False
-
-
-def _go_next_page(page) -> bool:
-    next_btn = page.locator("text='»', text=/Next/i, button:has-text('>')")
-    if next_btn.count() == 0:
-        return False
-    try:
-        if next_btn.first.is_visible():
-            next_btn.first.click()
-            time.sleep(1)
-            return True
-    except Exception:
-        return False
-    return False
 
 
 def _collect_all_session_urls(page, max_sessions: int) -> list[str]:

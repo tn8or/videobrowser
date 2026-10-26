@@ -358,36 +358,13 @@ code still lives under `racebox/` and is loaded via
 
 ---
 
-## Standalone RaceBox tooling
+## Manual RaceBox download
 
-The RaceBox package under `racebox/` can still be used on its own — for example
-to render ProRes 4444 alpha overlays for Final Cut Pro, or to download sessions
-manually.
+`videobrowser scan` fetches new sessions itself. To download them on their own:
 
 ```bash
-# Download sessions only
 python racebox/fetcher/download_sessions.py --output-dir output/sessions
-
-# Render one alpha overlay .mov per .vbo (FCP workflow)
-python -m overlay.cli \
-  --input "path/to/session.vbo" \
-  --output-dir ./output \
-  --width 1920 --height 1080 --fps 25 \
-  --font /path/to/font.ttf \
-  --stats ./stats.sqlite
-# run from racebox/ so `overlay` is importable, or set PYTHONPATH=racebox
-
-# Batch all VBOs in a folder (optional: composite onto matching video)
-python racebox/run_all.py \
-  --input-dir output/sessions \
-  --output-dir ./overlay-out \
-  --stats ./stats.sqlite
-```
-
-For the headful fetcher (if Bike Mode is required on the RaceBox site):
-
-```bash
-python racebox/fetcher/download_sessions.py --output-dir output/sessions --headful
+# add --headful to watch the browser (e.g. if Bike Mode needs a manual click)
 ```
 
 ---
