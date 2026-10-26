@@ -355,6 +355,7 @@ the source folders once: `videobrowser shorts -o output inputclips`.
 | `--no-crash` | off | Skip crash detection |
 | `--min-speed` | 40 | Track speed (km/h): slower moments get at most one per action short, none in theme shorts |
 | `--dry-run` | off | Only write `moments.json` and `index.html` |
+| `--jobs` | CPU threads / 4, max 4 | Clips cut from the GoPro files at once |
 
 ---
 

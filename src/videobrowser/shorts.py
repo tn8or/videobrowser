@@ -30,8 +30,10 @@ import json
 import os
 import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -559,6 +561,10 @@ def _source_for(segment: Segment, clips: list[ClipRow]) -> tuple[Path, float, fl
     return clip.vertical_path, lo - clip.t_start, hi - lo
 
 
+# Every cut used to probe its recording's files again, over the network share.
+_probe_once = lru_cache(maxsize=None)(probe)
+
+
 def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
     """9:16 cut straight from the GoPro files (no HUD), looking into corners."""
     from videobrowser.gopro import Chapter, Recording
@@ -567,7 +573,7 @@ def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
     clock = day.clocks[segment.recording_id]
     recording = Recording(segment.recording_id, "", segment.recording_id)
     for i, ref in enumerate(clock.chapters, start=1):
-        info = probe(ref.path)
+        info = _probe_once(ref.path)
         recording.chapters.append(
             Chapter(ref.path, "", i, segment.recording_id, ref.duration, ref.offset, info)
         )
@@ -578,17 +584,18 @@ def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
     return export_vertical(recording, window, dest, day.rotations[segment.recording_id], focus)
 
 
-def collect_short(plan: ShortPlan, day: DayData, dest: Path) -> Path | None:
+def collect_short(plan: ShortPlan, day: DayData, dest: Path, jobs: int = 1) -> Path | None:
     """Folder with the source clips of *plan*, in order, for editing by hand.
 
     Each moment's camera pieces are copied whole from the scan's vertical
     clips (no cuts, so no audio clicks at the joins); a piece no clip covers
-    is cut from the GoPro files. ``klip.txt`` lists each file with the part
-    the plan would use.
+    is cut from the GoPro files, *jobs* of those cuts at a time. ``klip.txt``
+    lists each file with the part the plan would use.
     """
     dest.mkdir(parents=True, exist_ok=True)
     lines = [f"{plan.name}: {len(plan.moments)} moments, {plan.duration:.0f} s", ""]
     copied: dict[Path, str] = {}
+    cuts: list[tuple[Segment, str]] = []
     for i, moment in enumerate(plan.moments, start=1):
         for j, segment in enumerate(moment.segments):
             cam = day.facing(segment.recording_id)
@@ -598,7 +605,7 @@ def collect_short(plan: ShortPlan, day: DayData, dest: Path) -> Path | None:
             try:
                 if found is None:
                     name = f"{stem}.mp4"
-                    _from_source(day, segment, dest / name)
+                    cuts.append((segment, name))
                     use = "whole file"
                 else:
                     src, start, duration = found
@@ -613,6 +620,23 @@ def collect_short(plan: ShortPlan, day: DayData, dest: Path) -> Path | None:
             lines.append(f"{name}  ({moment.label}, {_clock_label(moment.utc_start)}, use {use})")
     if len(lines) == 2:
         return None
+
+    def cut(item: tuple[Segment, str]) -> None:
+        segment, name = item
+        try:
+            _from_source(day, segment, dest / name)
+        except Exception as exc:
+            raise RuntimeError(f"{segment.recording_id}@{segment.t_start:.0f}s: {exc}") from exc
+
+    # Each cut is an ffmpeg decode + encode that mostly waits on NVDEC/NVENC
+    # or the network, so several run side by side.
+    if jobs > 1 and len(cuts) > 1:
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            for _ in pool.map(cut, cuts):
+                pass
+    else:
+        for item in cuts:
+            cut(item)
     (dest / "klip.txt").write_text("\n".join(lines) + "\n")
     return dest
 
@@ -737,6 +761,7 @@ def build_shorts(
     crashes: bool = True,
     render: bool = True,
     min_speed: float = DEFAULT_MIN_TRACK_KMH,
+    jobs: int = 1,
 ) -> dict[str, list[Path]]:
     db = ScanDB.open(out_dir / "scan.sqlite")
     try:
@@ -797,7 +822,7 @@ def build_shorts(
                 partial = day_dir / f".{plan.name}.partial"
                 shutil.rmtree(partial, ignore_errors=True)
                 try:
-                    path = collect_short(plan, day, partial)
+                    path = collect_short(plan, day, partial, jobs=jobs)
                 except Exception as exc:
                     print(f"  short {plan.name} failed: {exc}")
                     shutil.rmtree(partial, ignore_errors=True)
