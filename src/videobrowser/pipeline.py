@@ -354,9 +354,11 @@ def scan_recording(
     config: ScanConfig,
     db: ScanDB,
     tracker: RiderTracker | None,
+    position: str = "",
 ) -> list[Event]:
+    """*position* (e.g. "[file 3 of 12] ") leads the recording's first line."""
     if db.is_processed(recording.recording_id) and not config.force:
-        print(f"skip {recording.recording_id} (already processed)")
+        print(f"{position}skip {recording.recording_id} (already processed)")
         return []
 
     meta = recording.chapters[0].info.rotation if recording.chapters else 0
@@ -366,7 +368,7 @@ def scan_recording(
         visual = profile.rotation
         profile = replace(profile, rotation=(meta + visual) % 360)
         print(
-            f"{recording.recording_id}  profile={profile.name}  "
+            f"{position}{recording.recording_id}  profile={profile.name}  "
             f"rot={profile.rotation} (meta={meta} visual={visual})  "
             f"ego={profile.ego_side}  "
             f"{recording.duration:.1f}s  chapters={len(recording.chapters)}  "
@@ -385,7 +387,7 @@ def scan_recording(
         if profile.rotation == 0 and meta:
             profile = replace(profile, rotation=meta)
         print(
-            f"{recording.recording_id}  profile={profile.name}  "
+            f"{position}{recording.recording_id}  profile={profile.name}  "
             f"rot={profile.rotation}  ego={profile.ego_side}  "
             f"{recording.duration:.1f}s  chapters={len(recording.chapters)}  "
             f"pipelines={','.join(profile.pipelines)}"
