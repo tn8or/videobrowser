@@ -43,7 +43,7 @@ from videobrowser.db import ScanDB
 from videobrowser.events import ClipWindow
 from videobrowser.motion import DEFAULT_THRESHOLD, TRACK_MOTION
 from videobrowser.probe import ProbeError, local_date_label, probe
-from videobrowser.sync import CameraClock, ChapterRef, align
+from videobrowser.sync import CameraClock, ChapterRef, align, parallel
 from videobrowser.telemetry import DEFAULT_MIN_TRACK_KMH, STOPPED_KMH
 from videobrowser.themes import (
     LABELS,
@@ -428,6 +428,9 @@ def place_without_gps(day: DayData, track) -> None:
     if track is None:
         return
     day.track = track
+    missing = [rid for rid in day.clocks if rid not in day.gps]
+    for rid, gps in zip(missing, parallel(lambda rid: _recording_gps(day.clocks[rid]), missing)):
+        day.gps[rid] = gps
     cameras: dict[str, list[str]] = {}
     for rid, clock in day.clocks.items():
         if rid in day.motion and clock.start_utc is not None and not _day_gps(day, rid)[0]:
