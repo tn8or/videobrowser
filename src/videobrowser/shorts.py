@@ -20,7 +20,8 @@ looks into the corner like the scan's clips do.
 Moments where the bike stands still are left out. Moments below
 ``--min-speed`` (GoPro GPS; paddock, pit lane) get at most one per action
 short and none in the theme shorts. Without GPS the scan's scene motion
-stands in for speed.
+stands in for speed. Moments with a car, van or truck in view most of the
+time (``--max-vehicle-share``) are in the paddock and left out.
 """
 
 from __future__ import annotations
@@ -56,6 +57,8 @@ from videobrowser.themes import (
     facing,
     find_moments,
 )
+from videobrowser.vehicles import DEFAULT_MAX_SHARE
+from videobrowser.vehicles import share as vehicle_share
 
 # Label shown at the start of each piece, seconds.
 LABEL_S = 1.8
@@ -221,6 +224,8 @@ class DayData:
     gps: dict = field(default_factory=dict)
     # recording id -> per-second scene motion from the scan.
     motion: dict = field(default_factory=dict)
+    # recording id -> per-second share of frames with a car in view.
+    vehicles: dict = field(default_factory=dict)
     # RaceBox log of the day, when there is one (``place_without_gps``).
     track: object = None
     # recording id -> camera-clock readings, for recordings without GPS the
@@ -253,6 +258,9 @@ def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
     for rid, samples in db.motion().items():
         if rid in owner:
             owner[rid].motion[rid] = samples
+    for rid, samples in db.vehicles().items():
+        if rid in owner:
+            owner[rid].vehicles[rid] = samples
     for row in db.all_events():
         if row["recording_id"] in owner:
             owner[row["recording_id"]].events.append(row)
@@ -495,8 +503,22 @@ def _unplaced_pace(m: Moment, day: DayData) -> str | None:
     return "stopped"
 
 
+def _moment_vehicles(m: Moment, day: DayData) -> float | None:
+    """Share of the moment's time with a car in view, None if not stored."""
+    total = weight = 0.0
+    for seg in m.segments:
+        found = vehicle_share(day.vehicles.get(seg.recording_id, []), [(seg.t_start, seg.t_end)])
+        if found is not None:
+            total += found * seg.duration
+            weight += seg.duration
+    return total / weight if weight > 0 else None
+
+
 def day_moments(
-    day: DayData, crashes: bool = True, min_speed: float = DEFAULT_MIN_TRACK_KMH
+    day: DayData,
+    crashes: bool = True,
+    min_speed: float = DEFAULT_MIN_TRACK_KMH,
+    max_vehicle_share: float = DEFAULT_MAX_SHARE,
 ) -> list[Moment]:
     events = [
         CamEvent(
@@ -513,6 +535,16 @@ def day_moments(
     moments = find_moments(events)
     if crashes:
         moments.extend(_crash_moments(day))
+    if max_vehicle_share > 0:
+        before = len(moments)
+        moments = [
+            m
+            for m in moments
+            if m.theme in SPEED_EXEMPT_THEMES
+            or (_moment_vehicles(m, day) or 0.0) < max_vehicle_share
+        ]
+        if len(moments) < before:
+            print(f"  {before - len(moments)} moment(s) with a car in view left out (paddock)")
     if min_speed <= 0:
         return moments
     kept: list[Moment] = []
@@ -762,6 +794,7 @@ def build_shorts(
     render: bool = True,
     min_speed: float = DEFAULT_MIN_TRACK_KMH,
     jobs: int = 1,
+    max_vehicle_share: float = DEFAULT_MAX_SHARE,
 ) -> dict[str, list[Path]]:
     db = ScanDB.open(out_dir / "scan.sqlite")
     try:
@@ -784,7 +817,9 @@ def build_shorts(
         print(f"shorts {label}: {len(day.clocks)} camera recording(s), {len(day.events)} events")
         place_without_gps(day, track)
         align(list(day.clocks.values()), racebox_offset=rb_offset, use_audio=audio_sync)
-        moments = day_moments(day, crashes=crashes, min_speed=min_speed)
+        moments = day_moments(
+            day, crashes=crashes, min_speed=min_speed, max_vehicle_share=max_vehicle_share
+        )
         plans = plan_shorts(moments, max_seconds, max_action_shorts)
         day_dir = out_dir / "shorts" / label
         day_dir.mkdir(parents=True, exist_ok=True)

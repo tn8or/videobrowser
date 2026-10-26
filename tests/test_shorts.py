@@ -176,6 +176,24 @@ def test_day_moments_fall_back_to_scene_motion_without_gps(monkeypatch):
     assert found == {("action", True), ("catching_up", False)}
 
 
+def test_day_moments_leave_out_moments_with_a_car_in_view(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 200.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    day.events = [
+        {"recording_id": "F", "type": "nearby_rider", "t_start": 20.0, "t_end": 22.0, "score": 0.5},
+        {"recording_id": "F", "type": "approaching_rider", "t_start": 120.0, "t_end": 123.0, "score": 0.9},
+    ]
+    day.motion["F"] = [(t + 0.5, 15.0) for t in range(200)]
+    # A van in view until 40 s (the paddock), then a car for one second.
+    day.vehicles["F"] = [(t + 0.5, 1.0 if t < 40 or t == 121 else 0.0) for t in range(200)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    assert [m.theme for m in shorts.day_moments(day, crashes=False)] == ["catching_up"]
+    kept = shorts.day_moments(day, crashes=False, max_vehicle_share=0)
+    assert sorted(m.theme for m in kept) == ["action", "catching_up"]
+
+
 def test_recording_without_gps_takes_racebox_time_speed_and_turns(monkeypatch):
     import numpy as np
 

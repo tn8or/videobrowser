@@ -318,6 +318,17 @@ theme shorts. Only own crashes skip this check. Footage without GPS (e.g.
 falls back to the scene motion measured during the scan (stored from this
 version on, so rescan with `--force`). `--min-speed 0` turns the checks off.
 
+Cars, vans and trucks mark the paddock: there are none on track. The scan
+asks the detector for them beside the riders (they never become rider
+tracks) and drops events with a vehicle in view at least 40% of the time
+(`scan --max-vehicle-share`), so they never become clip windows for
+`horizontals`, `verticals` or the shorts. The shorts check their moments
+again from the per-second share stored in the scan (`shorts
+--max-vehicle-share`). Only boxes at least 8% of the frame high count, so a
+car far off behind the fence does not, and riding past a marshal's car for a
+second or two stays under the share. `0` turns the check off; days scanned
+before this need `scan --force`.
+
 With RaceBox sessions in `--sessions-dir` (default `<out>/sessions`), footage without GoPro GPS is laid on the RaceBox log by
 matching its scene motion against the RaceBox speed (pit stops and out-laps
 make the pattern), searched within a few minutes of the camera clock. A clear

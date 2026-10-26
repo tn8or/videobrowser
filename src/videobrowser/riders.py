@@ -58,7 +58,9 @@ class RiderTracker:
     device: str
     conf: float
     imgsz: int = 640
-    classes: tuple[int, ...] = (0, 3)  # person, motorcycle
+    # person, car, motorcycle, bus, truck; vehicles are kept out of the rider
+    # tracks and only tell the paddock (vehicles.py).
+    classes: tuple[int, ...] = (0, 2, 3, 5, 7)
     tensorrt: bool = False
     _model: object | None = field(default=None, init=False, repr=False)
     _started: bool = field(default=False, init=False)
