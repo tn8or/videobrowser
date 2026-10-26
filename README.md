@@ -349,8 +349,8 @@ included. That placement is only good to a minute or so at session edges, so
 it supplies speed (paddock or track) but not start time or turn rate. A
 recording still unplaced is checked against the RaceBox log at both readings
 of its camera clock: a moment with the bike in under both is dropped as
-standing still, and one where it may be riding counts as slow (at most one
-per action short), since it is not sure.
+standing still, and one where it may be riding counts as slow and is
+left out too, since it is not sure.
 
 Overlays (RaceBox and telemetry HUD) only go on footage whose link to the
 RaceBox log is sure: GoPro GPS time, or a clear scene-motion match. Other
