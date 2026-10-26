@@ -41,8 +41,7 @@ highlight detection + RaceBox telemetry overlays). Usage lives in
 8. **Multi-session comparisons:** yes — sector times on each lap row; day-best
    (green) and overall-best (purple) from the stats store.
 9. **Privacy:** none beyond keeping the racebox.pro login session local in
-   `racebox/fetcher/auth_state.json`. The fetcher also still reads optional
-   `racebox/fetcher/username` and `password` files. All three are gitignored.
+   `~/.videobrowser/racebox_auth.json` (outside the repo).
 10. **Outputs from a scan:**
     - `clips/` — raw rotation-corrected highlights (no overlay)
     - `highlights/` — same windows with **compact** overlay

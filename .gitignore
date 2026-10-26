@@ -27,8 +27,5 @@ inputclips/
 *.mp4
 *.MP4
 *.MOV
-racebox/fetcher/downloads.db
-racebox/fetcher/username
-racebox/fetcher/password
-racebox/fetcher/auth_state.json
-racebox/fetcher/chrome_profile/
+# Login files from before the fetcher moved into the package; keep them out of git.
+racebox/

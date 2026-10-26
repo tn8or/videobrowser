@@ -37,7 +37,7 @@ compact telemetry overlay laid out for Reels / TikTok / Shorts.
    `rotation -> sendcmd (per-frame crop x) -> crop@vc -> scale 1080:1920 -> overlay`.
    Overlay BGRA frames are piped on stdin like `racebox_stage._overlay_pass`.
    Encoders reuse `clips._reencode_pipelines` (VideoToolbox / NVENC / x264) at 20M.
-4. **Overlay** (`racebox/overlay/overlay_render.py`): new `variant="vertical"`
+4. **Overlay** (`src/videobrowser/racebox/overlay_render.py`): new `variant="vertical"`
    = compact HUD (clock, map, speed, lean) with a phone-safe layout: clock
    top-left and map top-right, 12% below the top edge; speed bottom-left and
    lean (number only, no gauge) bottom-right, ending 12% above the bottom edge.

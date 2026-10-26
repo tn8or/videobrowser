@@ -260,6 +260,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="RaceBox .vbo sessions for absolute time (default: <out>/sessions)",
     )
+
+    sub.add_parser(
+        "racebox-login",
+        help="Log in to racebox.pro in Chrome (solve the captcha) and save the session for fetches",
+    )
+    rb_fetch = sub.add_parser(
+        "racebox-fetch",
+        help="Download new RaceBox .vbo sessions without scanning (scan does this itself)",
+    )
+    rb_fetch.add_argument("sessions_dir", type=Path, help="Folder to save .vbo files in")
+    rb_fetch.add_argument("--headful", action="store_true", help="Show the browser window")
     return parser
 
 
@@ -449,6 +460,20 @@ def scan_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def racebox_login_cmd(args: argparse.Namespace) -> int:
+    from videobrowser.racebox import fetch
+
+    fetch.interactive_login()
+    return 0
+
+
+def racebox_fetch_cmd(args: argparse.Namespace) -> int:
+    from videobrowser.racebox_stage import fetch_sessions
+
+    fetch_sessions(args.sessions_dir.expanduser().resolve(), headful=args.headful)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -460,5 +485,9 @@ def main(argv: list[str] | None = None) -> int:
         return facing_cmd(args)
     if args.cmd in ("horizontals", "verticals"):
         return exports_cmd(args)
+    if args.cmd == "racebox-login":
+        return racebox_login_cmd(args)
+    if args.cmd == "racebox-fetch":
+        return racebox_fetch_cmd(args)
     parser.error(f"unknown command {args.cmd}")
     return 2

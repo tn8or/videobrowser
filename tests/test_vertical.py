@@ -7,7 +7,6 @@ import pytest
 
 from videobrowser.events import ClipWindow, Event
 from videobrowser.gopro import Chapter, Recording
-from videobrowser.overlay_bridge import ensure_on_path
 from videobrowser.probe import probe
 from videobrowser.riders import TrackPoint
 from videobrowser.telemetry import TurnSample
@@ -184,8 +183,7 @@ def test_sendcmd_only_emits_changes():
 
 
 def test_vertical_layout_stays_inside_safe_zone():
-    ensure_on_path()
-    from overlay import overlay_render as orr
+    from videobrowser.racebox import overlay_render as orr
 
     config = orr.RenderConfig(
         width=1080, height=1920, fps=30, font_path="DejaVuSans.ttf", variant="vertical"
