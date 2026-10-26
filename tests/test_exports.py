@@ -118,3 +118,21 @@ def test_run_jobs_keeps_order_and_errors():
         assert [item for item, _, _ in out] == [1, 2, 3]
         assert [result for _, result, _ in out] == [10, None, 30]
         assert str(out[1][2]) == "boom"
+
+
+def test_racebox_renders_run_side_by_side_and_survive_a_failure():
+    import threading
+
+    from videobrowser.racebox_stage import _run_renders
+
+    together = threading.Barrier(3, timeout=5)
+    done = []
+
+    def render(n):
+        together.wait()  # all three must run at once
+        if n == 1:
+            raise RuntimeError("ffmpeg died")
+        done.append(n)
+
+    _run_renders([lambda n=n: render(n) for n in range(3)], jobs=3)
+    assert sorted(done) == [0, 2]

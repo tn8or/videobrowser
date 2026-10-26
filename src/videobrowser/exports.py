@@ -206,6 +206,7 @@ def export_horizontals(
             if ctx is None:
                 ctx = _racebox_context(out_dir, sessions_dir, font_path, stats_path)
                 ctx.keep_existing = not force
+                ctx.jobs = jobs
             try:
                 from videobrowser.racebox_stage import run_for_recording
 
