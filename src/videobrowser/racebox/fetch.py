@@ -68,9 +68,12 @@ def extract_session_id(url: str) -> str:
 CONFIG_DIR = Path.home() / ".videobrowser"
 AUTH_STATE_PATH = CONFIG_DIR / "racebox_auth.json"
 CHROME_PROFILE_DIR = CONFIG_DIR / "racebox_chrome_profile"
-# Where the login lived before the fetcher moved into the package.
-LEGACY_AUTH_STATE_PATH = (
-    Path(__file__).resolve().parents[3] / "racebox" / "fetcher" / "auth_state.json"
+# Where the login lived before the fetcher moved into the package: the repo
+# checkout (editable install) or, for other installs, the folder run from.
+_LEGACY_AUTH_STATE = Path("racebox") / "fetcher" / "auth_state.json"
+LEGACY_AUTH_STATE_PATHS = (
+    Path(__file__).resolve().parents[3] / _LEGACY_AUTH_STATE,
+    Path.cwd() / _LEGACY_AUTH_STATE,
 )
 
 
@@ -79,8 +82,11 @@ def migrate_legacy_auth(
 ) -> None:
     """Copy a login saved under ``racebox/fetcher/`` to its new place, once."""
     auth_state = auth_state or AUTH_STATE_PATH
-    legacy = legacy or LEGACY_AUTH_STATE_PATH
-    if auth_state.exists() or not legacy.is_file():
+    if auth_state.exists():
+        return
+    candidates = [legacy] if legacy else LEGACY_AUTH_STATE_PATHS
+    legacy = next((p for p in candidates if p.is_file()), None)
+    if legacy is None:
         return
     auth_state.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(legacy, auth_state)

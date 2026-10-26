@@ -31,7 +31,7 @@ def test_fetch_sessions_skips_without_login(tmp_path: Path, monkeypatch, capsys)
     import videobrowser.racebox_stage as rbs
 
     monkeypatch.setattr(fetch, "AUTH_STATE_PATH", tmp_path / "racebox_auth.json")
-    monkeypatch.setattr(fetch, "LEGACY_AUTH_STATE_PATH", tmp_path / "missing.json")
+    monkeypatch.setattr(fetch, "LEGACY_AUTH_STATE_PATHS", (tmp_path / "missing.json",))
     rbs.fetch_sessions(tmp_path / "sessions")
     assert "videobrowser racebox-login" in capsys.readouterr().out
     assert not (tmp_path / "sessions").exists()
