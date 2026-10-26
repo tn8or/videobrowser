@@ -48,14 +48,12 @@ def load():
     from overlay.vbo_parser import VboSession, parse_vbo
     from overlay.video_compositor import (
         GpuCapabilities,
-        VideoMetadata,
         _SessionRenderer,
         _build_filter_complex,
         _detect_gpu_capabilities,
         _fps_fraction,
         _resolve_gpu_decode_args,
         _select_encoder_args,
-        get_video_metadata,
     )
 
     return {
@@ -75,12 +73,10 @@ def load():
         "VboSession": VboSession,
         "parse_vbo": parse_vbo,
         "GpuCapabilities": GpuCapabilities,
-        "VideoMetadata": VideoMetadata,
         "SessionRenderer": _SessionRenderer,
         "build_filter_complex": _build_filter_complex,
         "detect_gpu_capabilities": _detect_gpu_capabilities,
         "fps_fraction": _fps_fraction,
         "resolve_gpu_decode_args": _resolve_gpu_decode_args,
         "select_encoder_args": _select_encoder_args,
-        "get_video_metadata": get_video_metadata,
     }

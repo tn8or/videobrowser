@@ -26,10 +26,9 @@ highlight detection + RaceBox telemetry overlays). Usage lives in
 ## Answers / decisions
 
 1. **Primary workflow:** `videobrowser scan` — detect, cut, and composite
-   overlays onto video in one pass. Standalone ProRes 4444 alpha `.mov` output
-   (Final Cut Pro) remains available via `racebox/overlay` tooling.
-2. **Overlay frame rate:** match the source clip FPS in the scan pipeline;
-   standalone alpha renders default to **25 fps**.
+   overlays onto video in one pass. The standalone ProRes 4444 alpha `.mov`
+   output for Final Cut Pro has been removed.
+2. **Overlay frame rate:** match the source clip FPS in the scan pipeline.
 3. **Fonts:** configurable TTF (`--font`).
 4. **Corner metrics:** Pre/Entry/Min corner speeds and corner lean comparisons
    are **disabled** in the merged pipeline (`show_corners=False`). Drawing code
@@ -41,8 +40,9 @@ highlight detection + RaceBox telemetry overlays). Usage lives in
    date interpretation.
 8. **Multi-session comparisons:** yes — sector times on each lap row; day-best
    (green) and overall-best (purple) from the stats store.
-9. **Privacy:** none beyond keeping racebox.pro credentials local under
-   `racebox/fetcher/username` and `racebox/fetcher/password`.
+9. **Privacy:** none beyond keeping the racebox.pro login session local in
+   `racebox/fetcher/auth_state.json`. The fetcher also still reads optional
+   `racebox/fetcher/username` and `password` files. All three are gitignored.
 10. **Outputs from a scan:**
     - `clips/` — raw rotation-corrected highlights (no overlay)
     - `highlights/` — same windows with **compact** overlay
