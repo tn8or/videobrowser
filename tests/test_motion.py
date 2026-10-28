@@ -66,3 +66,45 @@ def test_flow_tells_a_camera_looking_ahead_from_one_looking_back():
     assert facing_from_flow([behind] * MIN_FACING_VOTES + [ahead] * 3) == "rear"
     assert facing_from_flow([ahead] * 5) is None
     assert facing_from_flow([ahead, behind] * MIN_FACING_VOTES) is None
+
+
+def _mount_frames(n, mounted, seed=0):
+    """Frames of a camera on a moving bike (a fixed, textured dash at the
+    bottom, the rest streaming) or in the hand (everything moving)."""
+    rng = np.random.default_rng(seed)
+    dash = rng.integers(0, 255, (60, 320), dtype=np.uint8)
+    frames = []
+    for i in range(n):
+        img = rng.integers(0, 255, (180, 320), dtype=np.uint8)
+        if mounted:
+            img[120:] = dash
+        frames.append(np.dstack([img] * 3))
+    return frames
+
+
+def test_mount_watch_tells_a_camera_on_the_bike_from_one_in_the_hand():
+    from videobrowser.motion import MountWatch
+
+    on_bike = MountWatch()
+    for i, frame in enumerate(_mount_frames(60, mounted=True)):
+        on_bike.update(i * 0.2, frame)
+    riding = on_bike.per_second()
+    assert riding is not None and min(v for _, v in riding[1:]) == 1.0
+
+    in_hand = MountWatch()
+    for i, frame in enumerate(_mount_frames(60, mounted=False)):
+        in_hand.update(i * 0.2, frame)
+    assert in_hand.per_second() is None
+
+
+def test_mount_watch_parked_bike_is_not_riding():
+    from videobrowser.motion import MountWatch
+
+    watch = MountWatch()
+    frames = _mount_frames(60, mounted=True)
+    still = frames[0]
+    for i in range(90):
+        # Riding for 12 s, then parked: the whole picture holds still.
+        watch.update(i * 0.2, frames[i] if i < 60 else still)
+    riding = dict(watch.per_second())
+    assert riding[5.5] == 1.0 and riding[15.5] == 0.0

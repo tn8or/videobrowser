@@ -305,7 +305,7 @@ again:
 | Styrt (own) | accelerometer jolt >= 3x gravity, moving >= 30 km/h before, stopped after (GPS samples without a fix do not count, and the picture must stop moving too) | needs real crash data to tune |
 | Muligt styrt (others) | `rider_down`: a bike box loses its rider while a person box appears beside it, or the bike box turns low and wide while out on grass/gravel | candidates to check by hand |
 | Ude i gruset | `off_track`: the ground under a rider's box turns from asphalt to green grass or pale gravel for 0.6 s+; ground the colour of the road under the camera's own bike never counts (sunlit asphalt can look like gravel) | candidates to check by hand |
-| Afkørsel (own) | `own_off_track`, front camera only: the middle of the picture (the ground the bike rides onto) turns from asphalt to grass or gravel for 0.8 s+ after 3 s+ on asphalt; asphalt the colour of the last road frames never counts. Judged on the speed of the 6 s before it, since it slows the bike | needs tuning on real footage |
+| Afkørsel (own) | `own_off_track`, front camera only: the middle of the picture (the ground the bike rides onto) turns from asphalt to grass or gravel for 0.8 s+ after 3 s+ on asphalt; asphalt the colour of the last road frames never counts. Judged on the pace of the 6 s before it, since it slows the bike | needs tuning on real footage |
 | Action | any other event, for the mixed shorts | |
 
 `rider_down`, `off_track` and `own_off_track` are found during the scan (`incidents.py`), so
@@ -319,10 +319,23 @@ The scan drops events where the bike stands still (below 10 km/h GoPro GPS
 speed, `scan --min-speed`). `horizontals`, `verticals` and the shorts then
 all leave out clips and moments where the bike stands still or rides below
 40 km/h (paddock, pit lane; `--min-speed` on each), by the same rule; the
-shorts only cut tighter. Only own crashes skip this check. Footage without GPS (e.g.
-`.mov` files re-wrapped by Final Cut, which drop the GoPro telemetry track)
-falls back to the scene motion measured during the scan (stored from this
-version on, so rescan with `--force`). `--min-speed 0` turns the checks off.
+shorts only cut tighter. Only own crashes skip this check. `--min-speed 0`
+turns the checks off.
+
+Footage without GoPro GPS (e.g. `.mov` files re-wrapped by Final Cut, trimmed
+or exported clips, other riders' clips) is judged by the picture: does the
+camera ride on a moving bike? Scene motion alone cannot tell, since a camera
+waved about in the paddock moves the picture as much as the track streaming
+past. What a camera on a bike has, and one in the hand lacks, is a part of
+the picture that stays put while the rest moves (fairing, dash, tail). The
+scan finds those blocks per recording (still and textured in most moving
+frames) and stores, per second, the share of frames where the scene streams
+past while they hold still (`riding` in `scan.sqlite`). A moment is on track
+when half its frames ride. This beats RaceBox speed laid on by scene motion,
+whose timing can be off. When a recording shows no part of a bike (helmet
+camera, all in the hand; `riding: no part of a bike ...` in the scan log),
+RaceBox speed and then scene motion decide as before. Rescan with `--force`
+to get it.
 
 Cars, vans and trucks mark the paddock: there are none on track. The scan
 asks the detector for them beside the riders (they never become rider
@@ -346,28 +359,15 @@ log near the camera clock ...`). Scene motion is median-filtered over a
 minute and capped first, so a camera picked up in the paddock does not look
 like a session.
 
-The RaceBox logs whenever the bike is out, so for placed footage the time
-between sessions reads 0 km/h (paddock), not "unknown". Before, a paddock
-moment there had no speed, fell back to scene motion, and a camera in the
-hand moves as much as one on track: that let close-ups of the stand, the
-tent and the phone into the shorts. Only time more than 30 minutes outside
-a day's logging stays unknown. GoPro footage without a GPS fix at a moment
-asks the RaceBox log the same way.
-
 The shorts then match each camera's remaining recordings of the day at once
 (one clock error per camera): hours of footage with pit stops between
 sessions match where a single recording does not, paddock-only recordings
 included. That placement is only good to a minute or so at session edges, so
 it supplies speed (paddock or track) but not start time or turn rate. A
-recording still unplaced (short or trimmed files above all) is checked
-against the RaceBox log at its camera clock. A camera clock has two possible
-readings (local time labelled UTC, or true UTC); the one under which RaceBox
-and scene motion agree best over all of the camera's unplaced recordings
-that day is used when it clearly wins (`camera clock reading 1 of 2 agrees
-...` in the log), else both. A moment with the bike out on track (median
-40 km/h+ within 10 s) under every reading kept is kept; one with the bike in
-under all is dropped as standing still; anything else counts as slow and is
-left out.
+recording still unplaced is checked against the RaceBox log at both readings
+of its camera clock: a moment with the bike in under both is dropped as
+standing still, and one where it may be riding counts as slow and is
+left out too, since it is not sure.
 
 Overlays (RaceBox and telemetry HUD) only go on footage whose link to the
 RaceBox log is sure: GoPro GPS time, or a clear scene-motion match. Other
