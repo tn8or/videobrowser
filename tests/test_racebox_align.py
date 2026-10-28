@@ -138,3 +138,16 @@ def test_whole_day_places_paddock_only_recordings_too():
     match = day_match(recs, track)
     # Session edges only: right to within a minute or two, not a second.
     assert match.start_utc == pytest.approx(recs[0][0] - error, abs=120.0)
+
+
+def test_speeds_read_zero_between_sessions_and_nothing_far_outside_the_log():
+    utc = np.r_[np.arange(T0, T0 + 600, 0.5), np.arange(T0 + 1800, T0 + 2400, 0.5)]
+    track = RaceboxTrack(utc, np.full(len(utc), 120.0), np.zeros(len(utc)))
+    between = track.speeds(T0 + 1000, 100)
+    assert len(between) >= 100 and all(s.speed_kmh == 0.0 for s in between)
+    riding = track.speeds(T0 + 100, 10)
+    assert riding and all(s.speed_kmh == 120.0 for s in riding)
+    edge = track.speeds(T0 + 590, 30)  # the session ends inside the window
+    assert edge[0].speed_kmh == 120.0 and edge[-1].speed_kmh == 0.0
+    assert [s.t for s in edge] == sorted(s.t for s in edge)
+    assert track.speeds(T0 + 2400 + 3 * 3600, 100) == []  # another day: unknown

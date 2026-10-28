@@ -1,6 +1,13 @@
 import numpy as np
 
-from videobrowser.incidents import MOTORCYCLE, PERSON, offtrack_fraction, score_incidents
+from videobrowser.incidents import (
+    MOTORCYCLE,
+    PERSON,
+    GroundAhead,
+    offtrack_fraction,
+    own_offtrack_events,
+    score_incidents,
+)
 from videobrowser.riders import TrackPoint
 
 FW, FH = 640, 360
@@ -78,3 +85,36 @@ def test_warm_asphalt_like_the_cameras_own_road_is_not_gravel():
     green = cv2.cvtColor(np.uint8([[[60, 160, 120]]]), cv2.COLOR_HSV2BGR)[0, 0]
     img[300:330, :] = green
     assert offtrack_fraction(img, box, road_colour(img)) > 0.9
+
+
+def _ground_frame(colour):
+    image = np.full((FH, FW, 3), (110, 110, 110), dtype=np.uint8)  # grey asphalt
+    image[: FH // 3] = (230, 200, 160)  # sky
+    image[int(FH * 0.4) : int(FH * 0.66), int(FW * 0.3) : int(FW * 0.7)] = colour
+    return image
+
+
+def test_own_bike_over_the_edge_onto_grass_is_own_off_track():
+    ground = GroundAhead()
+    grass = (40, 150, 60)  # BGR green
+    for i in range(50):
+        t = i * 0.2
+        ground.update(t, _ground_frame(grass if 6.0 <= t < 8.0 else (110, 110, 110)))
+    events = own_offtrack_events(ground.samples, "R")
+    assert [(e.type, round(e.t_start, 1)) for e in events] == [("own_off_track", 6.0)]
+
+
+def test_brief_or_early_grass_ahead_is_not_own_off_track():
+    # A flash of green (a verge in a tight corner) and grass from the very
+    # start (parked on the lawn) are not running off the track.
+    samples = [(i * 0.2, 0.9 if i in (20, 21) else 0.0) for i in range(50)]
+    assert own_offtrack_events(samples, "R") == []
+    samples = [(i * 0.2, 0.9 if i < 10 else 0.0) for i in range(50)]
+    assert own_offtrack_events(samples, "R") == []
+
+
+def test_pale_gravel_ahead_after_asphalt_counts():
+    ground = GroundAhead()
+    for i in range(30):
+        ground.update(i * 0.2, _ground_frame((110, 110, 110)))
+    assert ground.update(6.0, _ground_frame((140, 170, 200))) > 0.9  # BGR pale gravel

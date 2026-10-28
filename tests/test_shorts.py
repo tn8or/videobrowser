@@ -233,7 +233,7 @@ def test_collect_short_fails_whole_when_a_piece_fails(tmp_path, monkeypatch):
         shorts.collect_short(plan, day, tmp_path / "action-01")
 
 
-def test_unplaced_recording_is_stopped_unless_racebox_rides_at_a_clock_reading(monkeypatch):
+def test_unplaced_recording_takes_the_clock_reading_racebox_agrees_with(monkeypatch):
     import numpy as np
 
     import videobrowser.racebox_align as ra
@@ -242,17 +242,78 @@ def test_unplaced_recording_is_stopped_unless_racebox_rides_at_a_clock_reading(m
 
     start = 1785571200.0  # 2026-08-01 10:00 Copenhagen (UTC+2)
     day = shorts.DayData("2026-08-01", {"M": CameraClock("M", start, 600.0, [])}, {"M": "cockpit"}, {"M": 0}, [], [])
-    day.motion["M"] = [(t + 0.5, 12.0) for t in range(600)]  # camera in hand: busy, flat
+    day.motion["M"] = [(t + 0.5, 12.0) for t in range(600)]
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
     # Riding 7200 s after the clock (its other reading) for the first 200 s only.
     utc = np.arange(start + 7200 - 100, start + 7200 + 200, 0.1)
     track = ra.RaceboxTrack(utc, np.full(len(utc), 120.0), np.zeros(len(utc)))
     shorts.place_without_gps(day, track)
-    assert day.unplaced["M"] == [start, start + 7200]
+    assert day.unplaced["M"] == [start + 7200]
     early = Moment("action", start + 50, start + 55, 1.0, [Segment("M", 50, 55)])
     late = Moment("action", start + 500, start + 505, 1.0, [Segment("M", 500, 505)])
-    assert shorts._moment_pace(early, day, 40.0) == "slow"
-    assert shorts._moment_pace(late, day, 40.0) == "stopped"
+    assert shorts._moment_pace(early, day, 40.0) == "track"
+    assert shorts._moment_pace(late, day, 40.0) == "stopped"  # logger off: the bike is in
+
+
+def test_unplaced_recording_with_two_equal_readings_is_only_kept_on_track_under_both():
+    import numpy as np
+
+    import videobrowser.racebox_align as ra
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    start = 1785571200.0
+    day = shorts.DayData("2026-08-01", {"M": CameraClock("M", start, 600.0, [])}, {"M": "cockpit"}, {"M": 0}, [], [])
+    utc = np.arange(start - 100, start + 7200 + 700, 0.5)
+    riding = ((utc - start) % 7200 < 300) | ((utc - start) % 7200 > 7100)
+    day.track = ra.RaceboxTrack(utc, np.where(riding, 120.0, 0.0), np.zeros(len(utc)))
+    day.unplaced["M"] = [start, start + 7200]
+    both = Moment("action", start + 50, start + 55, 1.0, [Segment("M", 50, 55)])
+    one = Moment("action", start + 400, start + 405, 1.0, [Segment("M", 400, 405)])
+    assert shorts._unplaced_pace(both, day, 40.0) == "track"
+    assert shorts._unplaced_pace(one, day, 40.0) == "stopped"
+    day.track = ra.RaceboxTrack(utc, np.where(utc < start + 7200, 120.0, 0.0), np.zeros(len(utc)))
+    assert shorts._unplaced_pace(both, day, 40.0) == "slow"
+
+
+def test_placed_recording_between_sessions_is_paddock_even_with_a_busy_picture(monkeypatch):
+    import numpy as np
+
+    import videobrowser.racebox_align as ra
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    day = shorts.DayData("2026-08-01", {"M": CameraClock("M", 1000.0, 900.0, [])}, {"M": "cockpit"}, {"M": 0}, [], [])
+    day.events = [
+        {"recording_id": "M", "type": "approaching_rider", "t_start": 100.0, "t_end": 103.0, "score": 0.9},
+        {"recording_id": "M", "type": "approaching_rider", "t_start": 700.0, "t_end": 703.0, "score": 0.9},
+    ]
+    # Camera in the hand after the session: the picture moves more than on track.
+    day.motion["M"] = [(t + 0.5, 15.0 if t < 400 else 30.0) for t in range(900)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    monkeypatch.setattr(ra, "motion_match", lambda motion, track, guesses: ra.MotionMatch(1000.0, "r=0.90"))
+    utc = np.arange(900.0, 1400.0, 0.1)  # the session; the logger is off after it
+    shorts.place_without_gps(day, ra.RaceboxTrack(utc, np.full(len(utc), 120.0), np.zeros(len(utc))))
+    kept = shorts.day_moments(day, crashes=False)
+    assert [m.utc_start for m in kept] == [pytest.approx(1099.0)]
+
+
+def test_own_off_track_is_judged_on_the_run_up(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+    from videobrowser.telemetry import SpeedSample
+
+    day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 300.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    day.events = [
+        {"recording_id": "F", "type": "own_off_track", "t_start": 100.0, "t_end": 102.0, "score": 1.8},
+        {"recording_id": "F", "type": "own_off_track", "t_start": 250.0, "t_end": 252.0, "score": 1.8},
+    ]
+    # Riding until 100 s, then stopping in the grass; walking about from 200 s.
+    speeds = [SpeedSample(t, 110.0 if t < 100 else 0.0) for t in range(300)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: (speeds, []))
+    kept = shorts.day_moments(day, crashes=False)
+    assert [(m.theme, m.segments[0].t_start) for m in kept] == [("own_off_track", 95.0)]
+    assert any(p.name == "afkoersler-01" for p in plan_shorts(kept))
 
 
 def test_whole_day_match_gets_camera_clock_starts_after_a_recording_was_placed(monkeypatch):

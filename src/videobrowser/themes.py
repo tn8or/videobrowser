@@ -16,6 +16,7 @@ overtake apart from a rider merely closing in:
 - **crash**: own crash from GoPro telemetry (hard jolt, then stopped on track)
 - **crash_other**: ``rider_down`` (another rider off the bike, see incidents.py)
 - **off_track**: ``off_track`` (a rider out on grass or gravel)
+- **own_off_track**: ``own_off_track`` (our own bike over the edge of the track)
 - **action**: any other clip-worthy event, for the mixed "dagens action" shorts
 """
 
@@ -37,11 +38,13 @@ LABELS = {
     "crash": "STYRT",
     "crash_other": "MULIGT STYRT",
     "off_track": "UDE I GRUSET",
+    "own_off_track": "AFKØRSEL",
     "action": "ACTION",
 }
 # Order themed shorts are written in.
 THEME_ORDER = (
     "overtake", "overtaken", "catching_up", "duel", "kneepuck", "crash", "crash_other", "off_track",
+    "own_off_track",
 )
 
 # Rear camera must pick the rider up within this window around the front
@@ -184,6 +187,14 @@ def find_moments(events: list[CamEvent]) -> list[Moment]:
             used.add(id(ev))
         elif ev.type == "off_track":
             moments.append(_single("off_track", ev, 2.0, 2.0, 2.0 * ev.score))
+            used.add(id(ev))
+        elif ev.type == "own_off_track":
+            # The run-up belongs to it, longer than MAX_SEGMENT_S allows.
+            seg = Segment(ev.recording_id, max(0.0, ev.t_start - 5.0), ev.t_end + 3.0)
+            moments.append(
+                Moment("own_off_track", ev.utc_offset + seg.t_start, ev.utc_offset + seg.t_end,
+                       4.0 * ev.score, [seg])
+            )
             used.add(id(ev))
     for ev in events:
         if id(ev) in used or ev.type == "kneepuck_visible":

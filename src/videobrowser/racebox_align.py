@@ -41,6 +41,14 @@ FINE_MEDIAN_S = 5
 MOTION_CLIP_PCT = 95.0
 # Speed above this adds nothing to the pit/track pattern motion can see.
 SPEED_CLIP_KMH = 80.0
+# Log samples further apart than this: the logger was off in between, which
+# means the bike was in (the paddock, between sessions).
+GAP_S = 5.0
+# A gap this long ends one day's logging ...
+DAY_GAP_S = 4 * 3600.0
+# ... and the log says nothing about time further than this outside a day's
+# logging (the logger may simply not have been taken along).
+EDGE_S = 1800.0
 
 
 @dataclass
@@ -55,9 +63,36 @@ class RaceboxTrack:
         return (self.utc >= start_utc) & (self.utc <= start_utc + duration)
 
     def speeds(self, start_utc: float, duration: float) -> list[SpeedSample]:
-        """Speed samples on recording time for a recording starting at *start_utc*."""
+        """Speed samples on recording time for a recording starting at *start_utc*.
+
+        Seconds between sessions (the logger off, ``GAP_S``) read 0 km/h: the
+        bike was in. Without them a paddock moment had no speed at all and
+        fell back to scene motion, which a camera in the hand drives as high
+        as riding. Time outside the day's logging (``EDGE_S``) stays empty.
+        """
         m = self._window(start_utc, duration)
-        return [SpeedSample(float(u - start_utc), float(v)) for u, v in zip(self.utc[m], self.speed_kmh[m])]
+        out = [SpeedSample(float(u - start_utc), float(v)) for u, v in zip(self.utc[m], self.speed_kmh[m])]
+        grid = np.arange(np.ceil(start_utc), start_utc + duration + 1e-9, 1.0)
+        if len(grid) and len(self.utc):
+            for u in grid[self._in_gap(grid)]:
+                out.append(SpeedSample(float(u - start_utc), 0.0))
+            out.sort(key=lambda s: s.t)
+        return out
+
+    def covers(self, utc: np.ndarray) -> np.ndarray:
+        """True where *utc* lies within (or ``EDGE_S`` around) a day's logging."""
+        utc = np.asarray(utc, dtype=np.float64)
+        breaks = np.flatnonzero(np.diff(self.utc) > DAY_GAP_S)
+        lo = self.utc[np.r_[0, breaks + 1]] - EDGE_S
+        hi = self.utc[np.r_[breaks, len(self.utc) - 1]] + EDGE_S
+        return ((utc[:, None] >= lo) & (utc[:, None] <= hi)).any(axis=1)
+
+    def _in_gap(self, utc: np.ndarray) -> np.ndarray:
+        """True where *utc* is covered but no sample is within ``GAP_S``."""
+        i = np.clip(np.searchsorted(self.utc, utc), 1, max(1, len(self.utc) - 1))
+        left = np.abs(utc - self.utc[i - 1])
+        right = np.abs(self.utc[np.minimum(i, len(self.utc) - 1)] - utc)
+        return (np.minimum(left, right) > GAP_S) & self.covers(utc)
 
     def turns(self, start_utc: float, duration: float) -> list[TurnSample]:
         m = self._window(start_utc, duration)

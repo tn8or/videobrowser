@@ -270,6 +270,7 @@ shorts/2026-08-01/
   styrt-01/                # own crash, from GoPro telemetry
   mulige-styrt-01/         # other riders: possible crashes to check
   grus-01/                 # riders out on grass or gravel
+  afkoersler-01/           # own bike over the edge of the track
   index.html               # the shorts + every clip of the day, by type
   moments.json             # what was found and how each camera was synced
 ```
@@ -304,9 +305,10 @@ again:
 | Styrt (own) | accelerometer jolt >= 3x gravity, moving >= 30 km/h before, stopped after (GPS samples without a fix do not count, and the picture must stop moving too) | needs real crash data to tune |
 | Muligt styrt (others) | `rider_down`: a bike box loses its rider while a person box appears beside it, or the bike box turns low and wide while out on grass/gravel | candidates to check by hand |
 | Ude i gruset | `off_track`: the ground under a rider's box turns from asphalt to green grass or pale gravel for 0.6 s+; ground the colour of the road under the camera's own bike never counts (sunlit asphalt can look like gravel) | candidates to check by hand |
+| Afkørsel (own) | `own_off_track`, front camera only: the middle of the picture (the ground the bike rides onto) turns from asphalt to grass or gravel for 0.8 s+ after 3 s+ on asphalt; asphalt the colour of the last road frames never counts. Judged on the speed of the 6 s before it, since it slows the bike | needs tuning on real footage |
 | Action | any other event, for the mixed shorts | |
 
-`rider_down` and `off_track` are found during the scan (`incidents.py`), so
+`rider_down`, `off_track` and `own_off_track` are found during the scan (`incidents.py`), so
 footage scanned before they existed needs `scan --force` to get them; the
 same goes for `rider_pass`. Each piece is the whole vertical clip that covers it (crop + HUD),
 copied; `klip.txt` says which part the moment is. A piece no clip covers
@@ -344,15 +346,28 @@ log near the camera clock ...`). Scene motion is median-filtered over a
 minute and capped first, so a camera picked up in the paddock does not look
 like a session.
 
+The RaceBox logs whenever the bike is out, so for placed footage the time
+between sessions reads 0 km/h (paddock), not "unknown". Before, a paddock
+moment there had no speed, fell back to scene motion, and a camera in the
+hand moves as much as one on track: that let close-ups of the stand, the
+tent and the phone into the shorts. Only time more than 30 minutes outside
+a day's logging stays unknown. GoPro footage without a GPS fix at a moment
+asks the RaceBox log the same way.
+
 The shorts then match each camera's remaining recordings of the day at once
 (one clock error per camera): hours of footage with pit stops between
 sessions match where a single recording does not, paddock-only recordings
 included. That placement is only good to a minute or so at session edges, so
 it supplies speed (paddock or track) but not start time or turn rate. A
-recording still unplaced is checked against the RaceBox log at both readings
-of its camera clock: a moment with the bike in under both is dropped as
-standing still, and one where it may be riding counts as slow and is
-left out too, since it is not sure.
+recording still unplaced (short or trimmed files above all) is checked
+against the RaceBox log at its camera clock. A camera clock has two possible
+readings (local time labelled UTC, or true UTC); the one under which RaceBox
+and scene motion agree best over all of the camera's unplaced recordings
+that day is used when it clearly wins (`camera clock reading 1 of 2 agrees
+...` in the log), else both. A moment with the bike out on track (median
+40 km/h+ within 10 s) under every reading kept is kept; one with the bike in
+under all is dropped as standing still; anything else counts as slow and is
+left out.
 
 Overlays (RaceBox and telemetry HUD) only go on footage whose link to the
 RaceBox log is sure: GoPro GPS time, or a clear scene-motion match. Other

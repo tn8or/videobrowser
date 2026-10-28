@@ -20,7 +20,13 @@ from videobrowser.events import (
     merge_same_type,
 )
 from videobrowser.gopro import Chapter, Recording, chapter_at
-from videobrowser.incidents import offtrack_fraction, road_colour, score_incidents
+from videobrowser.incidents import (
+    GroundAhead,
+    offtrack_fraction,
+    own_offtrack_events,
+    road_colour,
+    score_incidents,
+)
 from videobrowser.motion import (
     DEFAULT_THRESHOLD,
     FACING_MIN_DIVERGENCE,
@@ -329,6 +335,18 @@ def _merge_tracks(
     return merged
 
 
+# Running off the track slows the bike by itself: its speed is judged on the
+# approach, this many seconds before it.
+APPROACH_S = 6.0
+
+
+def _paced_span(event: Event) -> tuple[float, float]:
+    """The part of *event* whose speed tells track from paddock."""
+    if event.type == "own_off_track":
+        return max(0.0, event.t_start - APPROACH_S), event.t_start
+    return event.t_start, event.t_end
+
+
 def _clip_name(window: ClipWindow) -> str:
     types = "+".join(window.types)
     return f"{window.recording_id}_{int(window.t_start):05d}_{types}.mp4"
@@ -408,6 +426,9 @@ def scan_recording(
     motion_samples: list[tuple[float, float]] = []
     # (t, vehicle in view) per frame the detector saw.
     vehicle_samples: list[tuple[float, bool]] = []
+    # The ground the bike rides onto, for running off the track ourselves.
+    looks_ahead = (camera_facing or facing(profile.name)) == "front"
+    ground = GroundAhead() if looks_ahead else None
     prev_image = None
     lean_samples = _lean_for_recording(recording) if "puck" in profile.pipelines else []
 
@@ -488,6 +509,8 @@ def scan_recording(
                         (global_t, scene_motion(prev_image, frame.image, profile.ego_masks))
                     )
                 prev_image = frame.image
+                if ground is not None:
+                    ground.update(global_t, frame.image)
                 if use_riders:
                     vehicle_samples.append((global_t, vehicle_in_view(points)))
                     points = [p for p in points if not is_vehicle(p)]
@@ -524,6 +547,8 @@ def scan_recording(
         events.extend(score_tracks(tracks, recording.recording_id))
         events.extend(score_passes(tracks, recording.recording_id))
         events.extend(score_incidents(tracks, recording.recording_id))
+    if ground is not None:
+        events.extend(own_offtrack_events(ground.samples, recording.recording_id))
     if "puck" in profile.pipelines:
         events.extend(_puck_events(puck_hits, recording.recording_id))
     events = merge_same_type(events)
@@ -558,7 +583,8 @@ def scan_recording(
         events = [
             e
             for e in events
-            if e.type in SPEED_EXEMPT or on_track(speeds, e.t_start, e.t_end, config.min_speed)
+            if e.type in SPEED_EXEMPT
+            or on_track(speeds, *_paced_span(e), config.min_speed)
         ]
         slow = before_speed - len(events)
         if slow:
