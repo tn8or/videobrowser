@@ -61,6 +61,15 @@ CREATE TABLE IF NOT EXISTS vehicles (
     samples TEXT NOT NULL
 );
 
+-- Share of frames per second where the camera rides on a moving bike
+-- (JSON [[t, share], ...], ``motion.MountWatch``): tells the shorts track
+-- from paddock on footage without GPS. No row: the recording showed no part
+-- of a bike that stays put (helmet camera, camera in the hand).
+CREATE TABLE IF NOT EXISTS riding (
+    recording_id TEXT PRIMARY KEY,
+    samples TEXT NOT NULL
+);
+
 -- Rider boxes inside the clip windows (JSON [[track_id, t, x1, y1, x2, y2,
 -- frame_w, frame_h], ...]): what the vertical crop follows, without
 -- re-running the detector.
@@ -307,6 +316,22 @@ class ScanDB:
         return {
             row["recording_id"]: [(float(t), float(v)) for t, v in json.loads(row["samples"])]
             for row in self.conn.execute("SELECT * FROM vehicles")
+        }
+
+    def save_riding(self, recording_id: str, samples: list[tuple[float, float]] | None) -> None:
+        if samples is None:
+            self.conn.execute("DELETE FROM riding WHERE recording_id = ?", (recording_id,))
+        else:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO riding(recording_id, samples) VALUES (?, ?)",
+                (recording_id, json.dumps([[round(t, 1), round(v, 2)] for t, v in samples])),
+            )
+        self.conn.commit()
+
+    def riding(self) -> dict[str, list[tuple[float, float]]]:
+        return {
+            row["recording_id"]: [(float(t), float(v)) for t, v in json.loads(row["samples"])]
+            for row in self.conn.execute("SELECT * FROM riding")
         }
 
     def recording_metas(self) -> list[sqlite3.Row]:

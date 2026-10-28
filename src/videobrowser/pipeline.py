@@ -20,14 +20,22 @@ from videobrowser.events import (
     merge_same_type,
 )
 from videobrowser.gopro import Chapter, Recording, chapter_at
-from videobrowser.incidents import offtrack_fraction, road_colour, score_incidents
+from videobrowser.incidents import (
+    GroundAhead,
+    offtrack_fraction,
+    own_offtrack_events,
+    road_colour,
+    score_incidents,
+)
 from videobrowser.motion import (
     DEFAULT_THRESHOLD,
     FACING_MIN_DIVERGENCE,
+    MountWatch,
     event_is_moving,
     facing_from_flow,
     flow_divergence,
     per_second,
+    riding_share,
     scene_motion,
 )
 from videobrowser.preview import write_previews
@@ -329,6 +337,20 @@ def _merge_tracks(
     return merged
 
 
+# Share of frames in an event riding on a moving bike, without GPS speed.
+RIDING_MIN_SHARE = 0.5
+# Running off the track slows the bike by itself: its speed is judged on the
+# approach, this many seconds before it.
+APPROACH_S = 6.0
+
+
+def _paced_span(event: Event) -> tuple[float, float]:
+    """The part of *event* whose speed tells track from paddock."""
+    if event.type == "own_off_track":
+        return max(0.0, event.t_start - APPROACH_S), event.t_start
+    return event.t_start, event.t_end
+
+
 def _clip_name(window: ClipWindow) -> str:
     types = "+".join(window.types)
     return f"{window.recording_id}_{int(window.t_start):05d}_{types}.mp4"
@@ -408,6 +430,10 @@ def scan_recording(
     motion_samples: list[tuple[float, float]] = []
     # (t, vehicle in view) per frame the detector saw.
     vehicle_samples: list[tuple[float, bool]] = []
+    # The ground the bike rides onto, for running off the track ourselves.
+    looks_ahead = (camera_facing or facing(profile.name)) == "front"
+    ground = GroundAhead() if looks_ahead else None
+    mount = MountWatch()
     prev_image = None
     lean_samples = _lean_for_recording(recording) if "puck" in profile.pipelines else []
 
@@ -488,6 +514,9 @@ def scan_recording(
                         (global_t, scene_motion(prev_image, frame.image, profile.ego_masks))
                     )
                 prev_image = frame.image
+                mount.update(global_t, frame.image)
+                if ground is not None:
+                    ground.update(global_t, frame.image)
                 if use_riders:
                     vehicle_samples.append((global_t, vehicle_in_view(points)))
                     points = [p for p in points if not is_vehicle(p)]
@@ -524,6 +553,8 @@ def scan_recording(
         events.extend(score_tracks(tracks, recording.recording_id))
         events.extend(score_passes(tracks, recording.recording_id))
         events.extend(score_incidents(tracks, recording.recording_id))
+    if ground is not None:
+        events.extend(own_offtrack_events(ground.samples, recording.recording_id))
     if "puck" in profile.pipelines:
         events.extend(_puck_events(puck_hits, recording.recording_id))
     events = merge_same_type(events)
@@ -553,15 +584,34 @@ def scan_recording(
     speeds, turns, start_utc, start_source = gps_for_recording(
         recording, config, motion_samples, start_utc
     )
+    riding = mount.per_second()
+    if riding is None:
+        print("  riding: no part of a bike holds still in the picture (helmet camera or in hand?)")
+    # Without GoPro GPS the picture decides whether the camera rode on a
+    # moving bike: a camera in the hand moves the picture as much as the
+    # track streaming past, and RaceBox time laid on by scene motion may be
+    # off. RaceBox speed stands in only when the picture cannot tell.
+    by_picture = start_source != "gps" and riding is not None
     if config.min_speed > 0 and events:
         before_speed = len(events)
-        events = [
-            e
-            for e in events
-            if e.type in SPEED_EXEMPT or on_track(speeds, e.t_start, e.t_end, config.min_speed)
-        ]
+        if by_picture:
+            events = [
+                e
+                for e in events
+                if e.type in SPEED_EXEMPT
+                or (riding_share(riding, *_paced_span(e)) or 0.0) >= RIDING_MIN_SHARE
+            ]
+        else:
+            events = [
+                e
+                for e in events
+                if e.type in SPEED_EXEMPT
+                or on_track(speeds, *_paced_span(e), config.min_speed)
+            ]
         slow = before_speed - len(events)
-        if slow:
+        if slow and by_picture:
+            print(f"  dropped {slow} with the camera not riding on a moving bike")
+        elif slow:
             print(f"  dropped {slow} below {config.min_speed:g} km/h (standing still)")
 
     duration = recording.duration if config.max_seconds is None else min(
@@ -637,6 +687,7 @@ def scan_recording(
     )
     db.save_motion(recording.recording_id, per_second(motion_samples))
     db.save_vehicles(recording.recording_id, vehicles_per_second(vehicle_samples))
+    db.save_riding(recording.recording_id, riding)
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=True)
     extra = f"  dropped {dropped} stationary" if dropped else ""
     print(

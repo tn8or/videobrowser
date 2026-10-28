@@ -270,6 +270,7 @@ shorts/2026-08-01/
   styrt-01/                # own crash, from GoPro telemetry
   mulige-styrt-01/         # other riders: possible crashes to check
   grus-01/                 # riders out on grass or gravel
+  afkoersler-01/           # own bike over the edge of the track
   index.html               # the shorts + every clip of the day, by type
   moments.json             # what was found and how each camera was synced
 ```
@@ -304,9 +305,10 @@ again:
 | Styrt (own) | accelerometer jolt >= 3x gravity, moving >= 30 km/h before, stopped after (GPS samples without a fix do not count, and the picture must stop moving too) | needs real crash data to tune |
 | Muligt styrt (others) | `rider_down`: a bike box loses its rider while a person box appears beside it, or the bike box turns low and wide while out on grass/gravel | candidates to check by hand |
 | Ude i gruset | `off_track`: the ground under a rider's box turns from asphalt to green grass or pale gravel for 0.6 s+; ground the colour of the road under the camera's own bike never counts (sunlit asphalt can look like gravel) | candidates to check by hand |
+| Afkørsel (own) | `own_off_track`, front camera only: the middle of the picture (the ground the bike rides onto) turns from asphalt to grass or gravel for 0.8 s+ after 3 s+ on asphalt; asphalt the colour of the last road frames never counts. Judged on the pace of the 6 s before it, since it slows the bike | needs tuning on real footage |
 | Action | any other event, for the mixed shorts | |
 
-`rider_down` and `off_track` are found during the scan (`incidents.py`), so
+`rider_down`, `off_track` and `own_off_track` are found during the scan (`incidents.py`), so
 footage scanned before they existed needs `scan --force` to get them; the
 same goes for `rider_pass`. Each piece is the whole vertical clip that covers it (crop + HUD),
 copied; `klip.txt` says which part the moment is. A piece no clip covers
@@ -317,10 +319,23 @@ The scan drops events where the bike stands still (below 10 km/h GoPro GPS
 speed, `scan --min-speed`). `horizontals`, `verticals` and the shorts then
 all leave out clips and moments where the bike stands still or rides below
 40 km/h (paddock, pit lane; `--min-speed` on each), by the same rule; the
-shorts only cut tighter. Only own crashes skip this check. Footage without GPS (e.g.
-`.mov` files re-wrapped by Final Cut, which drop the GoPro telemetry track)
-falls back to the scene motion measured during the scan (stored from this
-version on, so rescan with `--force`). `--min-speed 0` turns the checks off.
+shorts only cut tighter. Only own crashes skip this check. `--min-speed 0`
+turns the checks off.
+
+Footage without GoPro GPS (e.g. `.mov` files re-wrapped by Final Cut, trimmed
+or exported clips, other riders' clips) is judged by the picture: does the
+camera ride on a moving bike? Scene motion alone cannot tell, since a camera
+waved about in the paddock moves the picture as much as the track streaming
+past. What a camera on a bike has, and one in the hand lacks, is a part of
+the picture that stays put while the rest moves (fairing, dash, tail). The
+scan finds those blocks per recording (still and textured in most moving
+frames) and stores, per second, the share of frames where the scene streams
+past while they hold still (`riding` in `scan.sqlite`). A moment is on track
+when half its frames ride. This beats RaceBox speed laid on by scene motion,
+whose timing can be off. When a recording shows no part of a bike (helmet
+camera, all in the hand; `riding: no part of a bike ...` in the scan log),
+RaceBox speed and then scene motion decide as before. Rescan with `--force`
+to get it.
 
 Cars, vans and trucks mark the paddock: there are none on track. The scan
 asks the detector for them beside the riders (they never become rider

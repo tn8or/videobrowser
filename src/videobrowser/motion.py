@@ -137,3 +137,88 @@ def facing_from_flow(divergences: list[float]) -> str | None:
     if rear >= FACING_MAJORITY * (front + rear):
         return "rear"
     return None
+
+
+# --- camera on a moving bike ---------------------------------------------------
+
+# Frames are compared this small (width, px), so engine vibration of a pixel
+# or two at full size does not count as movement.
+MOUNT_WIDTH = 96
+MOUNT_GRID = 8
+# A block with this much texture (grey std) and less change than FIXED_DIFF
+# stands still in the picture; one changing STREAM_DIFF or more streams past.
+TEXTURE_STD = 10.0
+FIXED_DIFF = 6.0
+STREAM_DIFF = 12.0
+# A frame pair is on the move when this share of blocks streams ...
+MOVING_SHARE = 0.35
+# ... and the bike is in view when this share of its own blocks stands still.
+EGO_HELD = 0.5
+# Blocks that stand still in this share of the moving frames are the bike's
+# own (fairing, dash, tail): at least MIN_EGO_BLOCKS of them, seen over at
+# least MIN_MOVING_FRAMES.
+EGO_FIXED_SHARE = 0.6
+MIN_EGO_BLOCKS = 2
+MIN_MOVING_FRAMES = 25
+
+
+class MountWatch:
+    """Tells a camera riding on a moving bike from one in the hand.
+
+    Scene motion alone cannot: a camera waved about in the paddock moves the
+    picture as much as the track streaming past. What it lacks is a part of
+    the picture that stays put while the rest moves: a camera on the bike
+    always sees the same bit of fairing, dash or tail. Those blocks are found
+    per recording (still, with texture, in most moving frames); a frame then
+    rides when the scene streams past and those blocks hold still.
+    """
+
+    def __init__(self) -> None:
+        self._prev: np.ndarray | None = None
+        self._t: list[float] = []
+        self._fixed: list[np.ndarray] = []
+        self._stream: list[float] = []
+
+    def update(self, t: float, image: np.ndarray) -> None:
+        grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        h, w = grey.shape
+        small = cv2.resize(grey, (MOUNT_WIDTH, max(MOUNT_GRID, round(MOUNT_WIDTH * h / max(1, w)))),
+                           interpolation=cv2.INTER_AREA).astype(np.float32)
+        prev, self._prev = self._prev, small
+        if prev is None or prev.shape != small.shape:
+            return
+        sh, sw = small.shape
+        bh, bw = sh // MOUNT_GRID, sw // MOUNT_GRID
+        crop = (slice(0, bh * MOUNT_GRID), slice(0, bw * MOUNT_GRID))
+        diff = np.abs(small - prev)[crop].reshape(MOUNT_GRID, bh, MOUNT_GRID, bw).mean(axis=(1, 3))
+        texture = small[crop].reshape(MOUNT_GRID, bh, MOUNT_GRID, bw).std(axis=(1, 3))
+        self._t.append(t)
+        self._fixed.append(((texture >= TEXTURE_STD) & (diff < FIXED_DIFF)).ravel())
+        self._stream.append(float(np.mean(diff >= STREAM_DIFF)))
+
+    def ego_blocks(self) -> np.ndarray | None:
+        """Blocks of the camera's own bike, None when the recording shows none."""
+        moving = np.array(self._stream) >= MOVING_SHARE
+        if moving.sum() < MIN_MOVING_FRAMES:
+            return None
+        share = np.array(self._fixed)[moving].mean(axis=0)
+        ego = share >= EGO_FIXED_SHARE
+        return ego if ego.sum() >= MIN_EGO_BLOCKS else None
+
+    def per_second(self) -> list[tuple[float, float]] | None:
+        """Share of frames per second riding on a moving bike, None when the
+        recording shows no part of a bike (helmet camera, camera in hand)."""
+        ego = self.ego_blocks()
+        if ego is None:
+            return None
+        buckets: dict[int, list[float]] = {}
+        for t, fixed, stream in zip(self._t, self._fixed, self._stream):
+            riding = stream >= MOVING_SHARE and fixed[ego].mean() >= EGO_HELD
+            buckets.setdefault(int(t), []).append(1.0 if riding else 0.0)
+        return [(k + 0.5, float(np.mean(v))) for k, v in sorted(buckets.items())]
+
+
+def riding_share(samples: list[tuple[float, float]], t0: float, t1: float) -> float | None:
+    """Mean riding share over [t0, t1], None without samples there."""
+    vals = [v for t, v in samples if t0 - 0.5 <= t <= t1 + 0.5]
+    return float(np.mean(vals)) if vals else None

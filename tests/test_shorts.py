@@ -255,6 +255,63 @@ def test_unplaced_recording_is_stopped_unless_racebox_rides_at_a_clock_reading(m
     assert shorts._moment_pace(late, day, 40.0) == "stopped"
 
 
+def test_own_off_track_is_judged_on_the_run_up(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+    from videobrowser.telemetry import SpeedSample
+
+    day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 300.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    day.events = [
+        {"recording_id": "F", "type": "own_off_track", "t_start": 100.0, "t_end": 102.0, "score": 1.8},
+        {"recording_id": "F", "type": "own_off_track", "t_start": 250.0, "t_end": 252.0, "score": 1.8},
+    ]
+    # Riding until 100 s, then stopping in the grass; walking about from 200 s.
+    speeds = [SpeedSample(t, 110.0 if t < 100 else 0.0) for t in range(300)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: (speeds, []))
+    kept = shorts.day_moments(day, crashes=False)
+    assert [(m.theme, m.segments[0].t_start) for m in kept] == [("own_off_track", 95.0)]
+    assert any(p.name == "afkoersler-01" for p in plan_shorts(kept))
+
+
+def test_without_gps_the_picture_tells_riding_from_a_camera_in_the_hand(monkeypatch):
+    import numpy as np
+
+    import videobrowser.racebox_align as ra
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    day = shorts.DayData("2026-08-01", {"M": CameraClock("M", 1000.0, 600.0, [])}, {"M": "cockpit"}, {"M": 0}, [], [])
+    day.events = [
+        {"recording_id": "M", "type": "approaching_rider", "t_start": 100.0, "t_end": 103.0, "score": 0.9},
+        {"recording_id": "M", "type": "approaching_rider", "t_start": 400.0, "t_end": 403.0, "score": 0.9},
+    ]
+    # The picture moves a lot all along, in the hand from 300 s.
+    day.motion["M"] = [(t + 0.5, 20.0) for t in range(600)]
+    day.riding["M"] = [(t + 0.5, 1.0 if t < 300 else 0.0) for t in range(600)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    # RaceBox laid on wrongly says riding at 400 s and parked at 100 s: the
+    # picture wins.
+    monkeypatch.setattr(ra, "motion_match", lambda motion, track, guesses: ra.MotionMatch(1000.0, "r=0.60"))
+    utc = np.arange(900.0, 1700.0, 0.1)
+    track = ra.RaceboxTrack(utc, np.where(utc < 1300.0, 0.0, 120.0), np.zeros(len(utc)))
+    shorts.place_without_gps(day, track)
+    kept = shorts.day_moments(day, crashes=False)
+    assert [m.segments[0].t_start for m in kept] == [99.0]
+    assert shorts.clip_drop_reason(day, "M", 380.0, 420.0) == "below 40 km/h"
+
+
+def test_gopro_gps_still_beats_the_picture(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+    from videobrowser.telemetry import SpeedSample
+
+    day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 300.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    day.riding["F"] = [(t + 0.5, 0.0) for t in range(300)]  # e.g. a helmet-ish view
+    speeds = [SpeedSample(t, 110.0) for t in range(300)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: (speeds, []))
+    assert shorts.clip_drop_reason(day, "F", 100.0, 110.0) is None
+
+
 def test_whole_day_match_gets_camera_clock_starts_after_a_recording_was_placed(monkeypatch):
     import numpy as np
 

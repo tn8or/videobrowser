@@ -19,8 +19,8 @@ list, an own crash) is cut from the source with a 9:16 crop instead, which
 looks into the corner like the scan's clips do.
 Moments where the bike stands still or rides below ``--min-speed`` (GoPro
 GPS; paddock, pit lane) are left out, the same rule ``verticals`` and
-``horizontals`` use (``clip_drop_reason``). Without GPS the scan's scene
-motion stands in for speed. Moments with a car, van or truck in view most of the
+``horizontals`` use (``clip_drop_reason``). Without GPS the picture decides:
+whether the camera rides on a moving bike (``motion.MountWatch``). Moments with a car, van or truck in view most of the
 time (``--max-vehicle-share``) are in the paddock and left out.
 """
 
@@ -72,13 +72,20 @@ FILE_NAMES = {
     "crash": "styrt",
     "crash_other": "mulige-styrt",
     "off_track": "grus",
+    "own_off_track": "afkoersler",
 }
 # Themes need this many moments for a short of their own (a crash or an
 # off-track excursion needs one).
-MIN_THEME_MOMENTS = {"crash": 1, "crash_other": 1, "off_track": 1}
+MIN_THEME_MOMENTS = {"crash": 1, "crash_other": 1, "off_track": 1, "own_off_track": 1}
 # Own crashes end stopped, so they skip the pace check. Other riders "down"
 # while we stand still are almost always people beside bikes in the paddock.
 SPEED_EXEMPT_THEMES = frozenset({"crash"})
+# Running off the track slows the bike by itself: these are judged on the
+# seconds before (``_approach``).
+APPROACH_THEMES = {"own_off_track": 6.0}
+# Share of a moment's frames riding on a moving bike for "track", when the
+# picture decides (``motion.MountWatch``).
+RIDING_MIN_SHARE = 0.5
 _TZ = ZoneInfo("Europe/Copenhagen")
 
 
@@ -220,6 +227,11 @@ class DayData:
     # recording id -> camera-clock readings, for recordings without GPS the
     # RaceBox match could not place.
     unplaced: dict = field(default_factory=dict)
+    # recordings whose speed in ``gps`` comes from RaceBox, not the camera.
+    from_racebox: set = field(default_factory=set)
+    # recording id -> per-second share of frames riding on a moving bike;
+    # no entry when the scan saw no part of a bike or predates it.
+    riding: dict = field(default_factory=dict)
     # recording id -> "front"/"rear" the scan read from scene flow.
     facings: dict = field(default_factory=dict)
 
@@ -247,6 +259,9 @@ def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
     for rid, samples in db.motion().items():
         if rid in owner:
             owner[rid].motion[rid] = samples
+    for rid, samples in db.riding().items():
+        if rid in owner:
+            owner[rid].riding[rid] = samples
     for rid, samples in db.vehicles().items():
         if rid in owner:
             owner[rid].vehicles[rid] = samples
@@ -386,12 +401,45 @@ def _moment_motion(m: Moment, day: DayData) -> float | None:
     return float(np.median(vals)) if vals else None
 
 
+def _moment_riding(m: Moment, day: DayData) -> float | None:
+    """Share of the moment's frames riding on a moving bike, None if the
+    scan could not tell for any of its pieces."""
+    total = weight = 0.0
+    for seg in m.segments:
+        samples = day.riding.get(seg.recording_id)
+        if not samples:
+            continue
+        vals = [v for t, v in samples if seg.t_start <= t <= seg.t_end]
+        if vals:
+            total += float(np.mean(vals)) * seg.duration
+            weight += seg.duration
+    return total / weight if weight > 0 else None
+
+
+def _has_gopro_gps(m: Moment, day: DayData) -> bool:
+    """True when a piece of the moment has the camera's own GPS speed."""
+    return any(
+        s.recording_id not in day.from_racebox and _day_gps(day, s.recording_id)[0]
+        for s in m.segments
+    )
+
+
 def _moment_pace(m: Moment, day: DayData, min_speed: float) -> str | None:
     """"stopped", "slow" (paddock, pit lane) or "track"; None when unknown.
 
-    GPS speed decides; footage without GPS (e.g. files re-wrapped without
-    the GoPro telemetry track) falls back to the scene motion from the scan.
+    GoPro GPS speed decides. Without it (e.g. files re-wrapped without the
+    GoPro telemetry track) the picture does: whether the camera rides on a
+    moving bike (``motion.MountWatch``). A camera in the hand moves the
+    picture as much as the track streaming past, and RaceBox time laid on
+    by scene motion can be off, so RaceBox speed and plain scene motion
+    only stand in when the scan could not tell.
     """
+    riding = _moment_riding(m, day)
+    if riding is not None and not _has_gopro_gps(m, day):
+        if riding >= RIDING_MIN_SHARE:
+            return "track"
+        motion = _moment_motion(m, day)
+        return "stopped" if motion is not None and motion < DEFAULT_THRESHOLD else "slow"
     speed = _moment_speed(m, day)
     if speed is not None:
         if speed < min(STOPPED_KMH, min_speed):
@@ -438,6 +486,7 @@ def place_without_gps(day: DayData, track) -> None:
         print(f"  {rid}: no GPS, laid on RaceBox by scene motion ({found - clock.start_utc:+.1f} s, {how})")
         clock.start_utc = found
         clock.source = "racebox-motion"
+        day.from_racebox.add(rid)
         day.gps[rid] = (track.speeds(found, clock.duration), track.turns(found, clock.duration))
 
     # Camera-clock starts, before any recording is moved onto RaceBox time:
@@ -471,6 +520,7 @@ def place_without_gps(day: DayData, track) -> None:
         for rid in unplaced:
             clock = day.clocks[rid]
             day.gps[rid] = (track.speeds(camera_start[rid] + shift, clock.duration), [])
+            day.from_racebox.add(rid)
 
 
 def _unplaced_pace(m: Moment, day: DayData) -> str | None:
@@ -542,7 +592,7 @@ def day_moments(
     kept: list[Moment] = []
     stopped = slow = 0
     for m in moments:
-        pace = None if m.theme in SPEED_EXEMPT_THEMES else _moment_pace(m, day, min_speed)
+        pace = None if m.theme in SPEED_EXEMPT_THEMES else _moment_pace(_approach(m), day, min_speed)
         if pace == "stopped":
             stopped += 1
         elif pace == "slow":
@@ -552,6 +602,18 @@ def day_moments(
     if stopped or slow:
         print(f"  left out: {stopped} moment(s) standing still, {slow} below {min_speed:g} km/h (paddock)")
     return kept
+
+
+def _approach(m: Moment) -> Moment:
+    """The part of *m* whose speed tells track from paddock: the run-up for
+    ``APPROACH_THEMES``, else the whole moment."""
+    lead = APPROACH_THEMES.get(m.theme)
+    if lead is None:
+        return m
+    seg = m.segments[0]
+    lo = max(0.0, seg.t_start - 1.0)
+    start = m.utc_start - (seg.t_start - lo)
+    return Moment(m.theme, start, start + lead, m.score, [Segment(seg.recording_id, lo, lo + lead)])
 
 
 def clip_drop_reason(
@@ -757,6 +819,7 @@ def write_index(
         "kneepuck_visible": "Knæ i asfalten",
         "rider_down": "Muligt styrt",
         "off_track": "Ude i gruset",
+        "own_off_track": "Afkørsel",
     }
     for kind, clips in by_type.items():
         parts.append(f"<h2>Alle klip: {html.escape(names.get(kind, kind))}</h2><div class=grid>")

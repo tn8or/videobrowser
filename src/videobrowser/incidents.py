@@ -179,3 +179,93 @@ def score_incidents(tracks: dict[int, list[TrackPoint]], recording_id: str) -> l
             continue
         events.append(Event("off_track", lo, hi, 1.0, recording_id, track_id))
     return events
+
+
+# --- own bike off the track --------------------------------------------------
+
+# Part of a front camera's frame that shows the ground the bike rides onto
+# next (fractions of width/height): below the horizon, above the cockpit,
+# across the middle so the verges beside a straight stay out.
+AHEAD = (0.30, 0.40, 0.70, 0.66)  # x1, y1, x2, y2
+# Ground share that counts as grass/gravel ahead, for this long (seconds) ...
+OWN_OFFTRACK_FRAC = 0.5
+OWN_OFFTRACK_S = 0.8
+# ... after this long on asphalt (seconds, share below OWN_ROAD_FRAC).
+OWN_ROAD_S = 3.0
+OWN_ROAD_FRAC = 0.2
+# Seconds of road colour kept as the reference for sunlit asphalt.
+OWN_ROAD_MEMORY = 50
+
+
+def _off_ground(hsv: np.ndarray, road: np.ndarray | None) -> np.ndarray:
+    hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    grass = (hue >= 30) & (hue <= 90) & (sat >= 60) & (val >= 40)
+    gravel = (hue >= 10) & (hue < 30) & (sat >= 45) & (sat <= 170) & (val >= 110)
+    off = grass | gravel
+    if road is not None:
+        like_road = (
+            (np.abs(hue.astype(int) - int(road[0])) <= 8)
+            & (np.abs(sat.astype(int) - int(road[1])) <= 35)
+            & (np.abs(val.astype(int) - int(road[2])) <= 45)
+        )
+        off &= ~like_road
+    return off
+
+
+class GroundAhead:
+    """Share of grass or gravel just ahead of the camera's own bike, per frame.
+
+    ``off_track`` above watches other riders' tyres; this watches our own
+    line, for a front camera: riding over the edge of the track turns the
+    middle of the picture from asphalt to grass or gravel. The asphalt of
+    the last frames that were clearly on the road is the reference that
+    keeps sunlit asphalt from counting as gravel.
+    """
+
+    def __init__(self) -> None:
+        self.samples: list[tuple[float, float]] = []
+        self._road: list[np.ndarray] = []
+
+    def update(self, t: float, image: np.ndarray) -> float:
+        h, w = image.shape[:2]
+        x1, y1, x2, y2 = AHEAD
+        patch = image[int(h * y1) : int(h * y2), int(w * x1) : int(w * x2)]
+        if patch.size == 0:
+            return 0.0
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+        road = np.median(np.array(self._road), axis=0) if self._road else None
+        share = float(np.mean(_off_ground(hsv, road)))
+        if share < OWN_ROAD_FRAC:
+            self._road.append(np.median(hsv.reshape(-1, 3), axis=0))
+            del self._road[:-OWN_ROAD_MEMORY]
+        self.samples.append((t, share))
+        return share
+
+
+def own_offtrack_events(samples: list[tuple[float, float]], recording_id: str) -> list[Event]:
+    """``own_off_track`` where the ground ahead turned to grass or gravel for
+    ``OWN_OFFTRACK_S`` right after ``OWN_ROAD_S`` on asphalt. Whether the
+    bike was riding just before is for the speed gate to judge."""
+    events: list[Event] = []
+    road_since: float | None = None
+    run: list[tuple[float, float]] = []
+
+    def close() -> None:
+        if run and run[-1][0] - run[0][0] >= OWN_OFFTRACK_S:
+            score = 1.0 + float(np.mean([s for _, s in run]))
+            events.append(Event("own_off_track", run[0][0], run[-1][0], score, recording_id))
+
+    for t, share in sorted(samples):
+        if share >= OWN_OFFTRACK_FRAC:
+            if run or (road_since is not None and t - road_since >= OWN_ROAD_S):
+                run.append((t, share))
+            road_since = None
+            continue
+        close()
+        run = []
+        if share < OWN_ROAD_FRAC:
+            road_since = t if road_since is None else road_since
+        else:
+            road_since = None
+    close()
+    return events
