@@ -76,6 +76,10 @@ def _stream_rotation(stream: dict[str, Any]) -> int:
     return 0
 
 
+# Creation dates before this year are placeholders.
+MIN_CREATION_YEAR = 2005
+
+
 def _creation_utc(tags: dict[str, Any]) -> float | None:
     """Parse the GoPro creation timestamp into UTC epoch seconds.
 
@@ -93,6 +97,10 @@ def _creation_utc(tags: dict[str, Any]) -> float | None:
     try:
         naive = datetime.fromisoformat(cleaned)
     except ValueError:
+        return None
+    # Editors and exports write 1904-01-01 or 1970-01-01 for "no date": that
+    # is no date, not a day of its own.
+    if naive.year < MIN_CREATION_YEAR:
         return None
     local = naive.replace(tzinfo=ZoneInfo("Europe/Copenhagen"))
     return local.astimezone(timezone.utc).timestamp()

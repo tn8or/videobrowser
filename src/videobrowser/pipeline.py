@@ -9,6 +9,8 @@ from typing import Any
 
 from tqdm import tqdm
 
+from videobrowser.action import kerb_events, kerb_share, riders_per_second
+from videobrowser.action import per_second as action_per_second
 from videobrowser.db import ScanDB
 from videobrowser.decode import FrameDecoder, decode_frames, decode_one_frame
 from videobrowser.events import (
@@ -434,6 +436,8 @@ def scan_recording(
     looks_ahead = (camera_facing or facing(profile.name)) == "front"
     ground = GroundAhead() if looks_ahead else None
     mount = MountWatch()
+    # (t, share of the lower frame that is kerb) per frame.
+    kerb_samples: list[tuple[float, float]] = []
     prev_image = None
     lean_samples = _lean_for_recording(recording) if "puck" in profile.pipelines else []
 
@@ -515,6 +519,7 @@ def scan_recording(
                     )
                 prev_image = frame.image
                 mount.update(global_t, frame.image)
+                kerb_samples.append((global_t, kerb_share(frame.image)))
                 if ground is not None:
                     ground.update(global_t, frame.image)
                 if use_riders:
@@ -553,6 +558,7 @@ def scan_recording(
         events.extend(score_tracks(tracks, recording.recording_id))
         events.extend(score_passes(tracks, recording.recording_id))
         events.extend(score_incidents(tracks, recording.recording_id))
+    events.extend(kerb_events(kerb_samples, recording.recording_id))
     if ground is not None:
         events.extend(own_offtrack_events(ground.samples, recording.recording_id))
     if "puck" in profile.pipelines:
@@ -688,6 +694,9 @@ def scan_recording(
     db.save_motion(recording.recording_id, per_second(motion_samples))
     db.save_vehicles(recording.recording_id, vehicles_per_second(vehicle_samples))
     db.save_riding(recording.recording_id, riding)
+    db.save_action(
+        recording.recording_id, action_per_second(riders_per_second(tracks), kerb_samples)
+    )
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=True)
     extra = f"  dropped {dropped} stationary" if dropped else ""
     print(

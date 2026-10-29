@@ -306,7 +306,7 @@ again:
 | Muligt styrt (others) | `rider_down`: a bike box loses its rider while a person box appears beside it, or the bike box turns low and wide while out on grass/gravel | candidates to check by hand |
 | Ude i gruset | `off_track`: the ground under a rider's box turns from asphalt to green grass or pale gravel for 0.6 s+; ground the colour of the road under the camera's own bike never counts (sunlit asphalt can look like gravel) | candidates to check by hand |
 | Afkørsel (own) | `own_off_track`, front camera only: the middle of the picture (the ground the bike rides onto) turns from asphalt to grass or gravel for 0.8 s+ after 3 s+ on asphalt; asphalt the colour of the last road frames never counts. Judged on the pace of the 6 s before it, since it slows the bike | needs tuning on real footage |
-| Action | any other event, for the mixed shorts | |
+| Action | any other event, for the mixed shorts; also `kerb_close` (a red-and-white kerb covers 4%+ of the lower frame for 4+ frames) | |
 
 `rider_down`, `off_track` and `own_off_track` are found during the scan (`incidents.py`), so
 footage scanned before they existed needs `scan --force` to get them; the
@@ -336,6 +336,20 @@ whose timing can be off. When a recording shows no part of a bike (helmet
 camera, all in the hand; `riding: no part of a bike ...` in the scan log),
 RaceBox speed and then scene motion decide as before. Rescan with `--force`
 to get it.
+
+**Something to see.** Every moment (and every clip in `horizontals` and
+`verticals`) needs another rider's bike box in view (3%+ of the frame
+height, not the camera's own bike) or a red-and-white kerb close by; own
+crashes and own off-tracks are exempt. Each extra rider in view, up to
+three, raises a moment's score by half, so moments with several riders come
+first. The scan stores this per second (`action` in `scan.sqlite`); days
+scanned before it need `scan --force` to get the check.
+
+**Recordings without a date** (no creation time, or a placeholder such as
+1904 or 1970 written by an editor) go to `shorts/unknown/`. Each gets a
+timeline of its own there, so they never pair up as overtakes or push each
+other's moments out; file names and `klip.txt` show the time into the
+recording instead of the clock.
 
 Cars, vans and trucks mark the paddock: there are none on track. The scan
 asks the detector for them beside the riders (they never become rider

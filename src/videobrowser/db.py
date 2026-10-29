@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS riding (
     samples TEXT NOT NULL
 );
 
+-- What there is to see per second (JSON [[t, riders, kerb], ...],
+-- ``action.py``): the most other riders in one frame and the share of frames
+-- with a kerb close by. Shorts need one of them in view.
+CREATE TABLE IF NOT EXISTS action (
+    recording_id TEXT PRIMARY KEY,
+    samples TEXT NOT NULL
+);
+
 -- Rider boxes inside the clip windows (JSON [[track_id, t, x1, y1, x2, y2,
 -- frame_w, frame_h], ...]): what the vertical crop follows, without
 -- re-running the detector.
@@ -332,6 +340,19 @@ class ScanDB:
         return {
             row["recording_id"]: [(float(t), float(v)) for t, v in json.loads(row["samples"])]
             for row in self.conn.execute("SELECT * FROM riding")
+        }
+
+    def save_action(self, recording_id: str, samples: list[tuple[float, int, float]]) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO action(recording_id, samples) VALUES (?, ?)",
+            (recording_id, json.dumps([[round(t, 1), int(r), round(k, 2)] for t, r, k in samples])),
+        )
+        self.conn.commit()
+
+    def action(self) -> dict[str, list[tuple[float, int, float]]]:
+        return {
+            row["recording_id"]: [(float(t), int(r), float(k)) for t, r, k in json.loads(row["samples"])]
+            for row in self.conn.execute("SELECT * FROM action")
         }
 
     def recording_metas(self) -> list[sqlite3.Row]:

@@ -312,6 +312,53 @@ def test_gopro_gps_still_beats_the_picture(monkeypatch):
     assert shorts.clip_drop_reason(day, "F", 100.0, 110.0) is None
 
 
+def test_moments_need_a_rider_or_kerb_in_view_and_more_riders_score_higher(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+    from videobrowser.telemetry import SpeedSample
+
+    day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 300.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    day.events = [
+        {"recording_id": "F", "type": "nearby_rider", "t_start": 20.0, "t_end": 22.0, "score": 1.0},
+        {"recording_id": "F", "type": "nearby_rider", "t_start": 100.0, "t_end": 102.0, "score": 1.0},
+        {"recording_id": "F", "type": "nearby_rider", "t_start": 180.0, "t_end": 182.0, "score": 1.0},
+        {"recording_id": "F", "type": "kerb_close", "t_start": 250.0, "t_end": 251.0, "score": 0.5},
+        {"recording_id": "F", "type": "own_off_track", "t_start": 280.0, "t_end": 282.0, "score": 1.8},
+    ]
+    riders = {t: 1 if 15 <= t < 30 else 3 if 95 <= t < 110 else 0 for t in range(300)}
+    day.action["F"] = [(t + 0.5, riders[t], 1.0 if 248 <= t < 253 else 0.0) for t in range(300)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([SpeedSample(t, 110.0) for t in range(300)], []))
+    kept = {round(m.segments[0].t_start): m for m in shorts.day_moments(day, crashes=False)}
+    assert sorted(kept) == [18, 98, 248, 275]  # 180 s: nothing in view
+    assert kept[98].score > kept[18].score
+    assert shorts.clip_drop_reason(day, "F", 175.0, 185.0) == "no rider or kerb in view"
+    day.action.clear()  # scanned before: no check
+    assert len(shorts.day_moments(day, crashes=False)) == 5
+
+
+def test_recordings_without_a_date_each_get_their_own_lane(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    clocks = {"A": CameraClock("A", None, 300.0, []), "B": CameraClock("B", None, 300.0, [])}
+    day = shorts.DayData("unknown", clocks, {"A": "cockpit", "B": "rear"}, {"A": 0, "B": 0}, [], [])
+    day.facings = {"A": "front", "B": "rear"}
+    # The same recording times on both: without lanes they paired up as an
+    # overtake, or one crowded the other out.
+    day.events = [
+        {"recording_id": "A", "type": "approaching_rider", "t_start": 50.0, "t_end": 53.0, "score": 1.0},
+        {"recording_id": "B", "type": "receding_rider", "t_start": 53.5, "t_end": 56.0, "score": 1.0},
+        {"recording_id": "B", "type": "nearby_rider", "t_start": 50.0, "t_end": 52.0, "score": 1.0},
+    ]
+    for rid in clocks:
+        day.motion[rid] = [(t + 0.5, 15.0) for t in range(300)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    moments = shorts.day_moments(day, crashes=False)
+    assert "overtake" not in {m.theme for m in moments}
+    assert {m.segments[0].recording_id for m in moments} == {"A", "B"}
+    assert shorts._file_time(day.offset("B") + 3725.0) == "010205"
+
+
 def test_whole_day_match_gets_camera_clock_starts_after_a_recording_was_placed(monkeypatch):
     import numpy as np
 
