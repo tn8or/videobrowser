@@ -271,6 +271,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rb_fetch.add_argument("sessions_dir", type=Path, help="Folder to save .vbo files in")
     rb_fetch.add_argument("--headful", action="store_true", help="Show the browser window")
+
+    line = sub.add_parser(
+        "finish-line",
+        help="Find the finish-line passes in one video and lay them on RaceBox (for tuning)",
+    )
+    line.add_argument("video", type=Path, help="Video file (one chapter)")
+    line.add_argument(
+        "--sessions-dir", type=Path, default=None, help="RaceBox .vbo sessions to lay the passes on"
+    )
+    line.add_argument(
+        "--near",
+        type=float,
+        default=None,
+        help="UTC start (epoch s) to search around, e.g. the scan's scene-motion start; "
+        "default: the camera clock",
+    )
+    line.add_argument("--frames", type=Path, default=None, help="Save each pass's last frame, line drawn, here")
+    line.add_argument("--fps", type=float, default=5.0, help="Scan frame rate (default 5)")
     return parser
 
 
@@ -475,6 +493,64 @@ def racebox_fetch_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def finish_line_cmd(args: argparse.Namespace) -> int:
+    import cv2
+    import numpy as np
+
+    from videobrowser.decode import FrameDecoder, decode_one_frame
+    from videobrowser.finish_line import LineWatch, find_line, refine_passes
+    from videobrowser.gopro import group_recordings
+    from videobrowser.racebox_align import SEARCH_S, clock_guesses, line_match, load_track
+    from videobrowser.telemetry import creation_utc_prefer_gps
+
+    recording = group_recordings([args.video.expanduser()])[0]
+    chapter = recording.chapters[0]
+    info = chapter.info
+    rotation = info.rotation or 0
+    watch = LineWatch()
+    with FrameDecoder(chapter.path, info, fps=args.fps, max_side=640, rotation=rotation) as decoder:
+        for frame in decoder.frames():
+            watch.update(chapter.offset + frame.t, frame.image)
+    candidates = watch.candidates()
+    passes = refine_passes(recording, candidates, 640, rotation)
+    print(f"{len(watch.hits)} frame(s) with a line, {len(candidates)} sighting(s), {len(passes)} pass(es)")
+    for p in passes:
+        print(f"  pass {p.t:9.3f} s  row {p.row:.2f}  run {p.run:.2f}")
+        if args.frames:
+            args.frames.mkdir(parents=True, exist_ok=True)
+            image = decode_one_frame(chapter.path, p.t - chapter.offset - 0.02, 640, info.width, info.height, rotation)
+            if image is None:
+                continue
+            hit = find_line(image)
+            if hit is not None:
+                h, w = image.shape[:2]
+                y = hit.row * h
+                dy = np.tan(np.radians(hit.angle)) * w / 2
+                cv2.line(image, (0, int(y - dy)), (w, int(y + dy)), (0, 0, 255), 1)
+            cv2.imwrite(str(args.frames / f"pass_{p.t:09.3f}.jpg"), image)
+    if args.sessions_dir is None:
+        return 0
+    track = load_track(args.sessions_dir.expanduser())
+    if track is None or not len(track.crossings):
+        print("no RaceBox finish-line crossings in the sessions")
+        return 1
+    if args.near is not None:
+        match = line_match([p.t for p in passes], track.crossings, [args.near], near=args.near)
+    else:
+        guesses = clock_guesses(creation_utc_prefer_gps(info))
+        match = line_match([p.t for p in passes], track.crossings, guesses, SEARCH_S)
+    print(f"RaceBox: {match.reason}")
+    if match.start_utc is None:
+        return 1
+    print(f"start {match.start_utc:.3f} (UTC epoch s)")
+    for p in passes:
+        utc = match.start_utc + p.t
+        gaps = track.crossings - utc
+        gap = float(gaps[np.argmin(np.abs(gaps))])
+        print(f"  pass {p.t:9.3f} s -> nearest crossing {gap:+.3f} s")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -490,5 +566,7 @@ def main(argv: list[str] | None = None) -> int:
         return racebox_login_cmd(args)
     if args.cmd == "racebox-fetch":
         return racebox_fetch_cmd(args)
+    if args.cmd == "finish-line":
+        return finish_line_cmd(args)
     parser.error(f"unknown command {args.cmd}")
     return 2

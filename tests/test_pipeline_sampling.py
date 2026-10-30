@@ -82,3 +82,31 @@ def test_facing_from_a_video_moving_into_or_out_of_the_scene(tmp_path, reverse, 
     rec.chapters.append(Chapter(path, "", 1, "Z", info.duration, 0.0, info))
     # The left-side ego mask of a "rear" mount guess must not matter.
     assert facing_for_recording(rec, 640, REAR) == expected
+
+
+def test_finish_line_passes_place_to_the_frame(monkeypatch):
+    import types
+
+    import numpy as np
+
+    import videobrowser.pipeline as pipeline
+    import videobrowser.racebox_align as align
+
+    t0 = 1785571200.0
+    info = VideoInfo(Path("R.mov"), 600.0, 1920, 1080, 25.0, 0, "hevc", False, None, t0)
+    rec = Recording("R", "", "R")
+    rec.chapters.append(Chapter(info.path, "", 1, "R", 600.0, 0.0, info))
+    laps = np.array([76.1, 74.9, 77.1, 75.6])
+    true_start = t0 + 31.7
+    crossings = true_start + 100.0 + np.r_[0.0, np.cumsum(laps)]
+    track = types.SimpleNamespace(
+        speeds=lambda s, d: ["speed"], turns=lambda s, d: ["turn"], crossings=crossings
+    )
+    config = types.SimpleNamespace(racebox_track=track)
+    monkeypatch.setattr(pipeline, "speed_for_recording", lambda r: [])
+    # Scene motion put it 30 s off.
+    monkeypatch.setattr(align, "motion_match", lambda *a: align.MotionMatch(t0, "r=0.6", 0.6, 0.1))
+    passes = list(crossings - true_start - align.LINE_LEAD_S)
+    _, _, start, source = pipeline.gps_for_recording(rec, config, [], t0, passes)
+    assert source == "racebox-line"
+    assert abs(start - true_start) < 1e-6

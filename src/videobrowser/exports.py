@@ -50,6 +50,10 @@ def recording_from_meta(row) -> Recording:
     return recording
 
 
+# Start sources found on the RaceBox log: the scan's start is RaceBox time.
+RACEBOX_PLACED = ("racebox-motion", "racebox-line")
+
+
 def start_source(row, recording: Recording) -> str:
     """How the recording's start is known; scans from before this was stored
     count as sure only with GoPro telemetry."""
@@ -262,7 +266,7 @@ def export_horizontals(
             try:
                 from videobrowser.racebox_stage import run_for_recording
 
-                start = meta["start_utc"] if source == "racebox-motion" else None
+                start = meta["start_utc"] if source in RACEBOX_PLACED else None
                 run_for_recording(recording, [w for _, w in pairs], meta["rotation"], ctx, start)
             except Exception as exc:
                 print(f"  racebox overlays failed: {exc}")
@@ -324,7 +328,7 @@ def export_verticals(
             source = start_source(meta, recording)
             if source == "gps":
                 turns = turns_for_recording(recording)
-            elif source == "racebox-motion":
+            elif source in RACEBOX_PLACED:
                 if not track_loaded:
                     track, track_loaded = load_track(sessions_dir), True
                 turns = track.turns(meta["start_utc"], recording.duration) if track else []
@@ -344,7 +348,7 @@ def export_verticals(
 
                 if ctx is None:
                     ctx = _racebox_context(out_dir, sessions_dir, font_path, None)
-                start = meta["start_utc"] if source == "racebox-motion" else None
+                start = meta["start_utc"] if source in RACEBOX_PLACED else None
                 if start is None:
                     start = rbs.recording_start_utc(recording, ctx)
 

@@ -257,6 +257,9 @@ class DayData:
     action: dict = field(default_factory=dict)
     # recording id -> "front"/"rear" the scan read from scene flow.
     facings: dict = field(default_factory=dict)
+    # recordings the scan placed on RaceBox by the finish line: their start
+    # is RaceBox time to the frame, scene motion would only blur it.
+    line_placed: set = field(default_factory=set)
 
     def facing(self, rid: str) -> str:
         """Which way the camera looks: scene flow when the scan had it, else
@@ -288,6 +291,8 @@ def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
         day.rotations[rid] = int(row["rotation"])
         if "facing" in row.keys() and row["facing"]:
             day.facings[rid] = row["facing"]
+        if "start_source" in row.keys() and row["start_source"] == "racebox-line":
+            day.line_placed.add(rid)
     owner = {rid: day for day in days.values() for rid in day.clocks}
     for rid, samples in db.motion().items():
         if rid in owner:
@@ -533,11 +538,12 @@ def place_without_gps(day: DayData, track) -> None:
         if rid in day.motion and clock.start_utc is not None and not _day_gps(day, rid)[0]:
             cameras.setdefault(day.profiles[rid], []).append(rid)
 
-    def place(rid: str, found: float, how: str) -> None:
+    def place(rid: str, found: float, how: str, source: str = "racebox-motion") -> None:
         clock = day.clocks[rid]
-        print(f"  {rid}: no GPS, laid on RaceBox by scene motion ({found - clock.start_utc:+.1f} s, {how})")
+        by = "the finish line" if source == "racebox-line" else "scene motion"
+        print(f"  {rid}: no GPS, laid on RaceBox by {by} ({found - clock.start_utc:+.1f} s, {how})")
         clock.start_utc = found
-        clock.source = "racebox-motion"
+        clock.source = source
         day.from_racebox.add(rid)
         day.gps[rid] = (track.speeds(found, clock.duration), track.turns(found, clock.duration))
 
@@ -548,6 +554,9 @@ def place_without_gps(day: DayData, track) -> None:
         unplaced = []
         for rid in rids:
             clock = day.clocks[rid]
+            if rid in day.line_placed:
+                place(rid, clock.start_utc, "from the scan", "racebox-line")
+                continue
             match = motion_match(day.motion[rid], track, clock_guesses(clock.start_utc))
             if match.start_utc is None:
                 print(f"  {rid}: no GPS, no clear RaceBox match: {match.reason}")

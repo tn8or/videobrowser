@@ -15,7 +15,7 @@ start times match about equally the recording is left alone.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +42,25 @@ MOTION_CLIP_PCT = 95.0
 # Speed above this adds nothing to the pit/track pattern motion can see.
 SPEED_CLIP_KMH = 80.0
 
+# Finish-line passes in the picture (``finish_line``) against RaceBox's
+# crossings: a pass and a crossing pair up within this many seconds ...
+LINE_TOL_S = 0.2
+# ... the line leaves the bottom of the picture this long before the camera
+# is over it (a few metres of road below the frame edge) ...
+LINE_LEAD_S = 0.06
+# ... at least this many pairs place a recording, or this many within
+# LINE_NEAR_S of where scene motion put it ...
+MIN_LINE_PAIRS = 3
+MIN_LINE_PAIRS_NEAR = 2
+LINE_NEAR_S = 10.0
+# ... searched this far either side of the scene-motion match (half a lap
+# or more off happens) ...
+LINE_SEARCH_S = 90.0
+# ... and with this many pairs more than any start time over LINE_RIVAL_S
+# away with two or more (a lap off, another painted line).
+LINE_MARGIN = 2
+LINE_RIVAL_S = 1.0
+
 
 @dataclass
 class RaceboxTrack:
@@ -50,6 +69,8 @@ class RaceboxTrack:
     utc: np.ndarray
     speed_kmh: np.ndarray
     yaw_rate: np.ndarray
+    # UTC of each finish-line crossing, from the sessions' start line.
+    crossings: np.ndarray = field(default_factory=lambda: np.empty(0))
 
     def _window(self, start_utc: float, duration: float) -> np.ndarray:
         return (self.utc >= start_utc) & (self.utc <= start_utc + duration)
@@ -67,6 +88,7 @@ class RaceboxTrack:
 def track_from_sessions(sessions: list) -> RaceboxTrack | None:
     """One time-ordered track from parsed ``.vbo`` sessions."""
     parts = []
+    crossings: list[float] = []
     for session in sessions:
         data = getattr(session, "data", None) or {}
         utc = data.get("time")
@@ -81,6 +103,9 @@ def track_from_sessions(sessions: list) -> RaceboxTrack | None:
         lon = np.asarray(lon, dtype=np.float64)
         speed = np.asarray(speed, dtype=np.float64)
         parts.append((utc, speed, yaw_rates(utc, lat, lon, speed)))
+        line = getattr(session, "start_line", None)
+        if line is not None:
+            crossings.extend(line_crossings(utc, lat, lon, line))
     if not parts:
         return None
     utc, speed, yaw = (np.concatenate([p[i] for p in parts]) for i in range(3))
@@ -90,7 +115,31 @@ def track_from_sessions(sessions: list) -> RaceboxTrack | None:
     keep = np.r_[True, np.diff(utc) > 0] & np.isfinite(utc) & np.isfinite(speed)
     if keep.sum() < 10:
         return None
-    return RaceboxTrack(utc[keep], speed[keep], yaw[keep])
+    return RaceboxTrack(utc[keep], speed[keep], yaw[keep], np.unique(np.round(crossings, 3)))
+
+
+def line_crossings(
+    utc: np.ndarray, lat: np.ndarray, lon: np.ndarray, line: tuple[float, float, float, float]
+) -> list[float]:
+    """UTC of each crossing of the start/finish *line* (lat1, lon1, lat2,
+    lon2), interpolated between the samples either side of it."""
+    lat1, lon1, lat2, lon2 = line
+    # Flat metres around the line: the track is a few km across.
+    k = np.cos(np.radians((lat1 + lat2) / 2.0))
+    ax, ay = lon1 * k, lat1
+    dx, dy = (lon2 - lon1) * k, lat2 - lat1
+    px, py = lon * k, lat
+    # Which side of the line each sample is on, and where along it.
+    side = (px - ax) * dy - (py - ay) * dx
+    along = ((px - ax) * dx + (py - ay) * dy) / max(dx * dx + dy * dy, 1e-30)
+    out = []
+    # A sample right on the line counts to the side it came from.
+    ahead = side >= 0
+    for i in np.flatnonzero(ahead[:-1] != ahead[1:]):
+        f = side[i] / (side[i] - side[i + 1])
+        if 0.0 <= along[i] + f * (along[i + 1] - along[i]) <= 1.0:
+            out.append(float(utc[i] + f * (utc[i + 1] - utc[i])))
+    return out
 
 
 def load_track(sessions_dir: Path | None) -> RaceboxTrack | None:
@@ -226,6 +275,79 @@ def motion_match(
     # Motion sample i covers recording second [i, i + 1).
     start = float(grid[k0]) - 0.5
     return MotionMatch(start, f"r={peak:.2f} (next best {runner:.2f})", peak, runner)
+
+
+@dataclass
+class LineMatch:
+    """Outcome of placing a recording by its finish-line passes; *start_utc*
+    None when unclear. *pairs* passes matched a crossing, *spread* (s) is how
+    far they scatter around the start time."""
+
+    start_utc: float | None
+    reason: str
+    pairs: int = 0
+    spread: float = float("nan")
+
+
+def line_match(
+    passes: list[float],
+    crossings: np.ndarray,
+    guesses: list[float],
+    search_s: float = LINE_SEARCH_S,
+    near: float | None = None,
+) -> LineMatch:
+    """UTC of recording t=0 that lays the finish-line *passes* (recording
+    time) on RaceBox's *crossings*, searched within *search_s* of each guess.
+
+    Every pass-crossing pair is a candidate start; the one most passes agree
+    with wins. Lap times differ by tenths, so a start a lap off pairs up only
+    by chance. *near* (where scene motion put the recording) lets two pairs
+    within LINE_NEAR_S of it do.
+    """
+    p = np.sort(np.asarray(passes, dtype=np.float64)) + LINE_LEAD_S
+    c = np.sort(np.asarray(crossings, dtype=np.float64))
+    if len(p) < MIN_LINE_PAIRS_NEAR:
+        return LineMatch(None, f"{len(p)} finish-line passes in the picture")
+    if not guesses:
+        return LineMatch(None, "no start time to search around")
+    lo = min(guesses) - search_s
+    hi = max(guesses) + search_s
+    c = c[(c >= lo + p[0] - 1.0) & (c <= hi + p[-1] + 1.0)]
+    if len(c) < MIN_LINE_PAIRS_NEAR:
+        return LineMatch(None, f"{len(c)} RaceBox finish-line crossings near the recording")
+    starts = (c[None, :] - p[:, None]).ravel()
+    starts = starts[np.any(np.abs(starts[:, None] - np.asarray(guesses)[None, :]) <= search_s, axis=1)]
+    if not len(starts):
+        return LineMatch(None, "no pass lines up with a crossing")
+    # For each candidate start, each pass's distance to its nearest crossing.
+    at = p[None, :] + starts[:, None]
+    i = np.clip(np.searchsorted(c, at), 1, len(c) - 1)
+    resid = np.minimum(np.abs(at - c[i - 1]), np.abs(c[i] - at))
+    paired = resid <= LINE_TOL_S
+    counts = paired.sum(axis=1)
+    err = np.where(paired, resid, 0.0).sum(axis=1) / np.maximum(counts, 1)
+    best = int(np.lexsort((err, -counts))[0])
+    start, n = float(starts[best]), int(counts[best])
+    away = np.abs(starts - start) > LINE_RIVAL_S
+    rival = int(counts[away].max()) if away.any() else 0
+    # The pairs again, the start their median.
+    pairs = paired[best]
+    offsets = []
+    for t in p[pairs]:
+        j = int(np.argmin(np.abs(c - (t + start))))
+        offsets.append(c[j] - t)
+    start = float(np.median(offsets))
+    spread = float(np.max(np.abs(np.asarray(offsets) - start)))
+    reason = f"{n} of {len(p)} passes on a crossing, spread {spread:.2f} s, next best {rival}"
+    needed = MIN_LINE_PAIRS
+    if near is not None and abs(start - near) <= LINE_NEAR_S:
+        needed = MIN_LINE_PAIRS_NEAR
+    if n < needed:
+        return LineMatch(None, reason + f" (need {needed})", n, spread)
+    # One pass meets some crossing at almost any start: a rival of one is noise.
+    if rival >= 2 and n < rival + LINE_MARGIN:
+        return LineMatch(None, reason + " (ambiguous)", n, spread)
+    return LineMatch(start, reason, n, spread)
 
 
 def _prepare(raw: np.ndarray, width: int) -> tuple[np.ndarray, np.ndarray]:

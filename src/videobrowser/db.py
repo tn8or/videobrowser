@@ -83,6 +83,15 @@ CREATE TABLE IF NOT EXISTS action (
 -- re-running the detector.
 -- "front"/"rear" set by hand for every recording whose id contains camera
 -- (e.g. "GX"); wins over the scene-flow reading.
+-- Times the camera rode over a painted line across the track (JSON [[t,
+-- row, run], ...], ``finish_line``): footage without GoPro GPS is placed on
+-- RaceBox by pairing them with the finish-line crossings. No row: not
+-- looked for (GoPro GPS, no RaceBox log).
+CREATE TABLE IF NOT EXISTS line_passes (
+    recording_id TEXT PRIMARY KEY,
+    samples TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS facing_overrides (
     camera TEXT PRIMARY KEY,
     facing TEXT NOT NULL
@@ -340,6 +349,20 @@ class ScanDB:
         return {
             row["recording_id"]: [(float(t), float(v)) for t, v in json.loads(row["samples"])]
             for row in self.conn.execute("SELECT * FROM riding")
+        }
+
+    def save_line_passes(self, recording_id: str, passes: list[tuple[float, float, float]]) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO line_passes(recording_id, samples) VALUES (?, ?)",
+            (recording_id, json.dumps([[round(t, 3), round(r, 3), round(n, 2)] for t, r, n in passes])),
+        )
+        self.conn.commit()
+
+    def line_passes(self) -> dict[str, list[float]]:
+        """Recording id -> times (s) the camera rode over a line across the track."""
+        return {
+            row["recording_id"]: [float(r[0]) for r in json.loads(row["samples"])]
+            for row in self.conn.execute("SELECT * FROM line_passes")
         }
 
     def save_action(self, recording_id: str, samples: list[tuple]) -> None:

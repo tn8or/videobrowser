@@ -138,3 +138,81 @@ def test_whole_day_places_paddock_only_recordings_too():
     match = day_match(recs, track)
     # Session edges only: right to within a minute or two, not a second.
     assert match.start_utc == pytest.approx(recs[0][0] - error, abs=120.0)
+
+
+# --- finish line --------------------------------------------------------------
+
+from videobrowser.racebox_align import LINE_LEAD_S, line_crossings, line_match  # noqa: E402
+
+LAPS = np.array([96.5, 76.1, 74.9, 77.1, 75.6, 78.3, 75.2])
+
+
+def _crossings(first=1000.0):
+    return T0 + first + np.r_[0.0, np.cumsum(LAPS)]
+
+
+def _passes(crossings, start, noise=0.03, seed=3):
+    rng = np.random.default_rng(seed)
+    return list(crossings - start - LINE_LEAD_S + rng.normal(0, noise, len(crossings)))
+
+
+def test_crossings_are_interpolated_between_samples():
+    # Northward along a meridian at 10 m/s, sampled every 0.04 s; the line
+    # runs east-west at 100 m.
+    t = np.arange(0, 20, 0.04)
+    lat = 56.0 + t * 10 / 111_320.0
+    lon = np.full_like(t, 13.0)
+    line = (56.0 + 100 / 111_320.0, 12.9999, 56.0 + 100 / 111_320.0, 13.0001)
+    (crossing,) = line_crossings(T0 + t, lat, lon, line)
+    assert abs(crossing - (T0 + 10.0)) < 1e-3
+
+
+def test_crossings_off_the_line_ends_do_not_count():
+    t = np.arange(0, 20, 0.04)
+    lat = 56.0 + t * 10 / 111_320.0
+    lon = np.full_like(t, 13.001)  # beside the line, as on a parallel road
+    line = (56.0 + 100 / 111_320.0, 12.9999, 56.0 + 100 / 111_320.0, 13.0001)
+    assert line_crossings(T0 + t, lat, lon, line) == []
+
+
+def test_passes_fix_a_start_half_a_lap_off():
+    crossings = _crossings()
+    start = T0 + 900.0
+    passes = _passes(crossings, start) + [400.0]  # and a painted bay in the pits
+    match = line_match(passes, crossings, [start + 35.0])
+    assert match.start_utc is not None
+    assert abs(match.start_utc - start) < 0.05
+    assert match.pairs == len(crossings)
+
+
+def test_lap_times_alike_to_the_tenth_are_ambiguous():
+    crossings = T0 + 1000.0 + np.arange(6) * 76.0
+    start = T0 + 900.0
+    match = line_match(_passes(crossings, start, noise=0.0), crossings, [start + 30.0])
+    assert match.start_utc is None
+    assert "ambiguous" in match.reason
+
+
+def test_two_passes_place_only_near_the_motion_match():
+    crossings = _crossings()
+    start = T0 + 900.0
+    passes = _passes(crossings, start)[2:4]
+    assert line_match(passes, crossings, [start + 3.0], near=start + 3.0).start_utc is not None
+    assert line_match(passes, crossings, [start + 30.0], near=start + 30.0).start_utc is None
+
+
+def test_track_carries_the_sessions_finish_line_crossings():
+    class Session:
+        def __init__(self):
+            t = np.arange(0, 20, 0.04)
+            self.data = {
+                "time": T0 + t,
+                "lat": 56.0 + t * 10 / 111_320.0,
+                "lng": np.full_like(t, 13.0),
+                "velocity": np.full_like(t, 36.0),
+            }
+            self.start_line = (56.0 + 100 / 111_320.0, 12.9999, 56.0 + 100 / 111_320.0, 13.0001)
+
+    track = track_from_sessions([Session()])
+    assert len(track.crossings) == 1
+    assert abs(track.crossings[0] - (T0 + 10.0)) < 1e-3

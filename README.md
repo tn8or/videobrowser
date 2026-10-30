@@ -400,6 +400,26 @@ log near the camera clock ...`). Scene motion is median-filtered over a
 minute and capped first, so a camera picked up in the paddock does not look
 like a session.
 
+Scene motion lands within seconds at best, and sometimes half a lap off. The
+scan therefore also looks for the painted finish line on that footage: a
+white line across the road, coming down the picture and sliding out under
+the camera. Each pass is timed to the frame (decoded again at the full frame
+rate around it), and the passes are paired with RaceBox's finish-line
+crossings (the start line in the `.vbo` header). The lap times between them
+are a fingerprint, so three passes that line up (two within 10 s of the
+scene-motion match) place the recording to a frame, up to 90 s from where
+scene motion put it. The scan log says `laid on RaceBox by the finish line
+(5 of 6 passes on a crossing, spread 0.04 s, ...)` or why not; the start
+source is then `racebox-line`, and overlays and shorts use it. Lines that
+keep their place in the picture (windscreen, fairing edge) and lines in the
+grass or on the bike are left out. Days scanned before this need `scan
+--force`.
+
+To check one video by hand, `videobrowser finish-line VIDEO --sessions-dir
+output/sessions --frames passes/` prints each pass, saves its frame with the
+line drawn, and lays the passes on RaceBox (around the camera clock, or
+`--near EPOCH` for the scene-motion start).
+
 The shorts then match each camera's remaining recordings of the day at once
 (one clock error per camera): hours of footage with pit stops between
 sessions match where a single recording does not, paddock-only recordings
