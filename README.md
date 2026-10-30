@@ -358,6 +358,14 @@ own crashes and off-tracks keep their own score. The scan stores this per
 second (`action` in `scan.sqlite`, with the nearest rider's height); days
 scanned before it need `scan --force` to get the check.
 
+**Session over.** When a session ends the marshal posts blink a red lamp
+and everyone rides into the pit lane. The scan looks for a small, bright red
+spot above the track (not on a rider) that comes, goes and comes back within
+a few seconds, and stores it per second (`action` in `scan.sqlite`); moments
+and clips with it are left out. Every piece of a short is at least 8 s long,
+widened around its middle; a moment on a recording shorter than that is
+left out. Days scanned before need `scan --force`.
+
 **Why a moment is in.** `klip.txt` ends each line with why the moment was
 kept (riders in view, kerb, and where the pace came from: `GPS 87 km/h`,
 `RaceBox 74 km/h` or `riding 92% of the time`). `moments.json` has the same

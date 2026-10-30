@@ -343,10 +343,14 @@ class ScanDB:
         }
 
     def save_action(self, recording_id: str, samples: list[tuple]) -> None:
-        """(t, riders, kerb share, nearest rider height) per second; scans from
-        before the height was stored have three values per row."""
-        rows = [[round(row[0], 1), int(row[1]), round(row[2], 2)] + [round(v, 3) for v in row[3:4]]
-                for row in samples]
+        """(t, riders, kerb share, nearest rider height, red lamp) per
+        second; scans from before have fewer values per row."""
+        rows = [
+            [round(row[0], 1), int(row[1]), round(row[2], 2)]
+            + [round(v, 3) for v in row[3:4]]
+            + [int(v) for v in row[4:5]]
+            for row in samples
+        ]
         self.conn.execute(
             "INSERT OR REPLACE INTO action(recording_id, samples) VALUES (?, ?)",
             (recording_id, json.dumps(rows)),
@@ -356,7 +360,10 @@ class ScanDB:
     def action(self) -> dict[str, list[tuple]]:
         return {
             row["recording_id"]: [
-                (float(r[0]), int(r[1]), float(r[2]), float(r[3]) if len(r) > 3 else 0.0)
+                (
+                    float(r[0]), int(r[1]), float(r[2]),
+                    float(r[3]) if len(r) > 3 else 0.0, int(r[4]) if len(r) > 4 else 0,
+                )
                 for r in json.loads(row["samples"])
             ]
             for row in self.conn.execute("SELECT * FROM action")

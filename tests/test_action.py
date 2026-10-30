@@ -107,7 +107,10 @@ def test_action_rows_keep_rider_height_and_read_old_rows(tmp_path):
     from videobrowser.db import ScanDB
 
     db = ScanDB.open(tmp_path / "scan.sqlite")
-    db.save_action("A", per_second({0: 1}, [(0.2, 0.0)], {0: 0.123}))
+    db.save_action("A", per_second({0: 1}, [(0.2, 0.0)], {0: 0.123}, {1}))
     db.save_action("B", [(0.5, 2, 0.0)])
-    assert db.action() == {"A": [(0.5, 1, 0.0, 0.123)], "B": [(0.5, 2, 0.0, 0.0)]}
+    assert db.action() == {
+        "A": [(0.5, 1, 0.0, 0.123, 0), (1.5, 0, 0.0, 0.0, 1)],
+        "B": [(0.5, 2, 0.0, 0.0, 0)],
+    }
     db.close()
