@@ -173,6 +173,49 @@ def overlapping_chapters(
     return parts
 
 
+def keyframe_before(path: Path, t: float) -> float:
+    """Time of the last video keyframe at or before *t* in *path* (0.0 if none found)."""
+    proc = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-read_intervals", f"{max(0.0, t - 10.0):.3f}%{t + 0.001:.3f}",
+            "-skip_frame", "nokey",
+            "-show_entries", "frame=pts_time",
+            "-of", "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    best = 0.0
+    for line in proc.stdout.split():
+        try:
+            pts = float(line.strip().strip(","))
+        except ValueError:
+            continue
+        if pts <= t + 0.001:
+            best = max(best, pts)
+    return best
+
+
+def cut_lead(recording: Recording, window: ClipWindow, rotation: int = 0) -> float:
+    """Seconds :func:`export_clip` output starts before ``window.t_start``.
+
+    A stream copy (``-c copy``) can only start on a keyframe, so a copied cut
+    begins at the keyframe before the asked start (up to a GOP, ~1 s on
+    GoPro). Anything drawn against the window's clock, like the RaceBox
+    overlay, must skip this lead or it runs ahead of the picture.
+    """
+    parts = overlapping_chapters(recording, window.t_start, window.t_end)
+    chapter, start, _duration = parts[0]
+    if len(parts) == 1 and rotation_filter(rotation):
+        return 0.0  # re-encoded: -ss before -i decodes up to the exact frame
+    if start <= 0.0:
+        return 0.0
+    return max(0.0, start - keyframe_before(chapter.path, start))
+
+
 def export_clip(
     recording: Recording, window: ClipWindow, dest: Path, rotation: int = 0
 ) -> Path:

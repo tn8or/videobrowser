@@ -31,7 +31,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from videobrowser.clips import display_rotation_args, export_clip
+from videobrowser.clips import cut_lead, display_rotation_args, export_clip
 from videobrowser.events import ClipWindow
 from videobrowser.gopro import Recording, chapter_at
 from videobrowser.probe import ProbeError, probe, local_date_label
@@ -290,8 +290,14 @@ def _overlay_pass(
     codec: str,
     n_frames: int,
     source,
+    trim: float = 0.0,
 ) -> bool:
-    """Composite overlay frames from *source* onto *src*, writing *out_path*."""
+    """Composite overlay frames from *source* onto *src*, writing *out_path*.
+
+    The first *trim* seconds of *src* are dropped: the keyframe lead of a
+    stream-copied cut (:func:`videobrowser.clips.cut_lead`), so overlay
+    frame 0 lands on the picture at the window's start.
+    """
     encoder_args, encoder_desc = select_encoder_args(codec, ctx.gpu_caps)
     fps_num, fps_den = fps_fraction(fps)
     filter_complex = build_filter_complex(width, height, width, height, False)
@@ -309,6 +315,7 @@ def _overlay_pass(
         # upright overlay.
         "-noautorotate",
         *display_rotation_args(0),
+        *(["-ss", f"{trim:.3f}"] if trim > 0 else []),
         "-i", str(src),
         "-f", "rawvideo",
         "-pix_fmt", "bgra",
@@ -567,9 +574,11 @@ def _render_highlight(
             out_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy(temp, out_path)
             return
-        n_frames = int(meta.duration * fps) + 1
+        lead = cut_lead(recording, window, rotation)
+        n_frames = int(max(0.0, meta.duration - lead) * fps) + 1
         _overlay_pass(
-            ctx, temp, out_path, meta.width, meta.height, fps, meta.codec, n_frames, source
+            ctx, temp, out_path, meta.width, meta.height, fps, meta.codec, n_frames, source,
+            trim=lead,
         )
 
 
@@ -616,9 +625,11 @@ def _render_session_span(
             print(f"  racebox: renderer failed {out_path.name}: {exc}")
             return
         source = _SessionFrameSource(renderer, u0, fps)
-        n_frames = int(meta.duration * fps) + 1
+        lead = cut_lead(recording, window, rotation)
+        n_frames = int(max(0.0, meta.duration - lead) * fps) + 1
         _overlay_pass(
-            ctx, temp, out_path, meta.width, meta.height, fps, meta.codec, n_frames, source
+            ctx, temp, out_path, meta.width, meta.height, fps, meta.codec, n_frames, source,
+            trim=lead,
         )
 
 
