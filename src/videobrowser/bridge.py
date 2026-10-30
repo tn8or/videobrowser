@@ -62,6 +62,12 @@ BRIDGE_EXIT_ROW = 0.15
 # STILL_LAG_S is fixed to the camera: a windscreen or fairing edge.
 STILL_ROW = 0.015
 STILL_LAG_S = 0.2
+# Sky: bright, not reddish and smooth (HSV value, grey gradient). Its share
+# of the picture is measured at this many moments spread over a recording.
+SKY_MIN_V = 110
+SKY_MAX_GRADIENT = 40
+SKY_SAMPLES = 9
+
 # Passes this close (s) are one bridge, timed by the first: its edges leave
 # one after another, and a fence or wall just past it leaves later.
 BRIDGE_SAME_S = 0.5
@@ -177,6 +183,18 @@ def passes_from_edges(times: list[float], hits: list[list[EdgeHit]], fps: float)
     return out
 
 
+def sky_share(image: np.ndarray) -> float:
+    """Share of *image* that is sky: bright, blue or grey, and smooth."""
+    if image.shape[1] != BRIDGE_WIDTH:
+        h, w = image.shape[:2]
+        image = cv2.resize(image, (BRIDGE_WIDTH, max(1, round(h * BRIDGE_WIDTH / w))), interpolation=cv2.INTER_AREA)
+    value = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)[..., 2]
+    g = cv2.GaussianBlur(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (0, 0), 1.5).astype(np.float32)
+    gradient = np.abs(cv2.Sobel(g, cv2.CV_32F, 1, 0)) + np.abs(cv2.Sobel(g, cv2.CV_32F, 0, 1))
+    blue_or_grey = image[..., 0].astype(np.int16) >= image[..., 2].astype(np.int16)
+    return float(((value >= SKY_MIN_V) & blue_or_grey & (gradient < SKY_MAX_GRADIENT)).mean())
+
+
 class BridgeFinder(PassFinder):
     """Bridge passes in stretches of a recording, at BRIDGE_FPS: called with
     (t0, t1) in recording time, returns the times (s) in it. *side*: the
@@ -187,9 +205,56 @@ class BridgeFinder(PassFinder):
     def __init__(self, recording, max_side: int = 640, rotation: int = 0, side: bool = False) -> None:
         super().__init__(recording, max_side, rotation)
         self.max_angle = BRIDGE_SIDE_ANGLE if side else BRIDGE_MAX_ANGLE
+        # Every pass, once the whole recording has been searched; else None.
+        self.whole: list[float] | None = None
+
+    def __call__(self, t0: float, t1: float) -> list:
+        out = super().__call__(t0, t1)
+        if t0 <= 0.0 and t1 >= self.recording.duration - 0.1:
+            self.whole = sorted(out)
+        return out
 
     def find(self, image: np.ndarray) -> list[EdgeHit]:
         return find_edges(image, self.max_angle)
 
+    def sky_share(self) -> float:
+        """Median share of sky in the picture over SKY_SAMPLES moments
+        between 10 % and 90 % of the recording."""
+        from videobrowser.decode import decode_one_frame
+        from videobrowser.gopro import chapter_at
+
+        shares = []
+        for t in np.linspace(0.1, 0.9, SKY_SAMPLES) * self.recording.duration:
+            chapter = chapter_at(self.recording, float(t))
+            if chapter is None:
+                continue
+            image = decode_one_frame(
+                chapter.path, float(t) - chapter.offset, self.max_side, chapter.info.width, chapter.info.height, self.rotation
+            )
+            if image is not None:
+                shares.append(sky_share(image))
+        return float(np.median(shares)) if shares else 1.0
+
     def passes(self, times: list[float], hits: list, fps: float) -> list[float]:
         return passes_from_edges(times, hits, fps)
+
+
+# --- on track ----------------------------------------------------------------
+
+# The pit lane does not pass under the bridges, so riding under one means a
+# lap on track. On track from the first pass; off track once no bridge has
+# come for this long (s): every flying lap of 2025-2026 at Knutstorp took
+# under 100 s.
+GATE_GAP_S = 100.0
+
+
+def on_track_spans(passes: list[float], gap_s: float = GATE_GAP_S) -> list[tuple[float, float]]:
+    """Stretches (recording time) on track by the bridge *passes*: from a
+    pass until *gap_s* after the last one that follows within *gap_s*."""
+    spans: list[tuple[float, float]] = []
+    for t in sorted(passes):
+        if spans and t - spans[-1][1] <= 0.0:
+            spans[-1] = (spans[-1][0], t + gap_s)
+        else:
+            spans.append((t, t + gap_s))
+    return spans

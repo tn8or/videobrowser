@@ -416,16 +416,25 @@ or nothing with a bridge near, a recording of 250 s or more is searched
 whole and laid on
 every bridge pass within a day and a half of the camera clock (camera clocks
 set to local time are hours off); that needs six bridge passes on RaceBox's
-and 1.5 times the next best start.
+and 1.5 times the next best start. It is skipped (it decodes the whole
+recording) when RaceBox has fewer than six bridge passes in any stretch as
+long as the recording, or when the camera is pitched so far down that under
+2 % of the picture is sky.
 
 The painted finish line then sets the start to the frame: every frame is
-decoded ±0.45 s around each crossing, taken within 0.35 s (where the
-bridge leaves the picture depends on the camera's height and pitch), and the finish line is the last line
+decoded ±0.35 s around each crossing (where the bridge leaves the picture
+depends on the camera's height and pitch), and the finish line is the last line
 with 30 m of clear track after it (grid and start lines lie 13-50 m before
 it). Two crossings or more must agree; otherwise, as where the line is in
 shadow, the bridge start stands. The scan log says `laid on RaceBox by the
 bridge (bridge: 8 of 8 landmark passes ...; finish line 3 of 4 crossings,
 -0.04 s, ...)` or why not.
+
+The bridges also tell the shorts when a recording without GPS is on track:
+the pit lane does not pass under them, so from the first bridge pass until
+100 s without one the bike is on track, and moments outside count as
+paddock. A recording placed on RaceBox goes by RaceBox's bridge times; one
+the scan searched whole by the passes it saw (one missed pass tolerated).
 
 Venues without a bridge (Padborg Park) go by the finish line alone: every
 frame ±40 s around the fastest crossing, then ±0.5 s around each other

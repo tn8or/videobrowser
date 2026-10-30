@@ -260,6 +260,9 @@ class DayData:
     # recordings the scan placed on RaceBox by the finish line: their start
     # is RaceBox time to the frame, scene motion would only blur it.
     line_placed: set = field(default_factory=set)
+    # recording id -> every bridge pass (recording time) the scan saw, for
+    # recordings it searched whole (``bridge.py``).
+    bridges: dict = field(default_factory=dict)
 
     def facing(self, rid: str) -> str:
         """Which way the camera looks: scene flow when the scan had it, else
@@ -303,6 +306,9 @@ def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
     for rid, samples in db.riding().items():
         if rid in owner:
             owner[rid].riding[rid] = samples
+    for rid, passes in db.bridges().items():
+        if rid in owner:
+            owner[rid].bridges[rid] = passes
     for rid, samples in db.vehicles().items():
         if rid in owner:
             owner[rid].vehicles[rid] = samples
@@ -482,8 +488,12 @@ def _pace(m: Moment, day: DayData, min_speed: float) -> tuple[str | None, str]:
     scan could not tell. Scene motion alone never makes a moment track, for
     the same reason, but with another rider in view it does (helmet cameras,
     which show no part of the bike). Without any of these the moment counts
-    as slow.
+    as slow. Before that, at a venue with bridges, a moment off the stretches
+    the bridges say were on track is slow (``_bridge_gate``).
     """
+    gated = _bridge_gate(m, day)
+    if gated is not None and not _has_gopro_gps(m, day):
+        return "slow", gated
     riding = _moment_riding(m, day)
     if riding is not None and not _has_gopro_gps(m, day):
         why = f"riding {riding:.0%} of the time"
@@ -514,6 +524,44 @@ def _pace(m: Moment, day: DayData, min_speed: float) -> tuple[str | None, str]:
     if motion is None:  # scanned before scene motion was stored
         return None, "pace not stored"
     return "slow", "no GPS, RaceBox or bike in view says track"
+
+
+def _bridge_spans(rid: str, day: DayData) -> list[tuple[float, float]] | None:
+    """Stretches of *rid* on track by the bridges, None where they cannot
+    tell (no bridge at the venue, or neither placed on RaceBox nor searched
+    whole). Placed on RaceBox, RaceBox's bridge times say it, every lap;
+    else the passes the scan saw, where one may be missed."""
+    from videobrowser.bridge import GATE_GAP_S, on_track_spans
+
+    clock = day.clocks.get(rid)
+    landmarks = np.asarray(getattr(day.track, "landmarks", ()), dtype=np.float64)
+    if rid in day.line_placed and clock is not None and clock.start_utc is not None and len(landmarks):
+        start = float(clock.start_utc)
+        # Only at a venue with bridges: one within a day.
+        if np.any(np.abs(landmarks - start) <= 86_400.0):
+            inside = landmarks[(landmarks >= start) & (landmarks <= start + clock.duration)] - start
+            return on_track_spans(list(inside), GATE_GAP_S)
+    if rid in day.bridges:
+        return on_track_spans(day.bridges[rid], 2 * GATE_GAP_S)
+    return None
+
+
+def _bridge_gate(m: Moment, day: DayData) -> str | None:
+    """Why *m* is off track by the bridges, None when on track or they
+    cannot tell."""
+    for seg in m.segments:
+        spans = _bridge_spans(seg.recording_id, day)
+        if spans is None:
+            continue
+        mid = (seg.t_start + seg.t_end) / 2.0
+        if any(a <= mid <= b for a, b in spans):
+            return None
+        if not spans:
+            return "no bridge passed in the recording: off track"
+        if mid < spans[0][0]:
+            return f"before the first bridge pass ({spans[0][0]:.0f} s): off track"
+        return "no bridge for 100 s or more: off track"
+    return None
 
 
 def place_without_gps(day: DayData, track) -> None:

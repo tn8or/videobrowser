@@ -72,12 +72,13 @@ LANDMARK_RIVAL_S = 1.0
 # landmark passes, spread over the recording ...
 BRIDGE_WINDOWS = 3
 # ... then the start is refined by the painted finish line, searched this
-# far (s) either side of each crossing and taken within BRIDGE_REFINE_TOL_S:
-# where the bridge leaves the picture depends on the camera's height and
-# pitch, 0.25 s apart between two cameras at Anderstorp. (The checkered line
-# lies 0.58 s before the finish line, outside.)
-BRIDGE_REFINE_S = 0.45
-BRIDGE_REFINE_TOL_S = 0.35
+# far (s) either side of each crossing: where the bridge leaves the picture
+# depends on the camera's height and pitch, 0.25 s apart between two cameras
+# at Anderstorp. Lines past this do not count either: at Anderstorp
+# something line-like follows the finish line under the bridge, and the
+# finish line is the last line before clear track. (The checkered line lies
+# 0.58 s before the finish line, outside.)
+BRIDGE_REFINE_S = 0.35
 # Crossings that must agree (within LINE_TOL_S) to move the bridge start:
 # one line pass alone has moved it the wrong way.
 BRIDGE_REFINE_MIN = 2
@@ -91,6 +92,9 @@ ANYWHERE_S = 36 * 3600.0
 ANYWHERE_TOL_S = 0.15
 # ... in recordings this long (s) or more, about three laps ...
 ANYWHERE_MIN_S = 250.0
+# ... when the picture shows this share of sky (``bridge.sky_share``): a
+# camera pitched down to the road sees no bridge, only false edges ...
+ANYWHERE_MIN_SKY = 0.02
 # ... with this many pairs and this many times the next best start: chance
 # pairs up to five passes somewhere in a day, and laps of nearly the same
 # time pair up half of them a lap off.
@@ -504,12 +508,17 @@ def bridge_place(
 
 
 def bridge_place_anywhere(
-    clock_utc: float, duration: float, track: RaceboxTrack, find_bridges, find_passes=None
+    clock_utc: float, duration: float, track: RaceboxTrack, find_bridges, find_passes=None, sky=None
 ) -> LineMatch:
     """UTC of recording t=0 from the venue's bridge, with no start to go by
     but the camera clock's day: every bridge pass in the recording is laid on
     every landmark pass within ANYWHERE_S of *clock_utc* (camera clocks are
     hours off), refined by the finish line as ``bridge_place``.
+
+    Not searched (it decodes the whole recording) when RaceBox has fewer
+    than ANYWHERE_MIN_PAIRS landmark passes in any stretch as long as the
+    recording, or when *sky()* (share of sky in the picture) is below
+    ANYWHERE_MIN_SKY.
 
     Over a whole day, chance and laps of nearly the same time pair up a few
     passes anywhere, so the start needs ANYWHERE_MIN_PAIRS and
@@ -521,6 +530,15 @@ def bridge_place_anywhere(
         return LineMatch(None, "no RaceBox landmark pass within a day of the camera clock")
     if duration < ANYWHERE_MIN_S:
         return LineMatch(None, f"too short to search whole ({duration:.0f} s)")
+    most = int(np.max(np.searchsorted(lm, lm + duration, side="right") - np.arange(len(lm))))
+    if most < ANYWHERE_MIN_PAIRS:
+        return LineMatch(
+            None, f"RaceBox has at most {most} landmark passes in {duration:.0f} s near the camera clock"
+        )
+    if sky is not None:
+        share = float(sky())
+        if share < ANYWHERE_MIN_SKY:
+            return LineMatch(None, f"camera pitched too low to see the bridge ({share:.1%} sky)")
     passes = sorted({round(float(p), 3) for p in find_bridges(0.0, duration)})
     match = landmark_match(passes, lm, [clock_utc], ANYWHERE_S, ANYWHERE_TOL_S)
     if not match.passes:
@@ -550,7 +568,7 @@ def _refine_by_line(match: LineMatch, reason: str, duration: float, track: Raceb
         t = cj - start - LINE_LEAD_S
         window = find_passes(max(0.0, t - BRIDGE_REFINE_S), min(duration, t + BRIDGE_REFINE_S))
         found = [p.t if hasattr(p, "t") else float(p) for p in window]
-        near = [p for p in finish_passes(found, v) if abs(p - t) <= BRIDGE_REFINE_TOL_S]
+        near = finish_passes([p for p in found if abs(p - t) <= BRIDGE_REFINE_S], v)
         if near:
             offsets.append(cj - min(near, key=lambda p: abs(p - t)) - LINE_LEAD_S)
     if not offsets:

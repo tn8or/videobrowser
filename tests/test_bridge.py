@@ -83,3 +83,10 @@ def test_a_roof_rising_slowly_in_the_paddock_is_no_pass():
     rows = list(np.linspace(0.3, 0.05, 30))  # 2.4 s to clear the top
     frames = _rise(10.0, rows)
     assert passes_from_edges([f[0] for f in frames], [f[1] for f in frames], 12.5) == []
+
+
+def test_on_track_from_the_first_bridge_until_none_comes():
+    from videobrowser.bridge import on_track_spans
+
+    assert on_track_spans([260.0, 100.0, 180.0, 600.0], 100.0) == [(100.0, 360.0), (600.0, 700.0)]
+    assert on_track_spans([]) == []

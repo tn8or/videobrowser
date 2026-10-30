@@ -517,3 +517,33 @@ def test_moments_with_a_red_signal_lamp_are_left_out(monkeypatch):
     assert [round(m.segments[0].t_start) for m in kept] == [47]
     assert left_out[0].why[-1] == "left out: red signal lamp (session over)"
     assert shorts.clip_drop_reason(day, "F", 195.0, 215.0) == "red signal lamp (session over)"
+
+
+def test_bridges_say_when_a_recording_is_on_track():
+    import numpy as np
+
+    import videobrowser.racebox_align as ra
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+    from videobrowser.themes import Moment, Segment
+
+    # A: placed on RaceBox, bridges at 100-400 s of it; B: not placed, the
+    # scan saw bridges at 50 and 300 s (one missed between).
+    clocks = {"A": CameraClock("A", 1000.0, 900.0, []), "B": CameraClock("B", 9000.0, 900.0, [])}
+    day = shorts.DayData("2026-08-01", clocks, {"A": "cockpit", "B": "cockpit"}, {"A": 0, "B": 0}, [], [])
+    utc = np.arange(0.0, 20000.0, 1.0)
+    landmarks = 1000.0 + np.array([100.0, 140.0, 180.0, 220.0, 260.0, 300.0, 340.0, 380.0, 400.0])
+    day.track = ra.RaceboxTrack(utc, np.full(len(utc), 100.0), np.zeros(len(utc)), landmarks - 1.0, landmarks)
+    day.line_placed = {"A"}
+    day.bridges = {"B": [50.0, 300.0]}
+
+    def gate(rid, t):
+        return shorts._bridge_gate(Moment("action", t, t + 4, 0.0, [Segment(rid, t, t + 4)]), day)
+
+    assert gate("A", 50.0).startswith("before the first bridge")
+    assert gate("A", 250.0) is None
+    assert gate("A", 480.0) is None  # the in-lap after the last
+    assert gate("A", 600.0).startswith("no bridge for")
+    assert gate("B", 200.0) is None  # one missed bridge is tolerated
+    assert gate("B", 700.0).startswith("no bridge for")
+    assert gate("C", 10.0) is None  # nothing to tell by

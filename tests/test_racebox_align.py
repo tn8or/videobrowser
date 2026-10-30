@@ -308,7 +308,7 @@ def test_one_bridge_pass_is_not_enough():
     assert landmark_match([90.0], landmarks, [T0 + 10.0]).start_utc is None
 
 
-from videobrowser.racebox_align import BRIDGE_REFINE_S, BRIDGE_REFINE_TOL_S, bridge_place  # noqa: E402
+from videobrowser.racebox_align import BRIDGE_REFINE_S, bridge_place  # noqa: E402
 
 
 def _bridge_track(first=100.0, laps=LAPS):
@@ -360,7 +360,7 @@ def test_line_refine_ignores_the_checkered_line_before_the_finish():
     checkered = [c - start - LINE_LEAD_S - 0.58 for c in track.crossings]
     match = bridge_place(start, 500.0, track, bridges, lambda a, b: [t for t in checkered if a <= t <= b])
     assert abs(match.start_utc - (start - 0.03)) < 0.01
-    assert 0.58 > BRIDGE_REFINE_S > BRIDGE_REFINE_TOL_S > 0.08
+    assert 0.58 > BRIDGE_REFINE_S > 0.26
 
 
 def test_one_bridge_places_nothing():
@@ -454,4 +454,34 @@ def test_whole_recording_needs_more_than_a_lap():
 
     assert bridge_place_anywhere(start, 100.0, track, find).start_utc is None
     # Too short to be worth decoding.
+    assert calls == []
+
+
+def test_line_refine_ignores_lines_past_the_window():
+    track = _bridge_track()
+    start = T0 + 10.0
+    bridges, _ = _bridges(track, start, lag=0.05)
+    # Something line-like 0.4 s after every finish line (Anderstorp).
+    lines = [c - start - LINE_LEAD_S for c in track.crossings]
+    lines += [t + 0.4 for t in lines]
+    match = bridge_place(start, 500.0, track, bridges, lambda a, b: [t for t in lines if a <= t <= b])
+    assert abs(match.start_utc - start) < 0.01
+
+
+def test_whole_recording_is_not_decoded_without_enough_racebox_laps():
+    track, rng = _day()
+    track.landmarks = track.landmarks[:4]
+    calls = []
+    match = bridge_place_anywhere(T0, 900.0, track, lambda a, b: calls.append((a, b)) or [])
+    assert match.start_utc is None and "at most 4 landmark passes" in match.reason
+    assert calls == []
+
+
+def test_whole_recording_is_not_decoded_when_the_camera_sees_no_sky():
+    track, rng = _day()
+    calls = []
+    match = bridge_place_anywhere(
+        track.landmarks[30] - 7230.0, 900.0, track, lambda a, b: calls.append((a, b)) or [], sky=lambda: 0.005
+    )
+    assert "pitched too low" in match.reason
     assert calls == []

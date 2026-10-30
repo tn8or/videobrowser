@@ -306,7 +306,14 @@ def gps_for_recording(
     if not placed and bridged and start_utc is not None:
         # Scene motion found nothing, or nothing with a bridge near it: the
         # whole recording against the whole day.
-        bridge = bridge_place_anywhere(start_utc, recording.duration, track, find_bridges, find_passes)
+        bridge = bridge_place_anywhere(
+            start_utc,
+            recording.duration,
+            track,
+            find_bridges,
+            find_passes,
+            getattr(find_bridges, "sky_share", None),
+        )
         if bridge.start_utc is not None:
             print(f"  laid on RaceBox by the bridge ({bridge.reason})")
             found, source, placed = bridge.start_utc, "racebox-line", True
@@ -639,13 +646,14 @@ def scan_recording(
     # How the start is known decides whether exports may put an overlay on
     # it: GoPro GPS time and a clear RaceBox match are sure, a bare camera
     # clock may be seconds off.
+    bridges = BridgeFinder(recording, config.max_side, profile.rotation, side=profile.name.startswith("side"))
     speeds, turns, start_utc, start_source = gps_for_recording(
         recording,
         config,
         motion_samples,
         start_utc,
         PassFinder(recording, config.max_side, profile.rotation),
-        BridgeFinder(recording, config.max_side, profile.rotation, side=profile.name.startswith("side")),
+        bridges,
     )
     riding = mount.per_second()
     if riding is None:
@@ -754,6 +762,9 @@ def scan_recording(
     db.save_motion(recording.recording_id, per_second(motion_samples))
     db.save_vehicles(recording.recording_id, vehicles_per_second(vehicle_samples))
     db.save_riding(recording.recording_id, riding)
+    # Every bridge pass, when the whole recording was searched: the shorts
+    # tell track from paddock by them where RaceBox cannot (``shorts``).
+    db.save_bridges(recording.recording_id, bridges.whole)
     db.save_action(
         recording.recording_id,
         action_per_second(

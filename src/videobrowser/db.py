@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS riding (
     samples TEXT NOT NULL
 );
 
+-- Every time (s, recording time) the camera rode under a bridge over the
+-- track (JSON [t, ...], ``bridge.py``), for recordings without GPS searched
+-- whole for them: the shorts tell track from paddock by them.
+CREATE TABLE IF NOT EXISTS bridges (
+    recording_id TEXT PRIMARY KEY,
+    passes TEXT NOT NULL
+);
+
 -- What there is to see per second (JSON [[t, riders, kerb], ...],
 -- ``action.py``): the most other riders in one frame and the share of frames
 -- with a kerb close by. Shorts need one of them in view.
@@ -340,6 +348,22 @@ class ScanDB:
         return {
             row["recording_id"]: [(float(t), float(v)) for t, v in json.loads(row["samples"])]
             for row in self.conn.execute("SELECT * FROM riding")
+        }
+
+    def save_bridges(self, recording_id: str, passes: list[float] | None) -> None:
+        if passes is None:
+            self.conn.execute("DELETE FROM bridges WHERE recording_id = ?", (recording_id,))
+        else:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO bridges(recording_id, passes) VALUES (?, ?)",
+                (recording_id, json.dumps([round(t, 2) for t in passes])),
+            )
+        self.conn.commit()
+
+    def bridges(self) -> dict[str, list[float]]:
+        return {
+            row["recording_id"]: [float(t) for t in json.loads(row["passes"])]
+            for row in self.conn.execute("SELECT * FROM bridges")
         }
 
     def save_action(self, recording_id: str, samples: list[tuple]) -> None:
