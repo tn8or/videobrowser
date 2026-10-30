@@ -42,6 +42,28 @@ MOTION_CLIP_PCT = 95.0
 # Speed above this adds nothing to the pit/track pattern motion can see.
 SPEED_CLIP_KMH = 80.0
 
+# Venues with a landmark the camera sees on every lap: (name, start-line
+# latitude, longitude (degrees, sign ignored), metres along the track from
+# RaceBox's start line). Knutstorp: the "Porsche Center Malmö" bridge over
+# the straight. Anderstorp: the bridge over the start line (assumed 0 m until
+# measured). Other venues get no landmark.
+VENUE_LANDMARKS = (
+    ("Knutstorp", 55.98689, 13.11448, 51.0),
+    ("Anderstorp", 57.26147, 13.59942, 0.0),
+)
+# A start line this close (m) to a venue's is that venue's.
+VENUE_RADIUS_M = 500.0
+
+# Landmark passes in the picture against RaceBox's (``landmark_match``): a
+# pass and RaceBox's time pair up within this many seconds (the picture
+# sees the landmark a few metres early or late, by the camera's tilt) ...
+LANDMARK_TOL_S = 0.3
+# ... at least this many pairs, and this many more than any start over
+# LANDMARK_RIVAL_S away with two or more (a lap off).
+MIN_LANDMARK_PAIRS = 2
+LANDMARK_MARGIN = 1
+LANDMARK_RIVAL_S = 1.0
+
 # Finish-line passes in the picture (``finish_line``) against RaceBox's
 # crossings (``line_place``). The first crossing is searched this far (s)
 # either side of where scene motion put it (half a lap off happens) ...
@@ -74,6 +96,9 @@ class RaceboxTrack:
     yaw_rate: np.ndarray
     # UTC of each finish-line crossing, from the sessions' start line.
     crossings: np.ndarray = field(default_factory=lambda: np.empty(0))
+    # UTC of each pass under the venue's landmark (``VENUE_LANDMARKS``),
+    # empty at venues without one.
+    landmarks: np.ndarray = field(default_factory=lambda: np.empty(0))
 
     def _window(self, start_utc: float, duration: float) -> np.ndarray:
         return (self.utc >= start_utc) & (self.utc <= start_utc + duration)
@@ -92,6 +117,7 @@ def track_from_sessions(sessions: list) -> RaceboxTrack | None:
     """One time-ordered track from parsed ``.vbo`` sessions."""
     parts = []
     crossings: list[float] = []
+    landmarks: list[float] = []
     for session in sessions:
         data = getattr(session, "data", None) or {}
         utc = data.get("time")
@@ -108,7 +134,11 @@ def track_from_sessions(sessions: list) -> RaceboxTrack | None:
         parts.append((utc, speed, yaw_rates(utc, lat, lon, speed)))
         line = getattr(session, "start_line", None)
         if line is not None:
-            crossings.extend(line_crossings(utc, lat, lon, line))
+            crossed = line_crossings(utc, lat, lon, line)
+            crossings.extend(crossed)
+            metres = venue_landmark_m(line)
+            if metres is not None:
+                landmarks.extend(along_track(utc, lat, lon, crossed, metres))
     if not parts:
         return None
     utc, speed, yaw = (np.concatenate([p[i] for p in parts]) for i in range(3))
@@ -118,7 +148,45 @@ def track_from_sessions(sessions: list) -> RaceboxTrack | None:
     keep = np.r_[True, np.diff(utc) > 0] & np.isfinite(utc) & np.isfinite(speed)
     if keep.sum() < 10:
         return None
-    return RaceboxTrack(utc[keep], speed[keep], yaw[keep], np.unique(np.round(crossings, 3)))
+    return RaceboxTrack(
+        utc[keep], speed[keep], yaw[keep], np.unique(np.round(crossings, 3)), np.unique(np.round(landmarks, 3))
+    )
+
+
+def _degrees(x):
+    """RaceBox stores decimal minutes (degrees x 60); GoPro and maps degrees."""
+    x = np.asarray(x, dtype=np.float64)
+    return x / 60.0 if float(np.nanmedian(np.abs(x))) > 90.0 else x
+
+
+def venue_landmark_m(line: tuple[float, float, float, float]) -> float | None:
+    """Metres from the start line along the track to the venue's landmark, by
+    where the start line lies; None at venues without one."""
+    lat = float(_degrees([line[0], line[2]]).mean())
+    lon = abs(float(_degrees([line[1], line[3]]).mean()))
+    for _, vlat, vlon, metres in VENUE_LANDMARKS:
+        north = (lat - vlat) * 111_320.0
+        east = (lon - vlon) * 111_320.0 * np.cos(np.radians(vlat))
+        if np.hypot(north, east) <= VENUE_RADIUS_M:
+            return metres
+    return None
+
+
+def along_track(
+    utc: np.ndarray, lat: np.ndarray, lon: np.ndarray, crossings: list[float], metres: float
+) -> list[float]:
+    """UTC at which the bike is *metres* along its track past each crossing."""
+    lat, lon = _degrees(lat), _degrees(lon)
+    step = np.hypot(
+        np.diff(lat) * 111_320.0, np.diff(lon) * 111_320.0 * np.cos(np.radians(float(np.median(lat))))
+    )
+    dist = np.r_[0.0, np.cumsum(step)]
+    out = []
+    for c in crossings:
+        target = float(np.interp(c, utc, dist)) + metres
+        if target <= dist[-1]:
+            out.append(float(np.interp(target, dist, utc)))
+    return out
 
 
 def line_crossings(
@@ -128,7 +196,7 @@ def line_crossings(
     lon2), interpolated between the samples either side of it."""
     lat1, lon1, lat2, lon2 = line
     # Flat metres around the line: the track is a few km across.
-    k = np.cos(np.radians((lat1 + lat2) / 2.0))
+    k = np.cos(np.radians(float(_degrees([lat1, lat2]).mean())))
     ax, ay = lon1 * k, lat1
     dx, dy = (lon2 - lon1) * k, lat2 - lat1
     px, py = lon * k, lat
@@ -290,6 +358,58 @@ class LineMatch:
     reason: str
     passes: list[tuple[float, float]] = field(default_factory=list)
     spread: float = float("nan")
+
+
+def landmark_match(
+    passes: list[float], landmarks: np.ndarray, guesses: list[float], search_s: float = SEARCH_S
+) -> LineMatch:
+    """UTC of recording t=0 that lays the landmark *passes* (recording time)
+    on RaceBox's *landmarks* (UTC), searched within *search_s* of each guess.
+
+    Every pass-landmark pair is a candidate start; the one most passes agree
+    with wins. Lap times differ by tenths, so a start a lap off pairs up only
+    by chance.
+    """
+    p = np.sort(np.asarray(passes, dtype=np.float64))
+    lm = np.sort(np.asarray(landmarks, dtype=np.float64))
+    if not len(p):
+        return LineMatch(None, "no landmark pass in the picture")
+    if not guesses:
+        return LineMatch(None, "no start to search around")
+    lo, hi = min(guesses) - search_s, max(guesses) + search_s
+    lm = lm[(lm >= lo + p[0] - 1.0) & (lm <= hi + p[-1] + 1.0)]
+    if not len(lm):
+        return LineMatch(None, "no RaceBox landmark pass near the recording")
+    starts = (lm[None, :] - p[:, None]).ravel()
+    starts = starts[np.any(np.abs(starts[:, None] - np.asarray(guesses)[None, :]) <= search_s, axis=1)]
+    if not len(starts):
+        return LineMatch(None, "no landmark pass lines up with RaceBox")
+    at = p[None, :] + starts[:, None]
+    i = np.clip(np.searchsorted(lm, at), 1, max(1, len(lm) - 1))
+    resid = np.abs(at - lm[np.minimum(i, len(lm) - 1)])
+    if len(lm) > 1:
+        resid = np.minimum(resid, np.abs(at - lm[i - 1]))
+    paired = resid <= LANDMARK_TOL_S
+    counts = paired.sum(axis=1)
+    err = np.where(paired, resid, 0.0).sum(axis=1) / np.maximum(counts, 1)
+    best = int(np.lexsort((err, -counts))[0])
+    start, n = float(starts[best]), int(counts[best])
+    away = np.abs(starts - start) > LANDMARK_RIVAL_S
+    rival = int(counts[away].max()) if away.any() else 0
+    pairs = []
+    for t in p[paired[best]]:
+        j = int(np.argmin(np.abs(lm - (t + start))))
+        pairs.append((float(t), float(lm[j])))
+    offsets = np.array([u - t for t, u in pairs])
+    start = float(np.median(offsets))
+    spread = float(np.max(np.abs(offsets - start)))
+    reason = f"{n} of {len(p)} landmark passes on RaceBox's, spread {spread:.2f} s, next best {rival}"
+    if n < MIN_LANDMARK_PAIRS:
+        return LineMatch(None, reason + f" (need {MIN_LANDMARK_PAIRS})", pairs, spread)
+    # One pass meets some landmark at almost any start: a rival of one is noise.
+    if rival >= 2 and n < rival + LANDMARK_MARGIN:
+        return LineMatch(None, reason + " (ambiguous)", pairs, spread)
+    return LineMatch(start, reason, pairs, spread)
 
 
 def finish_passes(passes: list[float], speed_ms: float) -> list[float]:

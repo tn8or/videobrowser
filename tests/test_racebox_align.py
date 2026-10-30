@@ -268,3 +268,41 @@ def test_track_carries_the_sessions_finish_line_crossings():
     track = track_from_sessions([Session()])
     assert len(track.crossings) == 1
     assert abs(track.crossings[0] - (T0 + 10.0)) < 1e-3
+
+
+# --- venue landmark (the bridge) ------------------------------------------------
+
+from videobrowser.racebox_align import along_track, landmark_match, venue_landmark_m  # noqa: E402
+
+
+def test_venues_are_told_by_their_start_line_in_racebox_minutes():
+    assert venue_landmark_m((3359.21818, -786.87418, 3359.20913, -786.86331)) == 51.0  # Knutstorp
+    assert venue_landmark_m((3435.68832, -815.965, 3435.69406, -815.94955)) == 0.0  # Anderstorp
+    assert venue_landmark_m((3300.0, -600.0, 3300.01, -600.0)) is None
+
+
+def test_landmark_is_metres_along_the_track_past_each_crossing():
+    # North at 10 m/s, then 20 m/s from t=12, in RaceBox minutes.
+    t = np.arange(0, 30, 0.04)
+    v = np.where(t < 12, 10.0, 20.0)
+    north = np.r_[0.0, np.cumsum(v[:-1] * 0.04)]
+    lat = (56.0 + north / 111_320.0) * 60.0
+    lon = np.full_like(t, 13.0 * 60.0)
+    (u,) = along_track(T0 + t, lat, lon, [T0 + 10.0], 51.0)
+    # 20 m at 10 m/s, then 31 m at 20 m/s.
+    assert abs(u - (T0 + 12.0 + 31.0 / 20.0)) < 0.01
+
+
+def test_bridge_passes_place_a_recording_half_a_lap_off():
+    landmarks = T0 + 100.0 + np.r_[0.0, np.cumsum(LAPS)]
+    start = T0 + 10.0
+    rng = np.random.default_rng(2)
+    passes = list(landmarks - start + rng.normal(0, 0.05, len(landmarks)))[1:]  # first one missed
+    match = landmark_match(passes, landmarks, [start + 28.9])
+    assert abs(match.start_utc - start) < 0.1
+    assert len(match.passes) == len(landmarks) - 1
+
+
+def test_one_bridge_pass_is_not_enough():
+    landmarks = T0 + 100.0 + np.r_[0.0, np.cumsum(LAPS)]
+    assert landmark_match([90.0], landmarks, [T0 + 10.0]).start_utc is None
