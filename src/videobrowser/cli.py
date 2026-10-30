@@ -503,7 +503,11 @@ def finish_line_cmd(args: argparse.Namespace) -> int:
     from videobrowser.racebox_align import SEARCH_S, clock_guesses, line_match, load_track
     from videobrowser.telemetry import creation_utc_prefer_gps
 
-    recording = group_recordings([args.video.expanduser()])[0]
+    recordings = group_recordings([args.video.expanduser()])
+    if not recordings:
+        print(f"cannot read {args.video}", file=sys.stderr)
+        return 1
+    recording = recordings[0]
     chapter = recording.chapters[0]
     info = chapter.info
     rotation = info.rotation or 0

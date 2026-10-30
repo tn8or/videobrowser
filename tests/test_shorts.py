@@ -407,6 +407,34 @@ def test_whole_day_match_gets_camera_clock_starts_after_a_recording_was_placed(m
     assert clocks["B"].start_utc == 2000.0 and day.gps["B"][0][0].t == pytest.approx(0.0, abs=0.1)
 
 
+def test_finish_line_start_stays_out_of_the_whole_day_match(monkeypatch):
+    import numpy as np
+
+    import videobrowser.racebox_align as ra
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    # A: placed by the finish line in the scan (RaceBox time, 31 s off the
+    # camera clock); B: same camera, scene motion leaves it unplaced.
+    clocks = {"A": CameraClock("A", 1031.0, 300.0, []), "B": CameraClock("B", 2000.0, 300.0, [])}
+    day = shorts.DayData("2026-08-01", clocks, {"A": "cockpit", "B": "cockpit"}, {"A": 0, "B": 0}, [], [])
+    day.motion = {rid: [(t + 0.5, 5.0) for t in range(300)] for rid in clocks}
+    day.line_placed = {"A"}
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    monkeypatch.setattr(ra, "motion_match", lambda *a: ra.MotionMatch(None, "x"))
+    seen = []
+
+    def fake_day(recs, track):
+        seen.extend(start for start, _ in recs)
+        return ra.MotionMatch(1990.0, "r=0.70")
+
+    monkeypatch.setattr(ra, "day_match", fake_day)
+    utc = np.arange(0.0, 4000.0, 0.1)
+    shorts.place_without_gps(day, ra.RaceboxTrack(utc, np.full(len(utc), 100.0), np.zeros(len(utc))))
+    assert clocks["A"].start_utc == 1031.0 and clocks["A"].source == "racebox-line"
+    assert seen == [2000.0]
+
+
 def test_a_crash_needs_the_picture_to_stop_too():
     from videobrowser.shorts import _moving_after
 

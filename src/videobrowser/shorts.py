@@ -547,6 +547,13 @@ def place_without_gps(day: DayData, track) -> None:
         day.from_racebox.add(rid)
         day.gps[rid] = (track.speeds(found, clock.duration), track.turns(found, clock.duration))
 
+    # The scan placed these to the frame: their start is RaceBox time, not
+    # the camera clock the whole-day match below shares between recordings.
+    for rids in cameras.values():
+        for rid in [r for r in rids if r in day.line_placed]:
+            rids.remove(rid)
+            place(rid, day.clocks[rid].start_utc, "from the scan", "racebox-line")
+    cameras = {profile: rids for profile, rids in cameras.items() if rids}
     # Camera-clock starts, before any recording is moved onto RaceBox time:
     # the whole-day match needs them all on the same (camera) clock.
     camera_start = {rid: day.clocks[rid].start_utc for rids in cameras.values() for rid in rids}
@@ -554,9 +561,6 @@ def place_without_gps(day: DayData, track) -> None:
         unplaced = []
         for rid in rids:
             clock = day.clocks[rid]
-            if rid in day.line_placed:
-                place(rid, clock.start_utc, "from the scan", "racebox-line")
-                continue
             match = motion_match(day.motion[rid], track, clock_guesses(clock.start_utc))
             if match.start_utc is None:
                 print(f"  {rid}: no GPS, no clear RaceBox match: {match.reason}")
