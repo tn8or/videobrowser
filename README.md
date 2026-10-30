@@ -337,8 +337,11 @@ own texture, so soft, low-contrast scenes stream too. The scan log says how
 close each recording came (`riding: ... streaming median ..., N bike blocks
 holding still`). When a recording shows no part of a bike (helmet camera,
 all in the hand), RaceBox speed decides where the recording is placed on the
-log. Scene motion alone never makes a moment track: without GoPro GPS, the
-bike riding in the picture or RaceBox speed, the moment is left out. Rescan
+log. Scene motion alone never makes a moment track, since a camera in the
+hand moves as much; with another rider (a person on a bike) in view while
+the scene streams past at track pace it does, which is what keeps helmet
+camera moments without RaceBox speed. Without any of these the moment is
+left out. Rescan
 with `--force` to get it.
 
 **Something to see.** Every moment (and every clip in `horizontals` and

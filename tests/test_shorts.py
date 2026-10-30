@@ -184,6 +184,11 @@ def test_day_moments_without_gps_need_the_bike_riding_in_the_picture(monkeypatch
     left_out = []
     assert shorts.day_moments(day, crashes=False, left_out=left_out) == []
     assert all(m.why[-1].startswith("left out: ") for m in left_out)
+    # A helmet camera: no part of the bike in view, but another rider is,
+    # with the scene streaming past at track pace from 100 s.
+    day.action["F"] = [(t + 0.5, 1, 0.0) for t in range(200)]
+    assert {m.theme for m in shorts.day_moments(day, crashes=False)} == {"catching_up"}
+    del day.action["F"]
     # The picture shows the camera riding on the bike from 100 s.
     day.riding["F"] = [(t + 0.5, 1.0 if t >= 100 else 0.0) for t in range(200)]
     moments = shorts.day_moments(day, crashes=False)

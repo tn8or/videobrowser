@@ -467,7 +467,9 @@ def _pace(m: Moment, day: DayData, min_speed: float) -> tuple[str | None, str]:
     picture as much as the track streaming past, and RaceBox time laid on
     by scene motion can be off, so RaceBox speed only stands in when the
     scan could not tell. Scene motion alone never makes a moment track, for
-    the same reason: without any of these the moment counts as slow.
+    the same reason, but with another rider in view it does (helmet cameras,
+    which show no part of the bike). Without any of these the moment counts
+    as slow.
     """
     riding = _moment_riding(m, day)
     if riding is not None and not _has_gopro_gps(m, day):
@@ -487,6 +489,13 @@ def _pace(m: Moment, day: DayData, min_speed: float) -> tuple[str | None, str]:
     motion = _moment_motion(m, day)
     if motion is not None and motion < DEFAULT_THRESHOLD:
         return "stopped", "no GPS, the picture stands still"
+    # A helmet camera shows no part of the bike that holds still, but another
+    # rider (a person on a bike) in view while the scene streams past at
+    # track pace is on track. Scene motion alone is not: a camera in the
+    # hand moves as much.
+    seen = _moment_action(m, day)
+    if motion is not None and motion >= TRACK_MOTION and seen is not None and seen[0] >= 1:
+        return "track", f"no GPS, a rider in view while the picture streams past (motion {motion:.0f})"
     if unplaced is not None:
         return unplaced, "no GPS, not placed on RaceBox"
     if motion is None:  # scanned before scene motion was stored
