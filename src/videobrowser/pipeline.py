@@ -17,6 +17,7 @@ from videobrowser.action import (
 )
 from videobrowser.action import per_second as action_per_second
 from videobrowser.db import ScanDB
+from videobrowser.signals import blinking_seconds, red_lamp
 from videobrowser.decode import FrameDecoder, decode_frames, decode_one_frame
 from videobrowser.events import (
     SPEED_EXEMPT,
@@ -443,6 +444,8 @@ def scan_recording(
     mount = MountWatch()
     # (t, share of the lower frame that is kerb) per frame.
     kerb_samples: list[tuple[float, float]] = []
+    # (t, a red signal lamp lit) per frame: the session is over.
+    lamp_samples: list[tuple[float, bool]] = []
     prev_image = None
     lean_samples = _lean_for_recording(recording) if "puck" in profile.pipelines else []
 
@@ -545,6 +548,7 @@ def scan_recording(
                             else tracks
                         )
                         bucket.setdefault(point.track_id, []).append(point)
+                lamp_samples.append((global_t, red_lamp(frame.image, points)))
                 if "puck" in profile.pipelines and profile.puck_roi is not None:
                     if leaned(lean_samples, global_t, config.lean_gate) or not lean_samples:
                         hit = detect_puck(frame.image, profile.puck_roi)
@@ -704,7 +708,12 @@ def scan_recording(
     db.save_riding(recording.recording_id, riding)
     db.save_action(
         recording.recording_id,
-        action_per_second(riders_per_second(tracks), kerb_samples, nearest_rider_per_second(tracks)),
+        action_per_second(
+            riders_per_second(tracks),
+            kerb_samples,
+            nearest_rider_per_second(tracks),
+            blinking_seconds(lamp_samples),
+        ),
     )
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=True)
     extra = f"  dropped {dropped} stationary" if dropped else ""

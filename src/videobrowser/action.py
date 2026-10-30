@@ -137,20 +137,23 @@ def per_second(
     riders: dict[int, int],
     kerbs: list[tuple[float, float]],
     nearest: dict[int, float] | None = None,
-) -> list[tuple[float, int, float, float]]:
+    red_lamp: set[int] | None = None,
+) -> list[tuple[float, int, float, float, int]]:
     """(t, most riders in one frame, share of frames with a kerb close,
-    height of the nearest rider) per second."""
+    height of the nearest rider, 1 with a red signal lamp blinking) per second."""
     close: dict[int, list[float]] = {}
     for t, share in kerbs:
         close.setdefault(int(t), []).append(1.0 if share >= KERB_CLOSE_SHARE else 0.0)
     nearest = nearest or {}
-    seconds = sorted(set(riders) | set(close))
+    red_lamp = red_lamp or set()
+    seconds = sorted(set(riders) | set(close) | red_lamp)
     return [
         (
             k + 0.5,
             riders.get(k, 0),
             float(np.mean(close[k])) if k in close else 0.0,
             nearest.get(k, 0.0),
+            1 if k in red_lamp else 0,
         )
         for k in seconds
     ]
@@ -190,3 +193,8 @@ def action_density(samples: list[tuple], t0: float, t1: float) -> float | None:
             near = UNKNOWN_NEAR
         vals.append(min(riders, MAX_RIDERS) * near + KERB_WEIGHT * kerb)
     return float(np.mean(vals)) if vals else None
+
+
+def red_lamp_in(samples: list[tuple], t0: float, t1: float) -> bool:
+    """True when a red signal lamp blinks anywhere over [t0, t1]."""
+    return any(len(row) > 4 and row[4] for row in samples if t0 - 0.5 <= row[0] <= t1 + 0.5)

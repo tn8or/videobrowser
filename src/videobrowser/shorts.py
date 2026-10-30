@@ -104,6 +104,9 @@ THEME_WEIGHT = {
 }
 # A knee down counts like this much more action per second.
 KNEE_BONUS = 1.0
+# Every piece of a short is at least this long (s): shorter ones are too
+# short to use. A moment on a recording shorter than this is left out.
+MIN_PIECE_S = 8.0
 
 
 @dataclass
@@ -642,9 +645,18 @@ def day_moments(
         moments = kept_v
         if len(moments) < before:
             print(f"  {before - len(moments)} moment(s) with a car in view left out (paddock)")
-    moments = _with_action(moments, day, dropped)
+    kept_r: list[Moment] = []
+    for m in moments:
+        if _red_lamp(m, day):
+            m.why.append("left out: red signal lamp (session over)")
+            dropped.append(m)
+        else:
+            kept_r.append(m)
+    if len(kept_r) < len(moments):
+        print(f"  {len(moments) - len(kept_r)} moment(s) with a red signal lamp left out (session over)")
+    moments = _with_action(kept_r, day, dropped)
     if min_speed <= 0:
-        return moments
+        return _at_least(moments, day, dropped)
     kept: list[Moment] = []
     stopped = slow = 0
     for m in moments:
@@ -666,6 +678,44 @@ def day_moments(
             kept.append(m)
     if stopped or slow:
         print(f"  left out: {stopped} moment(s) standing still, {slow} not shown on track (paddock or unknown)")
+    return _at_least(kept, day, dropped)
+
+
+def _red_lamp(m: Moment, day: DayData) -> bool:
+    from videobrowser.action import red_lamp_in
+
+    return any(
+        red_lamp_in(day.action.get(s.recording_id, []), s.t_start, s.t_end) for s in m.segments
+    )
+
+
+def _at_least(moments: list[Moment], day: DayData, left_out: list[Moment]) -> list[Moment]:
+    """Widen every piece to ``MIN_PIECE_S`` around its middle, inside its
+    recording; moments on a recording too short for that are left out."""
+    kept: list[Moment] = []
+    for m in moments:
+        pieces: list[Segment] = []
+        for seg in m.segments:
+            clock = day.clocks.get(seg.recording_id)
+            length = clock.duration if clock is not None else None
+            if seg.duration >= MIN_PIECE_S:
+                pieces.append(seg)
+                continue
+            if length is not None and length < MIN_PIECE_S:
+                break
+            mid = 0.5 * (seg.t_start + seg.t_end)
+            lo = max(0.0, mid - MIN_PIECE_S / 2)
+            if length is not None:
+                lo = min(lo, length - MIN_PIECE_S)
+            pieces.append(Segment(seg.recording_id, lo, lo + MIN_PIECE_S))
+        if len(pieces) < len(m.segments):
+            m.why.append(f"left out: recording shorter than {MIN_PIECE_S:g} s")
+            left_out.append(m)
+            continue
+        m.utc_start += pieces[0].t_start - m.segments[0].t_start
+        m.utc_end += pieces[-1].t_end - m.segments[-1].t_end
+        m.segments = pieces
+        kept.append(m)
     return kept
 
 
@@ -767,6 +817,8 @@ def clip_drop_reason(
         return "car in view"
     if _nothing_in_view(m, day):
         return "no rider or kerb in view"
+    if _red_lamp(m, day):
+        return "red signal lamp (session over)"
     if min_speed <= 0:
         return None
     pace = _moment_pace(m, day, min_speed)

@@ -304,7 +304,9 @@ def _render(
             + ["-filter_complex", graph, "-map", "[vout]", "-map", "0:a:0?"]
             + ["-frames:v", str(n_frames)]
             + _encode_args(encode_args)
-            + ["-c:a", "copy", "-movflags", "+faststart", str(dest)]
+            # The sound never runs on past the last picture: a still frame
+            # with sound going on at the end makes the last second unusable.
+            + ["-c:a", "copy", "-shortest", "-movflags", "+faststart", str(dest)]
         )
         try:
             _run_with_overlay(cmd, overlay_factory, n_frames)

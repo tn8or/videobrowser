@@ -78,7 +78,8 @@ def test_build_shorts_end_to_end(tmp_path):
     folder = day / "action-01"
     files = sorted(p.name for p in folder.glob("*.mp4"))
     # Front piece: the whole vertical clip, copied. Rear piece: cut from source.
-    assert files == ["01a_100009_overtake_front_F_00005_approaching_rider.mp4", "01b_100009_overtake_rear.mp4"]
+    # Pieces are widened to MIN_PIECE_S (8 s), so the overtake starts at 10:00:07.
+    assert files == ["01a_100007_overtake_front_F_00005_approaching_rider.mp4", "01b_100007_overtake_rear.mp4"]
     assert (folder / files[0]).read_bytes() == front_v.read_bytes()
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height",
@@ -88,7 +89,7 @@ def test_build_shorts_end_to_end(tmp_path):
     video = next(s for s in json.loads(probe.stdout)["streams"] if s["codec_type"] == "video")
     assert (video["width"], video["height"]) == (1080, 1920)
     listing = (folder / "klip.txt").read_text()
-    assert f"{files[0]}  (OVERHALING" in listing and "use 4.0-8.5 s" in listing
+    assert f"{files[0]}  (OVERHALING" in listing and "use 2.2-10.2 s" in listing
     assert not list(day.glob("*.mp4"))
     page = (day / "index.html").read_text()
     assert "action-01/" in page and "F_00005_approaching_rider.mp4" in page
@@ -313,7 +314,7 @@ def test_without_gps_the_picture_tells_riding_from_a_camera_in_the_hand(monkeypa
     track = ra.RaceboxTrack(utc, np.where(utc < 1300.0, 0.0, 120.0), np.zeros(len(utc)))
     shorts.place_without_gps(day, track)
     kept = shorts.day_moments(day, crashes=False)
-    assert [m.segments[0].t_start for m in kept] == [99.0]
+    assert [m.segments[0].t_start for m in kept] == [97.5]  # widened to 8 s
     assert shorts.clip_drop_reason(day, "M", 380.0, 420.0) == "below 40 km/h"
 
 
@@ -346,8 +347,8 @@ def test_moments_need_a_rider_or_kerb_in_view_and_more_riders_score_higher(monke
     day.action["F"] = [(t + 0.5, riders[t], 1.0 if 248 <= t < 253 else 0.0) for t in range(300)]
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([SpeedSample(t, 110.0) for t in range(300)], []))
     kept = {round(m.segments[0].t_start): m for m in shorts.day_moments(day, crashes=False)}
-    assert sorted(kept) == [18, 98, 248, 275]  # 180 s: nothing in view
-    assert kept[98].score > kept[18].score
+    assert sorted(kept) == [17, 97, 246, 275]  # 180 s: nothing in view; pieces 8 s+
+    assert kept[97].score > kept[17].score
     assert shorts.clip_drop_reason(day, "F", 175.0, 185.0) == "no rider or kerb in view"
     day.action.clear()  # scanned before: no check
     assert len(shorts.day_moments(day, crashes=False)) == 5
@@ -468,3 +469,23 @@ def test_moments_rank_by_how_near_and_how_many_riders(monkeypatch):
     moments = sorted(shorts.day_moments(day, crashes=False), key=lambda m: -m.score)
     assert [m.segments[0].t_start > 100 for m in moments] == [True, False]
     assert any(w.startswith("action ") for w in moments[0].why)
+
+
+def test_moments_with_a_red_signal_lamp_are_left_out(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+    from videobrowser.telemetry import SpeedSample
+
+    day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 300.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    day.events = [
+        {"recording_id": "F", "type": "nearby_rider", "t_start": 50.0, "t_end": 52.0, "score": 1.0},
+        {"recording_id": "F", "type": "nearby_rider", "t_start": 200.0, "t_end": 202.0, "score": 1.0},
+    ]
+    # The session ends at 195 s: red lamps blink at the marshal posts.
+    day.action["F"] = [(t + 0.5, 1, 0.0, 0.2, 1 if 195 <= t < 210 else 0) for t in range(300)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([SpeedSample(t, 110.0) for t in range(300)], []))
+    left_out = []
+    kept = shorts.day_moments(day, crashes=False, left_out=left_out)
+    assert [round(m.segments[0].t_start) for m in kept] == [47]
+    assert left_out[0].why[-1] == "left out: red signal lamp (session over)"
+    assert shorts.clip_drop_reason(day, "F", 195.0, 215.0) == "red signal lamp (session over)"
