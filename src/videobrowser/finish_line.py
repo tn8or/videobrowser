@@ -218,6 +218,9 @@ class PassFinder:
     """Line passes in stretches of a recording, every frame decoded: called
     with (t0, t1) in recording time, returns the passes in it."""
 
+    # Frames per second searched; None for every frame.
+    rate: float | None = None
+
     def __init__(self, recording, max_side: int = 640, rotation: int = 0) -> None:
         self.recording = recording
         self.max_side = max_side
@@ -225,18 +228,24 @@ class PassFinder:
         # Seconds of video decoded, for the log.
         self.decoded_s = 0.0
 
-    def __call__(self, t0: float, t1: float) -> list[LinePass]:
+    def find(self, image: np.ndarray):
+        return find_lines(image)
+
+    def passes(self, times: list[float], hits: list, fps: float) -> list:
+        return passes_from_hits(times, hits, fps)
+
+    def __call__(self, t0: float, t1: float) -> list:
         from videobrowser.decode import FrameDecoder
 
-        out: list[LinePass] = []
+        out: list = []
         for chapter in self.recording.chapters:
             lo = max(t0, chapter.offset)
             hi = min(t1, chapter.offset + chapter.duration)
             if hi - lo < 0.1:
                 continue
-            fps = chapter.info.fps or 25.0
+            fps = self.rate or chapter.info.fps or 25.0
             times: list[float] = []
-            hits: list[list[LineHit]] = []
+            hits: list = []
             with FrameDecoder(
                 chapter.path,
                 chapter.info,
@@ -248,7 +257,7 @@ class PassFinder:
             ) as decoder:
                 for frame in decoder.frames():
                     times.append(chapter.offset + frame.t)
-                    hits.append(find_lines(frame.image))
+                    hits.append(self.find(frame.image))
             self.decoded_s += hi - lo
-            out.extend(passes_from_hits(times, hits, fps))
+            out.extend(self.passes(times, hits, fps))
         return out

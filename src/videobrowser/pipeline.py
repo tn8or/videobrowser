@@ -19,6 +19,7 @@ from videobrowser.action import per_second as action_per_second
 from videobrowser.db import ScanDB
 from videobrowser.signals import blinking_seconds, red_lamp
 from videobrowser.decode import FrameDecoder, decode_frames, decode_one_frame
+from videobrowser.bridge import BridgeFinder
 from videobrowser.finish_line import PassFinder
 from videobrowser.events import (
     SPEED_EXEMPT,
@@ -255,6 +256,7 @@ def gps_for_recording(
     motion_samples: list[tuple[float, float]],
     start_utc: float | None,
     find_passes=None,
+    find_bridges=None,
 ) -> tuple[list[SpeedSample], list[TurnSample], float | None, str]:
     """Speed and turn samples from the GoPro GPS, else from RaceBox, plus the
     recording's start (UTC), corrected when it was found on the RaceBox log,
@@ -262,16 +264,18 @@ def gps_for_recording(
     "clock".
 
     Without GoPro telemetry the recording is laid on the RaceBox log by its
-    scene motion (``racebox_align``), then to the frame by the times it rode
+    scene motion (``racebox_align``), then by the times it rode under the
+    venue's bridge (*find_bridges*, ``bridge.BridgeFinder``) and to the frame
     over the finish line (*find_passes*, ``finish_line.PassFinder``) when they
-    pair up with RaceBox's crossings; without a clear match there is none.
+    pair up with RaceBox's; without a clear match there is none. Venues
+    without a bridge go by the finish line alone.
     """
     speeds = speed_for_recording(recording)
     if speeds or config.racebox_track is None:
         if speeds:
             return speeds, turns_for_recording(recording), start_utc, "gps"
         return [], [], start_utc, "clock"
-    from videobrowser.racebox_align import clock_guesses, line_place, motion_match
+    from videobrowser.racebox_align import bridge_place, clock_guesses, line_place, motion_match
 
     track = config.racebox_track
     match = motion_match(per_second(motion_samples), track, clock_guesses(start_utc))
@@ -282,7 +286,15 @@ def gps_for_recording(
     else:
         shift = found - start_utc if start_utc is not None else 0.0
         print(f"  no GPS; laid on RaceBox by scene motion (camera clock {shift:+.1f} s, {match.reason})")
-    if found is not None and find_passes is not None and len(getattr(track, "crossings", ())):
+    placed = False
+    if found is not None and find_bridges is not None and len(getattr(track, "landmarks", ())):
+        bridge = bridge_place(found, recording.duration, track, find_bridges, find_passes)
+        if bridge.start_utc is not None:
+            print(f"  laid on RaceBox by the bridge ({bridge.reason})")
+            found, source, placed = bridge.start_utc, "racebox-line", True
+        else:
+            print(f"  bridge: no placement ({bridge.reason})")
+    if not placed and found is not None and find_passes is not None and len(getattr(track, "crossings", ())):
         line = line_place(found, recording.duration, track, find_passes)
         if line.start_utc is not None:
             print(f"  laid on RaceBox by the finish line ({line.reason})")
@@ -609,9 +621,13 @@ def scan_recording(
     # How the start is known decides whether exports may put an overlay on
     # it: GoPro GPS time and a clear RaceBox match are sure, a bare camera
     # clock may be seconds off.
-    finder = PassFinder(recording, config.max_side, profile.rotation)
     speeds, turns, start_utc, start_source = gps_for_recording(
-        recording, config, motion_samples, start_utc, finder
+        recording,
+        config,
+        motion_samples,
+        start_utc,
+        PassFinder(recording, config.max_side, profile.rotation),
+        BridgeFinder(recording, config.max_side, profile.rotation),
     )
     riding = mount.per_second()
     if riding is None:

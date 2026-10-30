@@ -113,3 +113,32 @@ def test_finish_line_passes_place_to_the_frame(monkeypatch):
     )
     assert source == "racebox-line"
     assert abs(start - true_start) < 1e-6
+
+
+def test_bridge_places_before_the_finish_line(monkeypatch):
+    import types
+
+    import numpy as np
+
+    import videobrowser.pipeline as pipeline
+    import videobrowser.racebox_align as align
+
+    t0 = 1785571200.0
+    info = VideoInfo(Path("R.mov"), 600.0, 1920, 1080, 25.0, 0, "hevc", False, None, t0)
+    rec = Recording("R", "", "R")
+    rec.chapters.append(Chapter(info.path, "", 1, "R", 600.0, 0.0, info))
+    true_start = t0 + 28.9
+    crossings = true_start + 100.0 + np.r_[0.0, np.cumsum([76.1, 74.9, 77.1, 75.6])]
+    utc = t0 + np.arange(0.0, 700.0, 0.1)
+    track = align.RaceboxTrack(utc, np.full(len(utc), 170.0), np.zeros(len(utc)), crossings, crossings + 1.2)
+    track.speeds = lambda s, d: ["speed"]
+    track.turns = lambda s, d: ["turn"]
+    config = types.SimpleNamespace(racebox_track=track)
+    monkeypatch.setattr(pipeline, "speed_for_recording", lambda r: [])
+    monkeypatch.setattr(align, "motion_match", lambda *a: align.MotionMatch(t0, "r=0.6", 0.6, 0.1))
+    bridges = list(crossings + 1.2 - true_start + 0.05)
+    _, _, start, source = pipeline.gps_for_recording(
+        rec, config, [], t0, lambda a, b: [], lambda a, b: [p for p in bridges if a <= p <= b]
+    )
+    assert source == "racebox-line"
+    assert abs(start - (true_start - 0.05)) < 1e-3

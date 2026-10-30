@@ -44,11 +44,13 @@ SPEED_CLIP_KMH = 80.0
 
 # Venues with a landmark the camera sees on every lap: (name, start-line
 # latitude, longitude (degrees, sign ignored), metres along the track from
-# RaceBox's start line). Knutstorp: the "Porsche Center Malmö" bridge over
-# the straight. Anderstorp: the bridge over the start line (assumed 0 m until
-# measured). Other venues get no landmark.
+# RaceBox's start line to where the bridge's underside leaves the top of the
+# picture). Knutstorp: the "Porsche Center Malmö" bridge over the straight,
+# about 51 m on; its underside leaves the picture 1.14-1.22 s after the line
+# at 165-176 km/h. Anderstorp: the bridge over the start line (assumed 0 m
+# until measured). Other venues get no landmark.
 VENUE_LANDMARKS = (
-    ("Knutstorp", 55.98689, 13.11448, 51.0),
+    ("Knutstorp", 55.98689, 13.11448, 56.0),
     ("Anderstorp", 57.26147, 13.59942, 0.0),
 )
 # A start line this close (m) to a venue's is that venue's.
@@ -63,6 +65,16 @@ LANDMARK_TOL_S = 0.3
 MIN_LANDMARK_PAIRS = 2
 LANDMARK_MARGIN = 1
 LANDMARK_RIVAL_S = 1.0
+
+# Bridge passes in the picture (``bridge``) against RaceBox's
+# (``bridge_place``): searched LINE_COARSE_S either side of this many
+# landmark passes, spread over the recording ...
+BRIDGE_WINDOWS = 3
+# ... then the start is refined by the painted finish line, searched this
+# far (s) either side of each crossing and taken within BRIDGE_REFINE_TOL_S
+# (the grid line 0.26 s before it is a line too).
+BRIDGE_REFINE_S = 0.3
+BRIDGE_REFINE_TOL_S = 0.2
 
 # Finish-line passes in the picture (``finish_line``) against RaceBox's
 # crossings (``line_place``). The first crossing is searched this far (s)
@@ -418,6 +430,85 @@ def finish_passes(passes: list[float], speed_ms: float) -> list[float]:
     clear = LINE_CLEAR_M / max(speed_ms, 1.0)
     p = sorted(passes)
     return [t for i, t in enumerate(p) if i + 1 == len(p) or p[i + 1] - t > clear]
+
+
+def _merged(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    for lo, hi in sorted(spans):
+        if out and lo <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    return out
+
+
+def bridge_place(
+    start0: float, duration: float, track: RaceboxTrack, find_bridges, find_passes=None
+) -> LineMatch:
+    """UTC of recording t=0 from the venue's bridge, near *start0* (scene
+    motion), refined by the painted finish line.
+
+    *find_bridges(t0, t1)* returns the bridge passes (recording time, s) the
+    picture shows between t0 and t1; they are searched LINE_COARSE_S either
+    side of up to BRIDGE_WINDOWS of RaceBox's landmark passes and laid on
+    them by ``landmark_match``. Then *find_passes* (``finish_line``) looks
+    for the finish line BRIDGE_REFINE_S either side of each crossing; the
+    passes that agree move the start to the frame. Without them the bridge
+    start stands.
+    """
+    lm = np.asarray(track.landmarks, dtype=np.float64)
+    lm = lm[(lm >= start0 - LINE_COARSE_S) & (lm <= start0 + duration + LINE_COARSE_S)]
+    if not len(lm):
+        return LineMatch(None, "no RaceBox landmark pass in the recording")
+    picks = lm[np.unique(np.round(np.linspace(0, len(lm) - 1, min(BRIDGE_WINDOWS, len(lm)))).astype(int))]
+    spans = _merged(
+        [
+            (max(0.0, u - start0 - LINE_COARSE_S), min(duration, u - start0 + LINE_COARSE_S))
+            for u in picks
+        ]
+    )
+    passes = sorted({round(float(p), 3) for lo, hi in spans if hi - lo >= 0.2 for p in find_bridges(lo, hi)})
+    match = landmark_match(passes, lm, [start0], LINE_COARSE_S)
+    if match.start_utc is None and len(match.passes) == 1:
+        # One bridge in the recording: placed by it when it lands near the
+        # scene-motion start and no other pass gives a start as near.
+        start = match.passes[0][1] - match.passes[0][0]
+        in_view = int(np.sum((lm >= start) & (lm <= start + duration)))
+        near = {round(u - p, 1) for p in passes for u in lm if abs(u - p - start0) <= LINE_NEAR_S}
+        alone = all(abs(s - start) <= LANDMARK_RIVAL_S for s in near)
+        if in_view == 1 and abs(start - start0) <= LINE_NEAR_S and alone:
+            match = LineMatch(start, match.reason.split(" (")[0] + " (one bridge, near)", match.passes, 0.0)
+    if match.start_utc is None:
+        return match
+    start = match.start_utc
+    reason = f"bridge: {match.reason}, {start - start0:+.2f} s from scene motion"
+    if find_passes is None or not len(track.crossings):
+        return LineMatch(start, reason, match.passes, match.spread)
+    c = np.asarray(track.crossings, dtype=np.float64)
+    c = c[(c >= start) & (c <= start + duration)]
+    offsets = []
+    for cj in c:
+        v = float(np.interp(cj, track.utc, track.speed_kmh)) / 3.6
+        if v * 3.6 < LINE_MIN_KMH:
+            continue
+        t = cj - start - LINE_LEAD_S
+        window = find_passes(max(0.0, t - BRIDGE_REFINE_S), min(duration, t + BRIDGE_REFINE_S))
+        found = [p.t if hasattr(p, "t") else float(p) for p in window]
+        near = [p for p in finish_passes(found, v) if abs(p - t) <= BRIDGE_REFINE_TOL_S]
+        if near:
+            offsets.append(cj - min(near, key=lambda p: abs(p - t)) - LINE_LEAD_S)
+    if not offsets:
+        reason += "; no finish line in the picture to refine by"
+        return LineMatch(start, reason, match.passes, match.spread)
+    mid = float(np.median(offsets))
+    agree = [o for o in offsets if abs(o - mid) <= LINE_TOL_S]
+    if len(agree) * 2 < len(offsets):
+        reason += f"; finish line scattered ({len(offsets)} passes)"
+        return LineMatch(start, reason, match.passes, match.spread)
+    line_start = float(np.median(agree))
+    spread = float(np.max(np.abs(np.asarray(agree) - line_start)))
+    reason += f"; finish line {len(agree)} of {len(c)} crossings, {line_start - start:+.2f} s, spread {spread:.2f} s"
+    return LineMatch(line_start, reason, match.passes, spread)
 
 
 def line_place(start0: float, duration: float, track: RaceboxTrack, find_passes) -> LineMatch:

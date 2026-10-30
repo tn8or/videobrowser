@@ -401,26 +401,38 @@ minute and capped first, so a camera picked up in the paddock does not look
 like a session.
 
 Scene motion lands within seconds at best, and sometimes half a lap off.
-Where scene motion placed a recording, the scan then looks for the painted
-finish line: a white line across the road, coming down the picture and
-sliding out under the camera. At track speed it is in view for a handful of
-frames only, so every frame is decoded, but only around RaceBox's
-finish-line crossings (the start line in the `.vbo` header): ±40 s around
-the fastest crossing, then ±0.5 s around each other crossing for every
-start that gives. Grid and start lines look just like it and lie 13-50 m
-before it, so the finish line is the last line with 30 m of clear track
-after it. The start most crossings agree with (two or more) wins; a
-recording with one crossing only is placed by it within 10 s of scene
-motion. The scan log says `laid on RaceBox by the finish line (4 of 5
-crossings on the line, spread 0.02 s, ...)` or why not; the start source is
-then `racebox-line`, and overlays and shorts use it. Days scanned before
-this need `scan --force`.
+At a venue with a bridge over the track (Knutstorp's "Porsche Center
+Malmö"; Anderstorp's, assumed right over the start line), the scan then
+looks for the bridge: its underside is a long edge, dark above and sky
+below, rising up the picture and leaving over the top edge. Every mount
+sees it, shadow and fairing don't hide it, and nothing else on the lap
+looks like it. RaceBox gives the time the bike is under it from the
+distance along the track past the start line (56 m at Knutstorp, where the
+underside leaves the picture). The picture is searched at 12.5 fps ±40 s
+around three of those times, and the start most bridge passes agree with
+(two or more, or one within 10 s of scene motion) wins. The painted finish
+line then sets it to the frame: every frame is decoded ±0.3 s around each
+crossing, and the finish line is the last line with 30 m of clear track
+after it (grid and start lines lie 13-50 m before it). Where the line is
+in shadow, the bridge start stands. The scan log says `laid on RaceBox by
+the bridge (bridge: 4 of 4 landmark passes ...; finish line 3 of 4
+crossings, -0.04 s, ...)` or why not.
+
+Venues without a bridge (Padborg Park) go by the finish line alone: every
+frame ±40 s around the fastest crossing, then ±0.5 s around each other
+crossing for every start that gives. The start most crossings agree with
+(two or more) wins; a recording with one crossing only is placed by it
+within 10 s of scene motion. The scan log says `laid on RaceBox by the
+finish line (4 of 5 crossings on the line, spread 0.02 s, ...)` or why
+not. Either way the start source is then `racebox-line`, and overlays and
+shorts use it. Days scanned before this need `scan --force`.
 
 To check one recording by hand, `videobrowser finish-line VIDEO [VIDEO ...]
 --sessions-dir output/sessions --near START_UTC --frames passes/` prints the
-lines found in each window searched, the placement, and saves the three
-frames before each pass with the lines it saw drawn. `START_UTC` is the
-scan's `start_utc` (epoch s) for the recording.
+bridge passes and lines found in each window searched, the placement, and
+saves the three frames before each pass with the edges or lines it saw
+drawn. `START_UTC` is the scan's `start_utc` (epoch s) for the recording;
+`--no-bridge` goes by the finish line alone.
 
 The shorts then match each camera's remaining recordings of the day at once
 (one clock error per camera): hours of footage with pit stops between

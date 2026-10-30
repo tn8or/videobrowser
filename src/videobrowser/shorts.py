@@ -540,7 +540,7 @@ def place_without_gps(day: DayData, track) -> None:
 
     def place(rid: str, found: float, how: str, source: str = "racebox-motion") -> None:
         clock = day.clocks[rid]
-        by = "the finish line" if source == "racebox-line" else "scene motion"
+        by = "the bridge or finish line" if source == "racebox-line" else "scene motion"
         print(f"  {rid}: no GPS, laid on RaceBox by {by} ({found - clock.start_utc:+.1f} s, {how})")
         clock.start_utc = found
         clock.source = source

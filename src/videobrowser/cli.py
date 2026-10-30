@@ -274,7 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     line = sub.add_parser(
         "finish-line",
-        help="Lay one recording on RaceBox by the painted finish line, around a start (for tuning)",
+        help="Lay one recording on RaceBox by the bridge and the painted finish line, around a start (for tuning)",
     )
     line.add_argument("video", type=Path, nargs="+", help="The recording's video file(s), all chapters")
     line.add_argument(
@@ -289,6 +289,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     line.add_argument(
         "--frames", type=Path, default=None, help="Save the three frames before each pass, lines drawn, here"
+    )
+    line.add_argument(
+        "--no-bridge", action="store_true", help="Go by the finish line alone, also at venues with a bridge"
     )
     return parser
 
@@ -500,10 +503,11 @@ def finish_line_cmd(args: argparse.Namespace) -> int:
     import cv2
     import numpy as np
 
+    from videobrowser.bridge import BridgeFinder, find_edges
     from videobrowser.decode import decode_one_frame
     from videobrowser.finish_line import PassFinder, find_lines
     from videobrowser.gopro import chapter_at, group_recordings
-    from videobrowser.racebox_align import line_place, load_track
+    from videobrowser.racebox_align import bridge_place, line_place, load_track
     from videobrowser.telemetry import creation_utc_prefer_gps
 
     recordings = group_recordings([v.expanduser() for v in args.video])
@@ -522,18 +526,31 @@ def finish_line_cmd(args: argparse.Namespace) -> int:
         print("no start to search around: pass --near", file=sys.stderr)
         return 1
     finder = PassFinder(recording, 640, rotation)
+    bridges = BridgeFinder(recording, 640, rotation)
 
     def logged(t0: float, t1: float):
         passes = finder(t0, t1)
-        print(f"  {t0:8.2f}-{t1:8.2f} s: " + (", ".join(f"{p.t:.2f}" for p in passes) or "no line"))
+        print(f"  line   {t0:8.2f}-{t1:8.2f} s: " + (", ".join(f"{p.t:.2f}" for p in passes) or "none"))
+        return passes
+
+    def logged_bridges(t0: float, t1: float):
+        passes = bridges(t0, t1)
+        print(f"  bridge {t0:8.2f}-{t1:8.2f} s: " + (", ".join(f"{t:.2f}" for t in passes) or "none"))
         return passes
 
     began = time.perf_counter()
-    match = line_place(near, recording.duration, track, logged)
-    print(f"RaceBox: {match.reason}")
-    print(f"decoded {finder.decoded_s:.0f} s of video in {time.perf_counter() - began:.0f} s")
+    match, by_bridge = None, False
+    if len(track.landmarks) and not args.no_bridge:
+        match = bridge_place(near, recording.duration, track, logged_bridges, logged)
+        print(f"RaceBox by the bridge: {match.reason}")
+        by_bridge = match.start_utc is not None
+    if match is None or match.start_utc is None:
+        match = line_place(near, recording.duration, track, logged)
+        print(f"RaceBox by the finish line: {match.reason}")
+    decoded = finder.decoded_s + bridges.decoded_s
+    print(f"decoded {decoded:.0f} s of video in {time.perf_counter() - began:.0f} s")
     for t, utc in match.passes:
-        print(f"  pass {t:9.3f} s  crossing {utc:.3f}")
+        print(f"  {'bridge' if by_bridge else 'line'} {t:9.3f} s  RaceBox {utc:.3f}")
         if args.frames:
             args.frames.mkdir(parents=True, exist_ok=True)
             chapter = chapter_at(recording, t)
@@ -546,7 +563,7 @@ def finish_line_cmd(args: argparse.Namespace) -> int:
                 if image is None:
                     continue
                 h, w = image.shape[:2]
-                for hit in find_lines(image):
+                for hit in (find_edges if by_bridge else find_lines)(image):
                     y = hit.row * h
                     dy = np.tan(np.radians(hit.angle)) * w / 2
                     cv2.line(image, (0, int(y - dy)), (w, int(y + dy)), (0, 0, 255), 1)

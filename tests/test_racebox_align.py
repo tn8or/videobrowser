@@ -276,7 +276,7 @@ from videobrowser.racebox_align import along_track, landmark_match, venue_landma
 
 
 def test_venues_are_told_by_their_start_line_in_racebox_minutes():
-    assert venue_landmark_m((3359.21818, -786.87418, 3359.20913, -786.86331)) == 51.0  # Knutstorp
+    assert venue_landmark_m((3359.21818, -786.87418, 3359.20913, -786.86331)) == 56.0  # Knutstorp
     assert venue_landmark_m((3435.68832, -815.965, 3435.69406, -815.94955)) == 0.0  # Anderstorp
     assert venue_landmark_m((3300.0, -600.0, 3300.01, -600.0)) is None
 
@@ -306,3 +306,80 @@ def test_bridge_passes_place_a_recording_half_a_lap_off():
 def test_one_bridge_pass_is_not_enough():
     landmarks = T0 + 100.0 + np.r_[0.0, np.cumsum(LAPS)]
     assert landmark_match([90.0], landmarks, [T0 + 10.0]).start_utc is None
+
+
+from videobrowser.racebox_align import BRIDGE_REFINE_S, BRIDGE_REFINE_TOL_S, bridge_place  # noqa: E402
+
+
+def _bridge_track(first=100.0, laps=LAPS):
+    track = _line_track(first, laps)
+    # The bridge 56 m on at 176 km/h.
+    track.landmarks = track.crossings + 56.0 / (176.0 / 3.6)
+    return track
+
+
+def _bridges(track, start, lag=0.03, misses=()):
+    """Bridge passes the picture would show (a hair after RaceBox's), plus
+    the windows asked for."""
+    out = [u - start + lag for i, u in enumerate(track.landmarks) if i not in misses]
+    calls = []
+
+    def find(t0, t1):
+        calls.append((t0, t1))
+        return [t for t in out if t0 <= t <= t1]
+
+    return find, calls
+
+
+def test_bridge_places_a_recording_motion_put_29_s_off_and_the_line_refines_it():
+    track = _bridge_track()
+    start = T0 + 10.0
+    bridges, calls = _bridges(track, start, lag=0.08)
+    lines, _ = _picture(track, start)
+    match = bridge_place(start + 28.9, 500.0, track, bridges, lines)
+    assert abs(match.start_utc - start) < 0.03
+    assert "finish line" in match.reason
+    # Windows around a few landmark passes, not the whole recording.
+    assert sum(b - a for a, b in calls) <= 3 * 80.0 + 1e-6
+
+
+def test_bridge_start_stands_when_the_line_is_in_shadow():
+    track = _bridge_track()
+    start = T0 + 10.0
+    bridges, _ = _bridges(track, start, lag=0.08)
+    match = bridge_place(start - 20.0, 500.0, track, bridges, lambda a, b: [])
+    assert abs(match.start_utc - (start - 0.08)) < 0.01
+    assert "no finish line" in match.reason
+
+
+def test_line_refine_ignores_the_checkered_line_before_the_finish():
+    track = _bridge_track()
+    start = T0 + 10.0
+    bridges, _ = _bridges(track, start)
+    # Only the checkered line, 0.58 s before the finish line, shows.
+    checkered = [c - start - LINE_LEAD_S - 0.58 for c in track.crossings]
+    match = bridge_place(start, 500.0, track, bridges, lambda a, b: [t for t in checkered if a <= t <= b])
+    assert abs(match.start_utc - (start - 0.03)) < 0.01
+    assert 0.58 > BRIDGE_REFINE_S > BRIDGE_REFINE_TOL_S > 0.08
+
+
+def test_one_bridge_places_only_near_the_motion_start():
+    track = _bridge_track(laps=np.array([]))
+    start = T0 + 10.0
+    bridges, _ = _bridges(track, start, lag=0.0)
+    assert abs(bridge_place(start + 4.0, 200.0, track, bridges).start_utc - start) < 1e-3
+    assert bridge_place(start + 25.0, 200.0, track, bridges).start_utc is None
+
+
+def test_no_bridge_in_the_picture_places_nothing():
+    track = _bridge_track()
+    assert bridge_place(T0, 500.0, track, lambda a, b: []).start_utc is None
+
+
+def test_line_refine_takes_the_finish_line_over_the_grid_line_before_it():
+    track = _bridge_track()
+    start = T0 + 10.0
+    bridges, _ = _bridges(track, start, lag=0.05)
+    lines, _ = _picture(track, start)
+    match = bridge_place(start, 500.0, track, bridges, lines)
+    assert abs(match.start_utc - start) < 0.03
