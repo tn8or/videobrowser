@@ -242,6 +242,17 @@ def test_one_crossing_places_only_near_the_motion_start():
     assert line_place(start + 30.0, 150.0, track, find).start_utc is None
 
 
+def test_a_pass_past_the_end_of_the_recording_places_nothing():
+    track = _line_track(first=100.0, laps=np.array([]))
+    start = T0 + 10.0
+    duration = track.crossings[0] - start - LINE_LEAD_S - 0.01
+
+    def find(t0, t1):
+        return [duration + 0.01] if t0 <= duration <= t1 else []
+
+    assert line_place(start, duration, track, find).start_utc is None
+
+
 def test_track_carries_the_sessions_finish_line_crossings():
     class Session:
         def __init__(self):

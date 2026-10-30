@@ -361,6 +361,9 @@ def line_place(start0: float, duration: float, track: RaceboxTrack, find_passes)
     best, pairs = results[0]
     rival = len(results[1][1]) if len(results) > 1 else 0
     in_view = sum(1 for cj in c if 0.0 <= cj - best <= duration)
+    if not pairs:
+        # A pass right at the end of the recording, its crossing just past it.
+        return LineMatch(None, f"no finish line in the picture at any of {in_view} crossings")
     offsets = np.array([cj - p - LINE_LEAD_S for p, cj in pairs])
     start = float(np.median(offsets))
     spread = float(np.max(np.abs(offsets - start)))
