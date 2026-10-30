@@ -342,16 +342,23 @@ class ScanDB:
             for row in self.conn.execute("SELECT * FROM riding")
         }
 
-    def save_action(self, recording_id: str, samples: list[tuple[float, int, float]]) -> None:
+    def save_action(self, recording_id: str, samples: list[tuple]) -> None:
+        """(t, riders, kerb share, nearest rider height) per second; scans from
+        before the height was stored have three values per row."""
+        rows = [[round(row[0], 1), int(row[1]), round(row[2], 2)] + [round(v, 3) for v in row[3:4]]
+                for row in samples]
         self.conn.execute(
             "INSERT OR REPLACE INTO action(recording_id, samples) VALUES (?, ?)",
-            (recording_id, json.dumps([[round(t, 1), int(r), round(k, 2)] for t, r, k in samples])),
+            (recording_id, json.dumps(rows)),
         )
         self.conn.commit()
 
-    def action(self) -> dict[str, list[tuple[float, int, float]]]:
+    def action(self) -> dict[str, list[tuple]]:
         return {
-            row["recording_id"]: [(float(t), int(r), float(k)) for t, r, k in json.loads(row["samples"])]
+            row["recording_id"]: [
+                (float(r[0]), int(r[1]), float(r[2]), float(r[3]) if len(r) > 3 else 0.0)
+                for r in json.loads(row["samples"])
+            ]
             for row in self.conn.execute("SELECT * FROM action")
         }
 

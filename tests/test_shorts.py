@@ -447,3 +447,24 @@ def test_collect_short_cuts_in_parallel_and_keeps_order(tmp_path, monkeypatch):
     monkeypatch.setattr(shorts, "_from_source", broken)
     with pytest.raises(RuntimeError, match="A@30s"):
         shorts.collect_short(plan, day, tmp_path / "action-02", jobs=3)
+
+
+def test_moments_rank_by_how_near_and_how_many_riders(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 300.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    # Same event score; one far rider at 50 s, two near riders at 150 s.
+    day.events = [
+        {"recording_id": "F", "type": "nearby_rider", "t_start": 50.0, "t_end": 52.0, "score": 0.9},
+        {"recording_id": "F", "type": "nearby_rider", "t_start": 150.0, "t_end": 152.0, "score": 0.5},
+    ]
+    day.motion["F"] = [(t + 0.5, 15.0) for t in range(300)]
+    day.riding["F"] = [(t + 0.5, 1.0) for t in range(300)]
+    day.action["F"] = [
+        (t + 0.5, 1 if t < 100 else 2, 0.0, 0.04 if t < 100 else 0.2) for t in range(300)
+    ]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    moments = sorted(shorts.day_moments(day, crashes=False), key=lambda m: -m.score)
+    assert [m.segments[0].t_start > 100 for m in moments] == [True, False]
+    assert any(w.startswith("action ") for w in moments[0].why)

@@ -36,6 +36,7 @@ from videobrowser.telemetry import TurnSample
 
 OUT_W = 1080
 OUT_H = 1920
+MOTORCYCLE = 3
 
 # Boxes smaller than this (fraction of frame height) are too far away to follow.
 MIN_FOLLOW_HEIGHT_FRAC = 0.05
@@ -61,8 +62,10 @@ TURN_LOOK_AHEAD_S = 0.7
 # A turn sample this close before a rider sample yields to the rider.
 TURN_RIDER_GAP_S = 0.3
 # After the last sight of a rider the crop holds on them this long before it
-# turns into the corner: the tracker loses riders for a few frames at a time.
-RIDER_HOLD_S = 1.5
+# turns into the corner: the tracker loses riders for a second or more at a
+# time (lean, sun, a rider behind another), and a crop that swings off and
+# back reads as panning past them.
+RIDER_HOLD_S = 3.0
 # Vertical output bitrate (the landscape exports use 60M for full-res frames).
 _BITRATE = "20M"
 
@@ -104,8 +107,10 @@ def focus_samples(
     """Where the action is over *window*, one sample per analysed frame.
 
     Priority per frame: tracks named by the window's events, then any other
-    rider big enough to matter, then the corner ahead (*turns*), which only
-    takes over once no rider has been seen for ``RIDER_HOLD_S``. Among
+    bike big enough to matter (a person only when no bike is seen, so a
+    marshal or someone at the fence does not pull the crop off a rider),
+    then the corner ahead (*turns*), which only takes over once no rider has
+    been seen for ``RIDER_HOLD_S``. Among
     candidates the largest box wins, but the current target is kept while it
     stays reasonably large so the crop does not flick between two riders side
     by side.
@@ -137,6 +142,8 @@ def focus_samples(
         ]
         if not points:
             continue
+        bikes = [p for p in points if p.cls == MOTORCYCLE]
+        points = bikes or points
         primary = [p for p in points if p.track_id in event_ids]
         candidates = primary or points
         best = max(candidates, key=lambda p: p.area)

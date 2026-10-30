@@ -295,6 +295,7 @@ def export_verticals(
     db = ScanDB.open(out_dir / "scan.sqlite")
     try:
         days = _track_days(db, out_dir, dates, sessions_dir, min_speed, max_vehicle_share)
+        riding = db.riding()
         metas = list(_days(db, dates))
         for i, meta in enumerate(metas, 1):
             rid = meta["recording_id"]
@@ -328,6 +329,11 @@ def export_verticals(
                     track, track_loaded = load_track(sessions_dir), True
                 turns = track.turns(meta["start_utc"], recording.duration) if track else []
             else:
+                turns = []
+            if not riding.get(rid):
+                # No part of the bike in view: a helmet camera (or one in the
+                # hand). The head already looks into the corner, so the crop
+                # stays on the riders instead of turning further.
                 turns = []
             tracks = tracks_for(db, rid)
             looks = meta["facing"] if "facing" in meta.keys() and meta["facing"] else facing(meta["profile"])

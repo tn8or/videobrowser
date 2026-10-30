@@ -81,6 +81,19 @@ def riders_per_second(tracks: dict[int, list[TrackPoint]]) -> dict[int, int]:
     return out
 
 
+def nearest_rider_per_second(tracks: dict[int, list[TrackPoint]]) -> dict[int, float]:
+    """Height (fraction of the frame) of the nearest other rider, per whole second."""
+    mounted = mounted_tracks(tracks)
+    out: dict[int, float] = {}
+    for track_id, points in tracks.items():
+        if track_id not in mounted or is_ego_track(points):
+            continue
+        for p in points:
+            if p.cls == MOTORCYCLE and p.height_frac >= MIN_RIDER_HEIGHT_FRAC:
+                out[int(p.t)] = max(out.get(int(p.t), 0.0), p.height_frac)
+    return out
+
+
 def kerb_share(image: np.ndarray) -> float:
     """Share of the lower part of the frame that is red-and-white kerb."""
     h, w = image.shape[:2]
@@ -121,23 +134,59 @@ def kerb_events(samples: list[tuple[float, float]], recording_id: str) -> list[E
 
 
 def per_second(
-    riders: dict[int, int], kerbs: list[tuple[float, float]]
-) -> list[tuple[float, int, float]]:
-    """(t, most riders in one frame, share of frames with a kerb close) per second."""
+    riders: dict[int, int],
+    kerbs: list[tuple[float, float]],
+    nearest: dict[int, float] | None = None,
+) -> list[tuple[float, int, float, float]]:
+    """(t, most riders in one frame, share of frames with a kerb close,
+    height of the nearest rider) per second."""
     close: dict[int, list[float]] = {}
     for t, share in kerbs:
         close.setdefault(int(t), []).append(1.0 if share >= KERB_CLOSE_SHARE else 0.0)
+    nearest = nearest or {}
     seconds = sorted(set(riders) | set(close))
     return [
-        (k + 0.5, riders.get(k, 0), float(np.mean(close[k])) if k in close else 0.0)
+        (
+            k + 0.5,
+            riders.get(k, 0),
+            float(np.mean(close[k])) if k in close else 0.0,
+            nearest.get(k, 0.0),
+        )
         for k in seconds
     ]
 
 
-def in_view(samples: list[tuple[float, int, float]], t0: float, t1: float) -> tuple[int, float] | None:
+def in_view(samples: list[tuple], t0: float, t1: float) -> tuple[int, float] | None:
     """(most riders in one frame, longest kerb share of a second) over [t0, t1],
     None without samples there."""
-    rows = [(r, k) for t, r, k in samples if t0 - 0.5 <= t <= t1 + 0.5]
+    rows = [(row[1], row[2]) for row in samples if t0 - 0.5 <= row[0] <= t1 + 0.5]
     if not rows:
         return None
     return max(r for r, _ in rows), max(k for _, k in rows)
+
+
+# How much there is to see, per second: each rider in view (up to
+# MAX_RIDERS) counts by how near it is, full from NEAR_HEIGHT of the frame
+# height up and at least FAR_WEIGHT; a kerb close by counts KERB_WEIGHT. Scans
+# from before rider heights were stored count each rider as UNKNOWN_NEAR.
+MAX_RIDERS = 4
+NEAR_HEIGHT = 0.15
+FAR_WEIGHT = 0.2
+KERB_WEIGHT = 0.5
+UNKNOWN_NEAR = 0.5
+
+
+def action_density(samples: list[tuple], t0: float, t1: float) -> float | None:
+    """Mean of the per-second action value over [t0, t1], None without samples."""
+    vals: list[float] = []
+    for row in samples:
+        if not t0 - 0.5 <= row[0] <= t1 + 0.5:
+            continue
+        riders, kerb = row[1], row[2]
+        height = row[3] if len(row) > 3 else 0.0
+        if riders and height > 0:
+            near = min(1.0, max(FAR_WEIGHT, height / NEAR_HEIGHT))
+        else:
+            near = UNKNOWN_NEAR
+        vals.append(min(riders, MAX_RIDERS) * near + KERB_WEIGHT * kerb)
+    return float(np.mean(vals)) if vals else None
