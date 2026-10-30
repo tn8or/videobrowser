@@ -1,7 +1,8 @@
 """Is there anything to see? Other riders and kerbs in view, per second.
 
 A short needs action in the picture: at least one other rider, more is
-better, or a kerb right beside the bike. The scan stores both per second
+better, or a kerb right beside the bike. A rider is a bike with a person on
+it: a parked bike, or the camera's own bike filmed by hand, is not. The scan stores both per second
 (``action`` table): the most other riders' bike boxes in one frame, and the
 share of frames with a red-and-white kerb close by. A kerb close by on its own
 is a ``kerb_close`` event, so riding over or along one becomes a moment too.
@@ -15,10 +16,15 @@ import numpy as np
 from videobrowser.events import Event
 from videobrowser.riders import TrackPoint, is_ego_track
 
-MOTORCYCLE = 3
+PERSON, MOTORCYCLE = 0, 3
 # Bike boxes smaller than this (fraction of frame height) are too far off to
 # count; the vertical crop follows riders down to the same size.
 MIN_RIDER_HEIGHT_FRAC = 0.03
+# A bike track has a rider when a person box sits on it in this share of the
+# frames it is seen in: the person's centre over the bike, and most of the
+# person box overlapping it or above it.
+MIN_MOUNTED_SHARE = 0.3
+MIN_PERSON_OVERLAP = 0.2
 
 # Kerb pixels are red or white next to the other colour, in the lower part
 # of the frame (the ground near the bike), compared at this width (px).
@@ -30,11 +36,41 @@ KERB_CLOSE_SHARE = 0.04
 KERB_MIN_FRAMES = 4
 
 
+def _person_on(bike: TrackPoint, person: TrackPoint) -> bool:
+    cx = 0.5 * (person.x1 + person.x2)
+    if not bike.x1 <= cx <= bike.x2 or person.y1 > bike.y1 + 0.5 * bike.height:
+        return False
+    overlap_w = min(bike.x2, person.x2) - max(bike.x1, person.x1)
+    overlap_h = min(bike.y2, person.y2) - max(bike.y1, person.y1)
+    if overlap_w <= 0 or overlap_h <= 0:
+        return False
+    return overlap_w * overlap_h >= MIN_PERSON_OVERLAP * max(person.area, 1e-9)
+
+
+def mounted_tracks(tracks: dict[int, list[TrackPoint]]) -> set[int]:
+    """Ids of the bike tracks with a person on them: riders, not parked bikes."""
+    people: dict[float, list[TrackPoint]] = {}
+    for points in tracks.values():
+        for p in points:
+            if p.cls == PERSON:
+                people.setdefault(p.t, []).append(p)
+    mounted: set[int] = set()
+    for track_id, points in tracks.items():
+        bikes = [p for p in points if p.cls == MOTORCYCLE]
+        if not bikes:
+            continue
+        on = sum(any(_person_on(b, q) for q in people.get(b.t, [])) for b in bikes)
+        if on >= MIN_MOUNTED_SHARE * len(bikes):
+            mounted.add(track_id)
+    return mounted
+
+
 def riders_per_second(tracks: dict[int, list[TrackPoint]]) -> dict[int, int]:
-    """Most other riders' bike boxes seen in one frame, per whole second."""
+    """Most other riders (bikes with a person on) seen in one frame, per whole second."""
+    mounted = mounted_tracks(tracks)
     per_frame: dict[float, set[int]] = {}
     for track_id, points in tracks.items():
-        if not points or is_ego_track(points):
+        if track_id not in mounted or is_ego_track(points):
             continue
         for p in points:
             if p.cls == MOTORCYCLE and p.height_frac >= MIN_RIDER_HEIGHT_FRAC:

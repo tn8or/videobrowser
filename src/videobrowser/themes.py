@@ -104,6 +104,9 @@ class Moment:
     utc_end: float
     score: float
     segments: list[Segment] = field(default_factory=list)
+    # Why the moment was kept (or left out): what was in view, the pace and
+    # where it came from. Written to klip.txt and moments.json.
+    why: list[str] = field(default_factory=list)
 
     @property
     def duration(self) -> float:

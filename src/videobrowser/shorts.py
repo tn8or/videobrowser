@@ -453,38 +453,45 @@ def _has_gopro_gps(m: Moment, day: DayData) -> bool:
 
 
 def _moment_pace(m: Moment, day: DayData, min_speed: float) -> str | None:
-    """"stopped", "slow" (paddock, pit lane) or "track"; None when unknown.
+    """"stopped", "slow" (paddock, pit lane) or "track"; see ``_pace``."""
+    return _pace(m, day, min_speed)[0]
+
+
+def _pace(m: Moment, day: DayData, min_speed: float) -> tuple[str | None, str]:
+    """("stopped", "slow" (paddock, pit lane) or "track", why), the pace
+    None when the scan stored nothing to tell it by.
 
     GoPro GPS speed decides. Without it (e.g. files re-wrapped without the
     GoPro telemetry track) the picture does: whether the camera rides on a
     moving bike (``motion.MountWatch``). A camera in the hand moves the
     picture as much as the track streaming past, and RaceBox time laid on
-    by scene motion can be off, so RaceBox speed and plain scene motion
-    only stand in when the scan could not tell.
+    by scene motion can be off, so RaceBox speed only stands in when the
+    scan could not tell. Scene motion alone never makes a moment track, for
+    the same reason: without any of these the moment counts as slow.
     """
     riding = _moment_riding(m, day)
     if riding is not None and not _has_gopro_gps(m, day):
+        why = f"riding {riding:.0%} of the time"
         if riding >= RIDING_MIN_SHARE:
-            return "track"
+            return "track", why
         motion = _moment_motion(m, day)
-        return "stopped" if motion is not None and motion < DEFAULT_THRESHOLD else "slow"
+        return ("stopped" if motion is not None and motion < DEFAULT_THRESHOLD else "slow"), why
     speed = _moment_speed(m, day)
     if speed is not None:
+        source = "RaceBox" if all(s.recording_id in day.from_racebox for s in m.segments) else "GPS"
+        why = f"{source} {speed:.0f} km/h"
         if speed < min(STOPPED_KMH, min_speed):
-            return "stopped"
-        return "slow" if speed < min_speed else "track"
+            return "stopped", why
+        return ("slow" if speed < min_speed else "track"), why
     unplaced = _unplaced_pace(m, day)
-    if unplaced is not None:
-        motion = _moment_motion(m, day)
-        if motion is not None and motion < DEFAULT_THRESHOLD:
-            return "stopped"
-        return unplaced
     motion = _moment_motion(m, day)
-    if motion is None:
-        return None
-    if motion < DEFAULT_THRESHOLD:
-        return "stopped"
-    return "slow" if motion < TRACK_MOTION else "track"
+    if motion is not None and motion < DEFAULT_THRESHOLD:
+        return "stopped", "no GPS, the picture stands still"
+    if unplaced is not None:
+        return unplaced, "no GPS, not placed on RaceBox"
+    if motion is None:  # scanned before scene motion was stored
+        return None, "pace not stored"
+    return "slow", "no GPS, RaceBox or bike in view says track"
 
 
 def place_without_gps(day: DayData, track) -> None:
@@ -589,7 +596,10 @@ def day_moments(
     crashes: bool = True,
     min_speed: float = DEFAULT_MIN_TRACK_KMH,
     max_vehicle_share: float = DEFAULT_MAX_SHARE,
+    left_out: list[Moment] | None = None,
 ) -> list[Moment]:
+    """The day's moments worth a short. Those left out go to *left_out*,
+    with the reason last in their ``why``."""
     events = [
         CamEvent(
             recording_id=row["recording_id"],
@@ -605,31 +615,43 @@ def day_moments(
     moments = find_moments(events)
     if crashes:
         moments.extend(_crash_moments(day))
+    dropped = left_out if left_out is not None else []
     if max_vehicle_share > 0:
         before = len(moments)
-        moments = [
-            m
-            for m in moments
-            if m.theme in SPEED_EXEMPT_THEMES
-            or (_moment_vehicles(m, day) or 0.0) < max_vehicle_share
-        ]
+        kept_v: list[Moment] = []
+        for m in moments:
+            if m.theme in SPEED_EXEMPT_THEMES or (_moment_vehicles(m, day) or 0.0) < max_vehicle_share:
+                kept_v.append(m)
+            else:
+                m.why.append("left out: car in view (paddock)")
+                dropped.append(m)
+        moments = kept_v
         if len(moments) < before:
             print(f"  {before - len(moments)} moment(s) with a car in view left out (paddock)")
-    moments = _with_action(moments, day)
+    moments = _with_action(moments, day, dropped)
     if min_speed <= 0:
         return moments
     kept: list[Moment] = []
     stopped = slow = 0
     for m in moments:
-        pace = None if m.theme in SPEED_EXEMPT_THEMES else _moment_pace(_approach(m), day, min_speed)
+        if m.theme in SPEED_EXEMPT_THEMES:
+            m.why.append("no pace check for this theme")
+            kept.append(m)
+            continue
+        pace, why = _pace(_approach(m), day, min_speed)
+        m.why.append(why)
         if pace == "stopped":
             stopped += 1
+            m.why.append("left out: standing still")
+            dropped.append(m)
         elif pace == "slow":
             slow += 1
+            m.why.append(f"left out: not on track (below {min_speed:g} km/h or unknown)")
+            dropped.append(m)
         else:
             kept.append(m)
     if stopped or slow:
-        print(f"  left out: {stopped} moment(s) standing still, {slow} below {min_speed:g} km/h (paddock)")
+        print(f"  left out: {stopped} moment(s) standing still, {slow} not shown on track (paddock or unknown)")
     return kept
 
 
@@ -656,14 +678,24 @@ def _nothing_in_view(m: Moment, day: DayData) -> bool:
     return seen is not None and seen[0] == 0 and seen[1] < KERB_MIN_SHARE
 
 
-def _with_action(moments: list[Moment], day: DayData) -> list[Moment]:
+def _with_action(
+    moments: list[Moment], day: DayData, left_out: list[Moment] | None = None
+) -> list[Moment]:
     """Moments with something to see: another rider or a kerb close by.
     More riders in view score higher."""
     kept: list[Moment] = []
     for m in moments:
-        if _nothing_in_view(m, day):
-            continue
         seen = _moment_action(m, day)
+        if seen is not None:
+            riders, kerb = seen
+            m.why.append(
+                f"{riders} rider(s) in view" + (", kerb close by" if kerb >= KERB_MIN_SHARE else "")
+            )
+        if _nothing_in_view(m, day):
+            m.why.append("left out: no rider or kerb in view")
+            if left_out is not None:
+                left_out.append(m)
+            continue
         if seen is not None and seen[0] >= 2:
             m.score *= 1.0 + EXTRA_RIDER_BONUS * min(seen[0] - 1, MAX_EXTRA_RIDERS)
         kept.append(m)
@@ -808,7 +840,8 @@ def collect_short(plan: ShortPlan, day: DayData, dest: Path, jobs: int = 1) -> P
             except Exception as exc:
                 # All or nothing: an incomplete folder must not replace a whole one.
                 raise RuntimeError(f"{segment.recording_id}@{segment.t_start:.0f}s: {exc}") from exc
-            lines.append(f"{name}  ({moment.label}, {_clock_label(moment.utc_start)}, use {use})")
+            why = f"; {', '.join(moment.why)}" if moment.why else ""
+            lines.append(f"{name}  ({moment.label}, {_clock_label(moment.utc_start)}, use {use}{why})")
     if len(lines) == 2:
         return None
 
@@ -842,6 +875,7 @@ def _moment_json(m: Moment, day: DayData) -> dict:
         "time": _clock_label(m.utc_start),
         "utc_start": round(m.utc_start, 2),
         "score": round(m.score, 3),
+        "why": m.why,
         "segments": [
             {
                 "recording_id": s.recording_id,
@@ -978,8 +1012,10 @@ def build_shorts(
         )
         place_without_gps(day, track)
         align(list(day.clocks.values()), racebox_offset=rb_offset, use_audio=audio_sync)
+        left_out: list[Moment] = []
         moments = day_moments(
-            day, crashes=crashes, min_speed=min_speed, max_vehicle_share=max_vehicle_share
+            day, crashes=crashes, min_speed=min_speed, max_vehicle_share=max_vehicle_share,
+            left_out=left_out,
         )
         plans = plan_shorts(moments, max_seconds, max_action_shorts)
         day_dir = out_dir / "shorts" / label
@@ -997,6 +1033,7 @@ def build_shorts(
                         for rid, c in day.clocks.items()
                     },
                     "moments": [_moment_json(m, day) for m in sorted(moments, key=lambda m: m.utc_start)],
+                    "left_out": [_moment_json(m, day) for m in sorted(left_out, key=lambda m: m.utc_start)],
                     "shorts": [
                         {"name": p.name, "theme": p.theme, "seconds": round(p.duration, 1),
                          "moments": [_clock_label(m.utc_start) for m in p.moments]}
