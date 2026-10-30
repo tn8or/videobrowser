@@ -9,7 +9,12 @@ from typing import Any
 
 from tqdm import tqdm
 
-from videobrowser.action import kerb_events, kerb_share, riders_per_second
+from videobrowser.action import (
+    kerb_events,
+    kerb_share,
+    nearest_rider_per_second,
+    riders_per_second,
+)
 from videobrowser.action import per_second as action_per_second
 from videobrowser.db import ScanDB
 from videobrowser.decode import FrameDecoder, decode_frames, decode_one_frame
@@ -698,7 +703,8 @@ def scan_recording(
     db.save_vehicles(recording.recording_id, vehicles_per_second(vehicle_samples))
     db.save_riding(recording.recording_id, riding)
     db.save_action(
-        recording.recording_id, action_per_second(riders_per_second(tracks), kerb_samples)
+        recording.recording_id,
+        action_per_second(riders_per_second(tracks), kerb_samples, nearest_rider_per_second(tracks)),
     )
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=True)
     extra = f"  dropped {dropped} stationary" if dropped else ""

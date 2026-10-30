@@ -82,3 +82,32 @@ def test_a_bike_without_a_person_on_it_is_no_rider():
         12: [TrackPoint(t / 5, 140, 90, 170, 200, 0.9, 0, 12, FW, FH) for t in range(10)],
     }
     assert riders_per_second(tracks) == {}
+
+
+def test_action_density_counts_near_riders_and_kerbs_most():
+    from videobrowser.action import action_density, nearest_rider_per_second
+
+    tracks = {
+        1: [_bike(t / 5, 1, h=60) for t in range(10)],
+        11: [_rider(t / 5, 11, h=60) for t in range(10)],
+    }
+    assert nearest_rider_per_second(tracks) == {0: 60 / FH, 1: 60 / FH}
+    near = [(0.5, 1, 0.0, 0.2)]
+    far = [(0.5, 1, 0.0, 0.04)]
+    two = [(0.5, 2, 0.0, 0.2)]
+    kerb = [(0.5, 0, 1.0, 0.0)]
+    old_scan = [(0.5, 1, 0.0)]
+    values = [action_density(s, 0.0, 1.0) for s in (near, far, two, kerb, old_scan)]
+    assert values[2] > values[0] > values[3] > values[1] > 0
+    assert values[4] == 0.5
+    assert action_density(near, 10.0, 12.0) is None
+
+
+def test_action_rows_keep_rider_height_and_read_old_rows(tmp_path):
+    from videobrowser.db import ScanDB
+
+    db = ScanDB.open(tmp_path / "scan.sqlite")
+    db.save_action("A", per_second({0: 1}, [(0.2, 0.0)], {0: 0.123}))
+    db.save_action("B", [(0.5, 2, 0.0)])
+    assert db.action() == {"A": [(0.5, 1, 0.0, 0.123)], "B": [(0.5, 2, 0.0, 0.0)]}
+    db.close()

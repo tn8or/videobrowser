@@ -138,13 +138,15 @@ RaceBox session date. Recordings with no timestamp go under `unknown/`.
 
 - **Vertical** (`vertical/`): the compact elements laid out for 9:16 phone
   video, kept clear of the Reels / TikTok / Shorts UI. The 9:16 crop pans to
-  follow the rider that triggered the clip (else any rider in view), and
+  follow the rider that triggered the clip (else any bike in view; a person
+  only when no bike is, so a marshal does not pull it away), and
   keeps that rider as they get smaller. Boxes that sit still on the frame
   edge (the camera's own exhaust or fairing) are never followed, nor scored
   as riders. Only after nobody has been in view
-  for 1.5 s does it look into the corner like a rider would, from the GoPro
+  for 3 s does it look into the corner like a rider would, from the GoPro
   GPS turn rate (left in a left-hander on a front camera, mirrored on a rear
-  one). It opens centred unless the subject is already in view. Without RaceBox sessions the overlay uses GoPro telemetry or
+  one). A helmet camera (no part of the bike in view) never does: the head
+  already looks into the corner. It opens centred unless the subject is already in view. Without RaceBox sessions the overlay uses GoPro telemetry or
   date/time; `--no-overlay` leaves it off entirely.
 
 Corner entry/exit speeds are disabled in all variants.
@@ -348,9 +350,12 @@ with `--force` to get it.
 `verticals`) needs another rider in view (a bike box 3%+ of the frame
 height with a person on it, so not a parked bike or the camera's own bike
 filmed by hand) or a red-and-white kerb close by; own
-crashes and own off-tracks are exempt. Each extra rider in view, up to
-three, raises a moment's score by half, so moments with several riders come
-first. The scan stores this per second (`action` in `scan.sqlite`); days
+crashes and own off-tracks are exempt. Moments are ranked by how much there
+is to see per second: each rider in view (up to four) counts fully when its
+box is 15%+ of the frame height and less the farther off it is, and a kerb
+close by counts half. Overtakes and duels weigh 1.5x, a knee down adds one;
+own crashes and off-tracks keep their own score. The scan stores this per
+second (`action` in `scan.sqlite`, with the nearest rider's height); days
 scanned before it need `scan --force` to get the check.
 
 **Why a moment is in.** `klip.txt` ends each line with why the moment was

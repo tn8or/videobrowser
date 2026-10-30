@@ -75,14 +75,22 @@ def test_focus_prefers_riders_in_view_over_the_corner_and_ignores_tiny_boxes():
         5: [_pt(1.0, 5, 0.3)],  # rider ahead, e.g. through a corner exit
         6: [_pt(2.0, 6, 0.1, h=0.01)],  # too far away to follow
     }
-    left_hander = [TurnSample(t / 10, -30.0) for t in range(0, 40)]
+    left_hander = [TurnSample(t / 10, -30.0) for t in range(0, 80)]
     samples = focus_samples(_window(), tracks, left_hander)
     # Rider wins around t=1 and for RIDER_HOLD_S after; once nobody followable
     # has been in view for that long, the crop looks left into the corner.
     near_rider = [s for s in samples if 0.75 < s.t < 1.0 + RIDER_HOLD_S]
     assert [(s.t, round(s.cx, 2)) for s in near_rider] == [(1.0, 0.3)]
-    at_three = next(s for s in samples if s.t == pytest.approx(3.0))
-    assert at_three.cx == pytest.approx(0.5 - MAX_TURN_SHIFT)
+    later = next(s for s in samples if s.t == pytest.approx(1.5 + RIDER_HOLD_S))
+    assert later.cx == pytest.approx(0.5 - MAX_TURN_SHIFT)
+
+
+def test_focus_follows_a_bike_over_a_person_beside_the_track():
+    rider = _pt(1.0, 1, 0.3, h=0.2)
+    marshal = _pt(1.0, 2, 0.8, h=0.5, w=0.1)
+    marshal.cls = 0
+    samples = focus_samples(_window(), {1: [rider], 2: [marshal]})
+    assert [round(s.cx, 2) for s in samples] == [0.3]
 
 
 def test_focus_stays_on_a_rider_the_tracker_drops_for_a_moment_or_who_pulls_away():

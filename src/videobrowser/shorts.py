@@ -95,10 +95,15 @@ LANES_END = 1_000_000_000.0
 # share of a second (``action.py``), unless its theme is about our own bike.
 KERB_MIN_SHARE = 0.25
 ACTION_EXEMPT_THEMES = frozenset({"crash", "own_off_track"})
-# Each extra rider in view (up to MAX_EXTRA_RIDERS) adds this to a moment's
-# score, as a multiple: two riders beat one.
-EXTRA_RIDER_BONUS = 0.5
-MAX_EXTRA_RIDERS = 3
+# Moments are ranked by how much there is to see (``action.action_density``:
+# riders in view, by how near, and kerbs), times a weight per theme for the
+# ones that tell a story. Themes about our own bike keep their own score.
+THEME_WEIGHT = {
+    "overtake": 1.5, "overtaken": 1.5, "duel": 1.5, "kneepuck": 1.3,
+    "crash_other": 3.0, "off_track": 2.0,
+}
+# A knee down counts like this much more action per second.
+KNEE_BONUS = 1.0
 
 
 @dataclass
@@ -687,11 +692,24 @@ def _nothing_in_view(m: Moment, day: DayData) -> bool:
     return seen is not None and seen[0] == 0 and seen[1] < KERB_MIN_SHARE
 
 
+def _moment_density(m: Moment, day: DayData) -> float | None:
+    """Action per second over the moment's pieces, None if not stored."""
+    from videobrowser.action import action_density
+
+    total = weight = 0.0
+    for seg in m.segments:
+        found = action_density(day.action.get(seg.recording_id, []), seg.t_start, seg.t_end)
+        if found is not None:
+            total += found * seg.duration
+            weight += seg.duration
+    return total / weight if weight > 0 else None
+
+
 def _with_action(
     moments: list[Moment], day: DayData, left_out: list[Moment] | None = None
 ) -> list[Moment]:
-    """Moments with something to see: another rider or a kerb close by.
-    More riders in view score higher."""
+    """Moments with something to see: another rider or a kerb close by,
+    scored by how much there is to see."""
     kept: list[Moment] = []
     for m in moments:
         seen = _moment_action(m, day)
@@ -705,8 +723,12 @@ def _with_action(
             if left_out is not None:
                 left_out.append(m)
             continue
-        if seen is not None and seen[0] >= 2:
-            m.score *= 1.0 + EXTRA_RIDER_BONUS * min(seen[0] - 1, MAX_EXTRA_RIDERS)
+        density = _moment_density(m, day)
+        if density is not None and m.theme not in ACTION_EXEMPT_THEMES:
+            if m.theme == "kneepuck":
+                density += KNEE_BONUS
+            m.score = THEME_WEIGHT.get(m.theme, 1.0) * density
+            m.why.append(f"action {density:.1f}/s")
         kept.append(m)
     if len(kept) < len(moments):
         print(f"  {len(moments) - len(kept)} moment(s) without a rider or kerb in view left out")
@@ -812,6 +834,8 @@ def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
     end = min(segment.t_end, clock.duration)
     window = ClipWindow(segment.t_start, end, segment.recording_id, [], 0.0, [])
     _speeds, turns = _day_gps(day, segment.recording_id)
+    if not day.riding.get(segment.recording_id):
+        turns = []  # a helmet camera already looks into the corner (see exports)
     focus = turn_focus(turns, segment.t_start, end, day.facing(segment.recording_id))
     return export_vertical(recording, window, dest, day.rotations[segment.recording_id], focus)
 
