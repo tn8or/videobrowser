@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from videobrowser.bridge import EdgeHit, find_edges, passes_from_edges
 
@@ -69,3 +70,16 @@ def test_a_steep_edge_off_to_one_side_is_no_bridge():
         y = int(40 + (x - 100) * 0.45)  # about 24 degrees
         image[:y, x] = (60, 60, 60)
     assert find_edges(image) == []
+
+
+def test_a_windscreen_edge_that_holds_its_row_is_no_pass():
+    # Fixed near the top while the bike leans a little: never a rising track.
+    frames = [(10.0 + i * 0.08, [EdgeHit(0.6, 0.12 + 0.005 * (i % 2), 0.0)]) for i in range(20)]
+    frames += [(11.6, [EdgeHit(0.6, 0.3, 0.0)]), (11.68, [EdgeHit(0.6, 0.1, 0.0)])]
+    assert passes_from_edges([f[0] for f in frames], [f[1] for f in frames], 12.5) == pytest.approx([11.72])
+
+
+def test_a_roof_rising_slowly_in_the_paddock_is_no_pass():
+    rows = list(np.linspace(0.3, 0.05, 30))  # 2.4 s to clear the top
+    frames = _rise(10.0, rows)
+    assert passes_from_edges([f[0] for f in frames], [f[1] for f in frames], 12.5) == []

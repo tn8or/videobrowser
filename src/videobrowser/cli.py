@@ -293,6 +293,9 @@ def build_parser() -> argparse.ArgumentParser:
     line.add_argument(
         "--no-bridge", action="store_true", help="Go by the finish line alone, also at venues with a bridge"
     )
+    line.add_argument(
+        "--side", action="store_true", help="The camera is on the side of the bike: bridges may show tilted more"
+    )
     return parser
 
 
@@ -526,7 +529,7 @@ def finish_line_cmd(args: argparse.Namespace) -> int:
         print("no start to search around: pass --near", file=sys.stderr)
         return 1
     finder = PassFinder(recording, 640, rotation)
-    bridges = BridgeFinder(recording, 640, rotation)
+    bridges = BridgeFinder(recording, 640, rotation, side=args.side)
 
     def logged(t0: float, t1: float):
         passes = finder(t0, t1)

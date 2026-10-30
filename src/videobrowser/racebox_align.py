@@ -72,10 +72,12 @@ LANDMARK_RIVAL_S = 1.0
 # landmark passes, spread over the recording ...
 BRIDGE_WINDOWS = 3
 # ... then the start is refined by the painted finish line, searched this
-# far (s) either side of each crossing and taken within BRIDGE_REFINE_TOL_S
-# (the grid line 0.26 s before it is a line too).
-BRIDGE_REFINE_S = 0.3
-BRIDGE_REFINE_TOL_S = 0.2
+# far (s) either side of each crossing and taken within BRIDGE_REFINE_TOL_S:
+# where the bridge leaves the picture depends on the camera's height and
+# pitch, 0.25 s apart between two cameras at Anderstorp. (The checkered line
+# lies 0.58 s before the finish line, outside.)
+BRIDGE_REFINE_S = 0.45
+BRIDGE_REFINE_TOL_S = 0.35
 # Crossings that must agree (within LINE_TOL_S) to move the bridge start:
 # one line pass alone has moved it the wrong way.
 BRIDGE_REFINE_MIN = 2
@@ -87,6 +89,8 @@ ANYWHERE_S = 36 * 3600.0
 # ... pairing within this many seconds (a constant lag of the mount goes into
 # the start; what is left is a frame or so) ...
 ANYWHERE_TOL_S = 0.15
+# ... in recordings this long (s) or more, about three laps ...
+ANYWHERE_MIN_S = 250.0
 # ... with this many pairs and this many times the next best start: chance
 # pairs up to five passes somewhere in a day, and laps of nearly the same
 # time pair up half of them a lap off.
@@ -473,7 +477,7 @@ def bridge_place(
     *find_bridges(t0, t1)* returns the bridge passes (recording time, s) the
     picture shows between t0 and t1; they are searched LINE_COARSE_S either
     side of up to BRIDGE_WINDOWS of RaceBox's landmark passes and laid on
-    them by ``landmark_match``. Then *find_passes* (``finish_line``) looks
+    them by ``landmark_match`` (two passes or more). Then *find_passes* (``finish_line``) looks
     for the finish line BRIDGE_REFINE_S either side of each crossing; the
     passes that agree move the start to the frame. Without them the bridge
     start stands.
@@ -490,16 +494,9 @@ def bridge_place(
         ]
     )
     passes = sorted({round(float(p), 3) for lo, hi in spans if hi - lo >= 0.2 for p in find_bridges(lo, hi)})
+    # One bridge pass agrees with some landmark near almost any start: a
+    # recording with one is left to scene motion.
     match = landmark_match(passes, lm, [start0], LINE_COARSE_S)
-    if match.start_utc is None and len(match.passes) == 1:
-        # One bridge in the recording: placed by it when it lands near the
-        # scene-motion start and no other pass gives a start as near.
-        start = match.passes[0][1] - match.passes[0][0]
-        in_view = int(np.sum((lm >= start) & (lm <= start + duration)))
-        near = {round(u - p, 1) for p in passes for u in lm if abs(u - p - start0) <= LINE_NEAR_S}
-        alone = all(abs(s - start) <= LANDMARK_RIVAL_S for s in near)
-        if in_view == 1 and abs(start - start0) <= LINE_NEAR_S and alone:
-            match = LineMatch(start, match.reason.split(" (")[0] + " (one bridge, near)", match.passes, 0.0)
     if match.start_utc is None:
         return match
     reason = f"bridge: {match.reason}, {match.start_utc - start0:+.2f} s from scene motion"
@@ -522,6 +519,8 @@ def bridge_place_anywhere(
     lm = lm[(lm >= clock_utc - ANYWHERE_S) & (lm <= clock_utc + duration + ANYWHERE_S)]
     if not len(lm):
         return LineMatch(None, "no RaceBox landmark pass within a day of the camera clock")
+    if duration < ANYWHERE_MIN_S:
+        return LineMatch(None, f"too short to search whole ({duration:.0f} s)")
     passes = sorted({round(float(p), 3) for p in find_bridges(0.0, duration)})
     match = landmark_match(passes, lm, [clock_utc], ANYWHERE_S, ANYWHERE_TOL_S)
     if not match.passes:

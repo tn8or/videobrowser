@@ -35,8 +35,10 @@ BRIDGE_MIN_RUN = 0.2
 BRIDGE_GAP_PX = 7
 # Roll of the camera (degrees) the edge may show at, and the rows of slack
 # for an underside that bows (wide lens). Under the bridge the bike is
-# upright; a fence or pit wall runs off to one side at a steeper angle.
+# upright; a fence or pit wall runs off to one side at a steeper angle. A
+# side mount sees a bridge from off its centre line, the far end lower.
 BRIDGE_MAX_ANGLE = 12.0
+BRIDGE_SIDE_ANGLE = 20.0
 BRIDGE_ANGLE_STEP = 3.0
 BRIDGE_BOW_PX = 5
 # Edges found per frame, this far apart (share of the height).
@@ -50,10 +52,16 @@ BRIDGE_FPS = 12.5
 # at most this much lower (it rises as the bridge nears) ...
 TRACK_GAP_S = 0.3
 TRACK_BACK = 0.02
-# ... is the bridge once it has risen this much (share of the height) and
-# was last seen this near the top.
-BRIDGE_RISE = 0.05
+# ... is the bridge once it has risen this much (share of the height) in
+# its last BRIDGE_RISE_S (at track speed; awnings and roofs in the paddock
+# rise slowly) and was last seen this near the top.
+BRIDGE_RISE = 0.1
+BRIDGE_RISE_S = 0.4
 BRIDGE_EXIT_ROW = 0.15
+# An edge that holds its row (share of the height) to within this over
+# STILL_LAG_S is fixed to the camera: a windscreen or fairing edge.
+STILL_ROW = 0.015
+STILL_LAG_S = 0.2
 # Passes this close (s) are one bridge, timed by the first: its edges leave
 # one after another, and a fence or wall just past it leaves later.
 BRIDGE_SAME_S = 0.5
@@ -70,12 +78,10 @@ class EdgeHit:
     angle: float
 
 
-_ANGLES = np.arange(-BRIDGE_MAX_ANGLE, BRIDGE_MAX_ANGLE + 1e-6, BRIDGE_ANGLE_STEP)
-
-
-def find_edges(image: np.ndarray) -> list[EdgeHit]:
-    """Edges across the top of *image* with dark above, longest first, at
-    most MAX_EDGES of them and EDGE_APART apart."""
+def find_edges(image: np.ndarray, max_angle: float = BRIDGE_MAX_ANGLE) -> list[EdgeHit]:
+    """Edges across the top of *image* with dark above, at most *max_angle*
+    off level, longest first, at most MAX_EDGES of them and EDGE_APART
+    apart."""
     grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     h, w = grey.shape
     if w != BRIDGE_WIDTH:
@@ -89,7 +95,7 @@ def find_edges(image: np.ndarray) -> list[EdgeHit]:
         return []
     cx = w / 2.0
     found: list[EdgeHit] = []
-    for angle in _ANGLES:
+    for angle in np.arange(-max_angle, max_angle + 1e-6, BRIDGE_ANGLE_STEP):
         slope = float(np.tan(np.radians(angle)))
         m = np.float32([[1, 0, 0], [-slope, 1, slope * cx]])
         flat = cv2.warpAffine(edge, m, (w, bottom), flags=cv2.INTER_NEAREST, borderValue=0)
@@ -113,18 +119,35 @@ def find_edges(image: np.ndarray) -> list[EdgeHit]:
 def passes_from_edges(times: list[float], hits: list[list[EdgeHit]], fps: float) -> list[float]:
     """Times the bridge leaves the top of the picture, in order.
 
-    *hits* are the edges of each frame at *times*. An edge is followed while
-    it rises; it is the bridge once it has risen BRIDGE_RISE and was last seen
-    near the top, and it passes half a frame after that.
+    *hits* are the edges of each frame at *times*. Edges that hold their
+    place STILL_LAG_S before and after are the bike's own and do not count.
+    An edge is followed while it rises; it is the bridge once it has risen
+    BRIDGE_RISE in its last BRIDGE_RISE_S and was last seen near the top, and
+    it passes half a frame after that.
     """
+    lag = max(1, round(STILL_LAG_S * fps))
     tracks: list[list[tuple[float, EdgeHit]]] = []
     done: list[list[tuple[float, EdgeHit]]] = []
+
+    def still(hit: EdgeHit, around: list[list[EdgeHit]]) -> bool:
+        # There both before and after: a moving edge passes a row once.
+        return bool(around) and all(
+            any(abs(hit.row - o.row) <= STILL_ROW and abs(hit.angle - o.angle) <= BRIDGE_ANGLE_STEP for o in others)
+            for others in around
+        )
+
+    def rose(tr: list[tuple[float, EdgeHit]]) -> float:
+        t1, last = tr[-1]
+        return max(h.row for t, h in tr if t >= t1 - BRIDGE_RISE_S) - last.row
+
     def ended(tr: list[tuple[float, EdgeHit]], t: float) -> bool:
         # Lost for long, or gone a frame once at the top: it left.
         last_t, last = tr[-1]
         return t - last_t > TRACK_GAP_S or (last.row <= BRIDGE_EXIT_ROW and t - last_t > 1.5 / fps)
 
-    for t, frame in zip(times, hits):
+    for i, (t, frame) in enumerate(zip(times, hits)):
+        around = [hits[j] for j in (i - lag, i + lag) if 0 <= j < len(hits)]
+        frame = [h for h in frame if not still(h, around)]
         open_ = [tr for tr in tracks if not ended(tr, t)]
         done.extend(tr for tr in tracks if ended(tr, t))
         tracks = []
@@ -145,7 +168,7 @@ def passes_from_edges(times: list[float], hits: list[list[EdgeHit]], fps: float)
         for tr in done
         if len(tr) >= 2
         and tr[-1][1].row <= BRIDGE_EXIT_ROW
-        and max(h.row for _, h in tr) - tr[-1][1].row >= BRIDGE_RISE
+        and rose(tr) >= BRIDGE_RISE
     )
     out: list[float] = []
     for t in found:
@@ -156,12 +179,17 @@ def passes_from_edges(times: list[float], hits: list[list[EdgeHit]], fps: float)
 
 class BridgeFinder(PassFinder):
     """Bridge passes in stretches of a recording, at BRIDGE_FPS: called with
-    (t0, t1) in recording time, returns the times (s) in it."""
+    (t0, t1) in recording time, returns the times (s) in it. *side*: the
+    camera is mounted on the side of the bike (BRIDGE_SIDE_ANGLE)."""
 
     rate = BRIDGE_FPS
 
+    def __init__(self, recording, max_side: int = 640, rotation: int = 0, side: bool = False) -> None:
+        super().__init__(recording, max_side, rotation)
+        self.max_angle = BRIDGE_SIDE_ANGLE if side else BRIDGE_MAX_ANGLE
+
     def find(self, image: np.ndarray) -> list[EdgeHit]:
-        return find_edges(image)
+        return find_edges(image, self.max_angle)
 
     def passes(self, times: list[float], hits: list, fps: float) -> list[float]:
         return passes_from_edges(times, hits, fps)

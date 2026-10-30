@@ -363,12 +363,22 @@ def test_line_refine_ignores_the_checkered_line_before_the_finish():
     assert 0.58 > BRIDGE_REFINE_S > BRIDGE_REFINE_TOL_S > 0.08
 
 
-def test_one_bridge_places_only_near_the_motion_start():
+def test_one_bridge_places_nothing():
     track = _bridge_track(laps=np.array([]))
     start = T0 + 10.0
     bridges, _ = _bridges(track, start, lag=0.0)
-    assert abs(bridge_place(start + 4.0, 200.0, track, bridges).start_utc - start) < 1e-3
-    assert bridge_place(start + 25.0, 200.0, track, bridges).start_utc is None
+    assert bridge_place(start + 4.0, 200.0, track, bridges).start_utc is None
+
+
+def test_line_refine_absorbs_a_camera_that_sees_the_bridge_leave_early():
+    track = _bridge_track()
+    start = T0 + 10.0
+    # This camera loses the bridge 0.25 s before RaceBox's time.
+    bridges, _ = _bridges(track, start, lag=-0.25)
+    lines, _ = _picture(track, start)
+    match = bridge_place(start, 500.0, track, bridges, lines)
+    assert abs(match.start_utc - start) < 0.03
+    assert "finish line" in match.reason and "not enough" not in match.reason
 
 
 def test_no_bridge_in_the_picture_places_nothing():
@@ -436,4 +446,12 @@ def test_whole_recording_needs_more_than_a_lap():
     track, rng = _day()
     start = track.landmarks[30] - 20.0
     passes = [u - start for u in track.landmarks if 0 < u - start < 100]
-    assert bridge_place_anywhere(start, 100.0, track, lambda a, b: passes).start_utc is None
+    calls = []
+
+    def find(a, b):
+        calls.append((a, b))
+        return passes
+
+    assert bridge_place_anywhere(start, 100.0, track, find).start_utc is None
+    # Too short to be worth decoding.
+    assert calls == []

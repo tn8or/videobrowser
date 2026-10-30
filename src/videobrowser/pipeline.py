@@ -645,7 +645,7 @@ def scan_recording(
         motion_samples,
         start_utc,
         PassFinder(recording, config.max_side, profile.rotation),
-        BridgeFinder(recording, config.max_side, profile.rotation),
+        BridgeFinder(recording, config.max_side, profile.rotation, side=profile.name.startswith("side")),
     )
     riding = mount.per_second()
     if riding is None:
