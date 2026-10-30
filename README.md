@@ -35,10 +35,11 @@ Design criteria and product decisions live in [INSTRUCTIONS.md](INSTRUCTIONS.md)
   - `pycairo` — overlay rendering
   - `playwright` (optional, `fetch` extra) — auto-downloading RaceBox sessions
 
-`ultralytics` is AGPL-3.0, and it installs `ultralytics-thop` and
-`ultralytics-platform` under that license too. On Linux, current PyTorch
-wheels also install the proprietary NVIDIA CUDA runtime `nvidia-nvshmem-cu13`.
-This repository has no `LICENSE` file yet. See [License](#license).
+videobrowser is AGPL-3.0-only (see [License](#license)). `ultralytics`
+(AGPLv3+) installs `ultralytics-thop` (AGPLv3+) and `ultralytics-platform`
+(AGPL-3.0-only); those match this license. On Linux, current PyTorch wheels
+also install the proprietary NVIDIA CUDA runtime `nvidia-nvshmem-cu13`,
+accepted as a redistributable runtime.
 
 ### Install
 
@@ -468,12 +469,15 @@ videobrowser racebox-fetch output/sessions
 
 ## License
 
-No project license is chosen: there is no `LICENSE` file and no `license`
-field in `pyproject.toml`. The detector stack (`ultralytics`,
-`ultralytics-thop`, `ultralytics-platform`) is AGPL-3.0. `nvidia-nvshmem-cu13`
-is a proprietary NVIDIA CUDA runtime pulled in by Linux PyTorch wheels.
-Versions, how each package is installed, and the open license choice are in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+videobrowser is free software under the GNU Affero General Public License,
+version 3 only (SPDX `AGPL-3.0-only`). The full text is [LICENSE](LICENSE).
+`pyproject.toml` sets `license = "AGPL-3.0-only"`.
+
+`ultralytics` and `ultralytics-thop` are AGPLv3+, and `ultralytics-platform`
+is AGPL-3.0-only. Those are compatible with this license.
+`nvidia-nvshmem-cu13` is a proprietary NVIDIA CUDA runtime pulled in by
+Linux PyTorch wheels and is accepted as an unmodified redistributable.
+Details are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Development
 
