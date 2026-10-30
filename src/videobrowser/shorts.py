@@ -87,6 +87,18 @@ APPROACH_THEMES = {"own_off_track": 6.0}
 # picture decides (``motion.MountWatch``).
 RIDING_MIN_SHARE = 0.5
 _TZ = ZoneInfo("Europe/Copenhagen")
+# Recordings without a date: lanes this far apart on the day's clock. Times
+# below LANES_END are such lanes, shown as time into the recording.
+UNDATED_LANE_S = 1_000_000.0
+LANES_END = 1_000_000_000.0
+# A moment needs another rider in view, or a kerb close by for at least this
+# share of a second (``action.py``), unless its theme is about our own bike.
+KERB_MIN_SHARE = 0.25
+ACTION_EXEMPT_THEMES = frozenset({"crash", "own_off_track"})
+# Each extra rider in view (up to MAX_EXTRA_RIDERS) adds this to a moment's
+# score, as a multiple: two riders beat one.
+EXTRA_RIDER_BONUS = 0.5
+MAX_EXTRA_RIDERS = 3
 
 
 @dataclass
@@ -232,6 +244,9 @@ class DayData:
     # recording id -> per-second share of frames riding on a moving bike;
     # no entry when the scan saw no part of a bike or predates it.
     riding: dict = field(default_factory=dict)
+    # recording id -> per-second (t, most other riders in one frame, share
+    # of frames with a kerb close), ``action.py``; none for older scans.
+    action: dict = field(default_factory=dict)
     # recording id -> "front"/"rear" the scan read from scene flow.
     facings: dict = field(default_factory=dict)
 
@@ -239,6 +254,16 @@ class DayData:
         """Which way the camera looks: scene flow when the scan had it, else
         the mount guess."""
         return self.facings.get(rid) or facing(self.profiles.get(rid, ""))
+
+    def offset(self, rid: str) -> float:
+        """Start of *rid* on the day's clock. A recording without any date
+        or time gets a lane of its own (``UNDATED_LANE_S`` apart), so its
+        moments never pair with or crowd out another recording's."""
+        start = self.clocks[rid].start_utc
+        if start is not None:
+            return float(start)
+        undated = sorted(r for r, c in self.clocks.items() if c.start_utc is None)
+        return float(undated.index(rid) * UNDATED_LANE_S)
 
 
 def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
@@ -259,6 +284,9 @@ def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
     for rid, samples in db.motion().items():
         if rid in owner:
             owner[rid].motion[rid] = samples
+    for rid, samples in db.action().items():
+        if rid in owner:
+            owner[rid].action[rid] = samples
     for rid, samples in db.riding().items():
         if rid in owner:
             owner[rid].riding[rid] = samples
@@ -570,7 +598,7 @@ def day_moments(
             t_start=float(row["t_start"]),
             t_end=float(row["t_end"]),
             score=float(row["score"]),
-            utc_offset=float(day.clocks[row["recording_id"]].start_utc or 0.0),
+            utc_offset=day.offset(row["recording_id"]),
         )
         for row in day.events
     ]
@@ -587,6 +615,7 @@ def day_moments(
         ]
         if len(moments) < before:
             print(f"  {before - len(moments)} moment(s) with a car in view left out (paddock)")
+    moments = _with_action(moments, day)
     if min_speed <= 0:
         return moments
     kept: list[Moment] = []
@@ -601,6 +630,45 @@ def day_moments(
             kept.append(m)
     if stopped or slow:
         print(f"  left out: {stopped} moment(s) standing still, {slow} below {min_speed:g} km/h (paddock)")
+    return kept
+
+
+def _moment_action(m: Moment, day: DayData) -> tuple[int, float] | None:
+    """(most other riders in one frame, longest kerb share of a second) over
+    the moment's pieces, None if the scan stored neither."""
+    from videobrowser.action import in_view
+
+    found = [
+        in_view(day.action[s.recording_id], s.t_start, s.t_end)
+        for s in m.segments
+        if day.action.get(s.recording_id)
+    ]
+    found = [f for f in found if f is not None]
+    if not found:
+        return None
+    return max(r for r, _ in found), max(k for _, k in found)
+
+
+def _nothing_in_view(m: Moment, day: DayData) -> bool:
+    if m.theme in ACTION_EXEMPT_THEMES:
+        return False
+    seen = _moment_action(m, day)
+    return seen is not None and seen[0] == 0 and seen[1] < KERB_MIN_SHARE
+
+
+def _with_action(moments: list[Moment], day: DayData) -> list[Moment]:
+    """Moments with something to see: another rider or a kerb close by.
+    More riders in view score higher."""
+    kept: list[Moment] = []
+    for m in moments:
+        if _nothing_in_view(m, day):
+            continue
+        seen = _moment_action(m, day)
+        if seen is not None and seen[0] >= 2:
+            m.score *= 1.0 + EXTRA_RIDER_BONUS * min(seen[0] - 1, MAX_EXTRA_RIDERS)
+        kept.append(m)
+    if len(kept) < len(moments):
+        print(f"  {len(moments) - len(kept)} moment(s) without a rider or kerb in view left out")
     return kept
 
 
@@ -627,12 +695,15 @@ def clip_drop_reason(
     """Why a scan clip window is left out of the exports, None to keep it.
 
     The same tests ``day_moments`` puts a moment of other riders through: a
-    car in view, the bike standing still or riding below *min_speed*.
+    car in view, no rider or kerb in view, the bike standing still or riding
+    below *min_speed*.
     """
-    start = day.clocks[rid].start_utc or 0.0
+    start = day.offset(rid)
     m = Moment("action", start + t_start, start + t_end, 0.0, [Segment(rid, t_start, t_end)])
     if max_vehicle_share > 0 and (_moment_vehicles(m, day) or 0.0) >= max_vehicle_share:
         return "car in view"
+    if _nothing_in_view(m, day):
+        return "no rider or kerb in view"
     if min_speed <= 0:
         return None
     pace = _moment_pace(m, day, min_speed)
@@ -647,10 +718,18 @@ def clip_drop_reason(
 
 
 def _clock_label(utc: float) -> str:
+    if utc < LANES_END:  # a recording without a date: time into it
+        return _into(utc, "%H:%M")
     return datetime.fromtimestamp(utc, tz=timezone.utc).astimezone(_TZ).strftime("%H:%M")
 
 
+def _into(utc: float, fmt: str) -> str:
+    return datetime.fromtimestamp(utc % UNDATED_LANE_S, tz=timezone.utc).strftime(fmt)
+
+
 def _file_time(utc: float) -> str:
+    if utc < LANES_END:
+        return _into(utc, "%H%M%S")
     return datetime.fromtimestamp(utc, tz=timezone.utc).astimezone(_TZ).strftime("%H%M%S")
 
 
