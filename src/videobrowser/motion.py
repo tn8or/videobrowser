@@ -141,17 +141,23 @@ def facing_from_flow(divergences: list[float]) -> str | None:
 
 # --- camera on a moving bike ---------------------------------------------------
 
-# Frames are compared this small (width, px), so engine vibration of a pixel
-# or two at full size does not count as movement.
-MOUNT_WIDTH = 96
+# Frames are compared at this width (px), lightly blurred so engine vibration
+# of a pixel or two does not count as movement. Much smaller (it was 96 px)
+# and the asphalt and verges lose the texture that shows them streaming past.
+MOUNT_WIDTH = 320
 MOUNT_GRID = 8
-# A block with this much texture (grey std) and less change than FIXED_DIFF
-# stands still in the picture; one changing STREAM_DIFF or more streams past.
-TEXTURE_STD = 10.0
-FIXED_DIFF = 6.0
-STREAM_DIFF = 12.0
-# A frame pair is on the move when this share of blocks streams ...
-MOVING_SHARE = 0.35
+MOUNT_BLUR = 1.0
+# Only blocks with this much texture (grey std) tell anything: sky and
+# smooth asphalt look the same whether they move or not. Change is measured
+# against a block's own texture, so low-contrast scenes (haze, shade, soft
+# compression) stream as well as sharp ones: a block changing less than
+# FIXED_REL of its texture stands still, one changing STREAM_REL or more
+# streams past.
+TEXTURE_STD = 4.0
+FIXED_REL = 0.3
+STREAM_REL = 0.6
+# A frame pair is on the move when this share of the textured blocks streams ...
+MOVING_SHARE = 0.3
 # ... and the bike is in view when this share of its own blocks stands still.
 EGO_HELD = 0.5
 # Blocks that stand still in this share of the moving frames are the bike's
@@ -159,6 +165,10 @@ EGO_HELD = 0.5
 # least MIN_MOVING_FRAMES.
 EGO_FIXED_SHARE = 0.6
 MIN_EGO_BLOCKS = 2
+# The bike's own parts are in the lower part of the picture (from this
+# share of its height down). Higher up, the far scenery and a sharp skyline
+# hold nearly still too, also in a camera held in the hand.
+EGO_TOP = 0.5
 MIN_MOVING_FRAMES = 25
 
 
@@ -184,6 +194,7 @@ class MountWatch:
         h, w = grey.shape
         small = cv2.resize(grey, (MOUNT_WIDTH, max(MOUNT_GRID, round(MOUNT_WIDTH * h / max(1, w)))),
                            interpolation=cv2.INTER_AREA).astype(np.float32)
+        small = cv2.GaussianBlur(small, (0, 0), MOUNT_BLUR)
         prev, self._prev = self._prev, small
         if prev is None or prev.shape != small.shape:
             return
@@ -191,10 +202,15 @@ class MountWatch:
         bh, bw = sh // MOUNT_GRID, sw // MOUNT_GRID
         crop = (slice(0, bh * MOUNT_GRID), slice(0, bw * MOUNT_GRID))
         diff = np.abs(small - prev)[crop].reshape(MOUNT_GRID, bh, MOUNT_GRID, bw).mean(axis=(1, 3))
-        texture = small[crop].reshape(MOUNT_GRID, bh, MOUNT_GRID, bw).std(axis=(1, 3))
+        texture = np.maximum(
+            small[crop].reshape(MOUNT_GRID, bh, MOUNT_GRID, bw).std(axis=(1, 3)),
+            prev[crop].reshape(MOUNT_GRID, bh, MOUNT_GRID, bw).std(axis=(1, 3)),
+        )
+        textured = texture >= TEXTURE_STD
         self._t.append(t)
-        self._fixed.append(((texture >= TEXTURE_STD) & (diff < FIXED_DIFF)).ravel())
-        self._stream.append(float(np.mean(diff >= STREAM_DIFF)))
+        self._fixed.append((textured & (diff < FIXED_REL * texture)).ravel())
+        streaming = textured & (diff >= STREAM_REL * texture)
+        self._stream.append(float(streaming.sum() / textured.sum()) if textured.any() else 0.0)
 
     def ego_blocks(self) -> np.ndarray | None:
         """Blocks of the camera's own bike, None when the recording shows none."""
@@ -203,7 +219,25 @@ class MountWatch:
             return None
         share = np.array(self._fixed)[moving].mean(axis=0)
         ego = share >= EGO_FIXED_SHARE
+        ego[: int(MOUNT_GRID * EGO_TOP) * MOUNT_GRID] = False
         return ego if ego.sum() >= MIN_EGO_BLOCKS else None
+
+    def summary(self) -> str:
+        """How close the recording came to showing a bike on the move, for the log."""
+        if not self._stream:
+            return "no frames"
+        stream = np.array(self._stream)
+        moving = stream >= MOVING_SHARE
+        held = 0
+        if moving.any():
+            share = np.array(self._fixed)[moving].mean(axis=0)
+            share[: int(MOUNT_GRID * EGO_TOP) * MOUNT_GRID] = 0.0
+            held = int((share >= EGO_FIXED_SHARE).sum())
+        return (
+            f"streaming median {np.median(stream):.2f}, p90 {np.percentile(stream, 90):.2f} "
+            f"(moving at {MOVING_SHARE:g}); {int(moving.sum())}/{len(stream)} frames moving "
+            f"(need {MIN_MOVING_FRAMES}); {held} bike blocks holding still (need {MIN_EGO_BLOCKS})"
+        )
 
     def per_second(self) -> list[tuple[float, float]] | None:
         """Share of frames per second riding on a moving bike, None when the

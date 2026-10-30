@@ -332,18 +332,32 @@ scan finds those blocks per recording (still and textured in most moving
 frames) and stores, per second, the share of frames where the scene streams
 past while they hold still (`riding` in `scan.sqlite`). A moment is on track
 when half its frames ride. This beats RaceBox speed laid on by scene motion,
-whose timing can be off. When a recording shows no part of a bike (helmet
-camera, all in the hand; `riding: no part of a bike ...` in the scan log),
-RaceBox speed and then scene motion decide as before. Rescan with `--force`
-to get it.
+whose timing can be off. Change is measured at 320 px against each block's
+own texture, so soft, low-contrast scenes stream too. The scan log says how
+close each recording came (`riding: ... streaming median ..., N bike blocks
+holding still`). When a recording shows no part of a bike (helmet camera,
+all in the hand), RaceBox speed decides where the recording is placed on the
+log. Scene motion alone never makes a moment track, since a camera in the
+hand moves as much; with another rider (a person on a bike) in view while
+the scene streams past at track pace it does, which is what keeps helmet
+camera moments without RaceBox speed. Without any of these the moment is
+left out. Rescan
+with `--force` to get it.
 
 **Something to see.** Every moment (and every clip in `horizontals` and
-`verticals`) needs another rider's bike box in view (3%+ of the frame
-height, not the camera's own bike) or a red-and-white kerb close by; own
+`verticals`) needs another rider in view (a bike box 3%+ of the frame
+height with a person on it, so not a parked bike or the camera's own bike
+filmed by hand) or a red-and-white kerb close by; own
 crashes and own off-tracks are exempt. Each extra rider in view, up to
 three, raises a moment's score by half, so moments with several riders come
 first. The scan stores this per second (`action` in `scan.sqlite`); days
 scanned before it need `scan --force` to get the check.
+
+**Why a moment is in.** `klip.txt` ends each line with why the moment was
+kept (riders in view, kerb, and where the pace came from: `GPS 87 km/h`,
+`RaceBox 74 km/h` or `riding 92% of the time`). `moments.json` has the same
+under `why`, and lists the moments left out under `left_out`, with the
+reason last.
 
 **Recordings without a date** (no creation time, or a placeholder such as
 1904 or 1970 written by an editor) go to `shorts/unknown/`. Each gets a

@@ -592,7 +592,10 @@ def scan_recording(
     )
     riding = mount.per_second()
     if riding is None:
-        print("  riding: no part of a bike holds still in the picture (helmet camera or in hand?)")
+        print(f"  riding: no part of a bike holds still in the picture (helmet camera or in hand?): {mount.summary()}")
+    else:
+        share = sum(v for _, v in riding) / len(riding) if riding else 0.0
+        print(f"  riding: camera on a moving bike {share:.0%} of the time: {mount.summary()}")
     # Without GoPro GPS the picture decides whether the camera rode on a
     # moving bike: a camera in the hand moves the picture as much as the
     # track streaming past, and RaceBox time laid on by scene motion may be

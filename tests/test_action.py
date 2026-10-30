@@ -44,11 +44,19 @@ def _bike(t, track_id, h=60, x=300):
     return TrackPoint(t, x, 200 - h, x + 30, 200, 0.9, 3, track_id, FW, FH)
 
 
+def _rider(t, track_id, h=60, x=300):
+    """The person on a bike drawn by ``_bike`` with the same h and x."""
+    return TrackPoint(t, x + 2, 200 - h - h // 2, x + 28, 200 - h // 3, 0.9, 0, track_id, FW, FH)
+
+
 def test_riders_per_second_counts_other_bikes_in_one_frame():
     tracks = {
         1: [_bike(t / 5, 1) for t in range(10)],
         2: [_bike(t / 5, 2, x=100) for t in range(5, 10)],
         3: [_bike(t / 5, 3, h=5) for t in range(10)],  # far off
+        11: [_rider(t / 5, 11) for t in range(10)],
+        12: [_rider(t / 5, 12, x=100) for t in range(5, 10)],
+        13: [_rider(t / 5, 13, h=5) for t in range(10)],
     }
     assert riders_per_second(tracks) == {0: 1, 1: 2}
     samples = per_second(riders_per_second(tracks), [(t / 5, 0.0) for t in range(15)])
@@ -64,3 +72,13 @@ def test_placeholder_creation_dates_mean_no_date():
     assert _creation_utc({"creation_time": "1904-01-01T00:00:00.000000Z"}) is None
     assert _creation_utc({"creation_time": "1970-01-01T00:00:00.000000Z"}) is None
     assert _creation_utc({"creation_time": "2025-08-01T10:13:00.000000Z"}) is not None
+
+
+def test_a_bike_without_a_person_on_it_is_no_rider():
+    tracks = {
+        1: [_bike(t / 5, 1) for t in range(10)],  # parked, or our own bike by hand
+        2: [_bike(t / 5, 2, x=100) for t in range(10)],
+        # Someone standing beside bike 2, not on it.
+        12: [TrackPoint(t / 5, 140, 90, 170, 200, 0.9, 0, 12, FW, FH) for t in range(10)],
+    }
+    assert riders_per_second(tracks) == {}

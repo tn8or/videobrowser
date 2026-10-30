@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 
 from videobrowser.events import Event
@@ -108,3 +109,22 @@ def test_mount_watch_parked_bike_is_not_riding():
         watch.update(i * 0.2, frames[i] if i < 60 else still)
     riding = dict(watch.per_second())
     assert riding[5.5] == 1.0 and riding[15.5] == 0.0
+
+
+def test_mount_watch_sees_a_soft_low_contrast_scene_streaming_past():
+    """Haze, shade and compression leave little texture; at 96 px none of it
+    streamed, so no recording ever showed the bike riding."""
+    from videobrowser.motion import MountWatch
+
+    rng = np.random.default_rng(1)
+    world = cv2.GaussianBlur(rng.normal(0, 1, (720, 4000)).astype(np.float32), (0, 0), 3)
+    world = np.clip(110 + world / world.std() * 8, 0, 255).astype(np.uint8)
+    dash = world[:, :640][-120:].copy()
+    on_bike = MountWatch()
+    for i in range(60):
+        img = world[:360, i * 40 : i * 40 + 640].copy()  # the scene streams past ...
+        img[240:] = dash[:120]  # ... over a fairing that holds still
+        on_bike.update(i * 0.2, np.dstack([img] * 3))
+    riding = on_bike.per_second()
+    assert riding is not None and min(v for _, v in riding[1:]) >= 0.8
+    assert "bike blocks holding still" in on_bike.summary()

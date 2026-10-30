@@ -65,12 +65,15 @@ def test_build_shorts_end_to_end(tmp_path):
     db.replace_events("F", [("F", "approaching_rider", 10.0, 13.0, 0.9, "1", None, "{}")])
     db.replace_events("R", [("R", "receding_rider", 13.5, 16.0, 0.8, "2", None, "{}")])
     db.replace_clips("F", [(5.0, 17.0, "approaching_rider", 0.9, None, str(front_v))])
+    for rid in ("F", "R"):  # No GPS in the test videos: the picture shows the bike riding.
+        db.save_riding(rid, [(t + 0.5, 1.0) for t in range(40)])
     db.close()
 
     result = build_shorts(out, audio_sync=False, crashes=False)
     day = out / "shorts" / "2026-08-01"
     data = json.loads((day / "moments.json").read_text())
     assert [m["theme"] for m in data["moments"]] == ["overtake"]
+    assert "riding 100% of the time" in data["moments"][0]["why"] and data["left_out"] == []
     assert [p.name for p in result["2026-08-01"]] == ["action-01"]  # one overtake is not a series yet
     folder = day / "action-01"
     files = sorted(p.name for p in folder.glob("*.mp4"))
@@ -102,6 +105,7 @@ def test_failed_render_keeps_previous_short_and_drops_stale_ones(tmp_path, monke
     db.save_recording_meta("F", "cockpit", 0, 1785571200.0, "2026-08-01", 20.0,
                            [{"path": str(src), "offset": 0.0, "duration": 20.0}])
     db.replace_events("F", [("F", "nearby_rider", 8.0, 10.0, 0.5, "1", None, "{}")])
+    db.save_riding("F", [(t + 0.5, 1.0) for t in range(20)])
     db.close()
     day = out / "shorts" / "2026-08-01"
     (day / "action-01").mkdir(parents=True)
@@ -163,7 +167,7 @@ def test_clip_drop_reason_matches_the_shorts(monkeypatch):
 
 
 
-def test_day_moments_fall_back_to_scene_motion_without_gps(monkeypatch):
+def test_day_moments_without_gps_need_the_bike_riding_in_the_picture(monkeypatch):
     import videobrowser.shorts as shorts
     from videobrowser.sync import CameraClock
 
@@ -176,8 +180,20 @@ def test_day_moments_fall_back_to_scene_motion_without_gps(monkeypatch):
     # Parked until 40 s, rolling slowly until 100 s, then on track.
     day.motion["F"] = [(t + 0.5, 1.0 if t < 40 else 6.0 if t < 100 else 15.0) for t in range(200)]
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
-    found = {m.theme for m in shorts.day_moments(day, crashes=False)}
-    assert found == {"catching_up"}
+    # Scene motion alone never makes track: a camera in the hand moves as much.
+    left_out = []
+    assert shorts.day_moments(day, crashes=False, left_out=left_out) == []
+    assert all(m.why[-1].startswith("left out: ") for m in left_out)
+    # A helmet camera: no part of the bike in view, but another rider is,
+    # with the scene streaming past at track pace from 100 s.
+    day.action["F"] = [(t + 0.5, 1, 0.0) for t in range(200)]
+    assert {m.theme for m in shorts.day_moments(day, crashes=False)} == {"catching_up"}
+    del day.action["F"]
+    # The picture shows the camera riding on the bike from 100 s.
+    day.riding["F"] = [(t + 0.5, 1.0 if t >= 100 else 0.0) for t in range(200)]
+    moments = shorts.day_moments(day, crashes=False)
+    assert {m.theme for m in moments} == {"catching_up"}
+    assert "riding 100% of the time" in moments[0].why
 
 
 def test_day_moments_leave_out_moments_with_a_car_in_view(monkeypatch):
@@ -192,6 +208,7 @@ def test_day_moments_leave_out_moments_with_a_car_in_view(monkeypatch):
     day.motion["F"] = [(t + 0.5, 15.0) for t in range(200)]
     # A van in view until 40 s (the paddock), then a car for one second.
     day.vehicles["F"] = [(t + 0.5, 1.0 if t < 40 or t == 121 else 0.0) for t in range(200)]
+    day.riding["F"] = [(t + 0.5, 1.0) for t in range(200)]
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
     assert [m.theme for m in shorts.day_moments(day, crashes=False)] == ["catching_up"]
     kept = shorts.day_moments(day, crashes=False, max_vehicle_share=0)
@@ -352,6 +369,7 @@ def test_recordings_without_a_date_each_get_their_own_lane(monkeypatch):
     ]
     for rid in clocks:
         day.motion[rid] = [(t + 0.5, 15.0) for t in range(300)]
+        day.riding[rid] = [(t + 0.5, 1.0) for t in range(300)]
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
     moments = shorts.day_moments(day, crashes=False)
     assert "overtake" not in {m.theme for m in moments}
