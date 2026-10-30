@@ -57,3 +57,6 @@ highlight detection + RaceBox telemetry overlays). Usage lives in
 16. **Auto-fetch:** optional Playwright download of new sessions before a scan;
     skipped cleanly if credentials or Playwright are missing (`--no-fetch` to
     force local-only).
+17. **License:** not chosen. Do not add a `LICENSE` file or a `license` field
+    until it is. The detector dependencies are AGPL-3.0. See
+    [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

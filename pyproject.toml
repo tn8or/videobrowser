@@ -9,9 +9,14 @@ description = "Extract interesting moments from motorcycle track-day GoPro foota
 requires-python = ">=3.11,<3.15"
 dependencies = [
     "lap>=0.5.12",
+    # AGPL-3.0 (classifier AGPLv3+). Installs ultralytics-thop (AGPLv3+) and,
+    # on Python >= 3.11, ultralytics-platform (AGPL-3.0-only). Project license
+    # is unset on purpose; see THIRD_PARTY_NOTICES.md.
     "ultralytics>=8.3.0",
     "opencv-python-headless>=4.10.0",
     "numpy>=1.26",
+    # Linux PyPI wheels of current torch require proprietary NVIDIA CUDA
+    # runtimes, including nvidia-nvshmem-cu13. See THIRD_PARTY_NOTICES.md.
     "torch>=2.4",
     "tqdm>=4.66",
     "pycairo>=1.25.0",
