@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import pytest
 
-from videobrowser.clips import _reencode_pipelines, export_clip
+from videobrowser.clips import _reencode_pipelines, cut_lead, export_clip
 from videobrowser.decode import rotate_bgr, rotation_filter
 from videobrowser.events import ClipWindow
 from videobrowser.gopro import Chapter, Recording
@@ -305,3 +305,46 @@ def test_reencode_pipelines_skip_videotoolbox_off_macos(monkeypatch):
     assert "videotoolbox" not in blob
     assert "h264_nvenc" in blob
     assert "libx264" in blob
+
+
+def _gop_recording(tmp_path: Path) -> Recording:
+    """4 s at 25 fps with a keyframe every second (like GoPro's ~1 s GOP)."""
+    src = tmp_path / "gop.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc=s=320x240:d=4:r=25",
+            "-c:v", "libx264", "-g", "25", "-keyint_min", "25", "-sc_threshold", "0",
+            "-pix_fmt", "yuv420p",
+            str(src),
+        ],
+        check=True,
+    )
+    info = probe(src)
+    return Recording(
+        recording_id="GX-0002",
+        prefix="GX",
+        recording="0002",
+        chapters=[
+            Chapter(
+                path=src, prefix="GX", chapter=1, recording="0002",
+                duration=info.duration, offset=0.0, info=info,
+            )
+        ],
+    )
+
+
+def test_cut_lead_is_distance_to_previous_keyframe(tmp_path: Path):
+    recording = _gop_recording(tmp_path)
+    window = ClipWindow(1.6, 2.6, "GX-0002", ["full"], 0.0, [])
+    assert cut_lead(recording, window) == pytest.approx(0.6, abs=0.021)
+    # The stream copy really starts there: it holds the lead plus the window.
+    dest = tmp_path / "cut.mp4"
+    export_clip(recording, window, dest)
+    assert probe(dest).duration >= 1.55
+
+
+def test_cut_lead_is_zero_on_keyframe_and_when_reencoded(tmp_path: Path):
+    recording = _gop_recording(tmp_path)
+    assert cut_lead(recording, ClipWindow(2.0, 3.0, "GX-0002", [], 0.0, [])) == pytest.approx(0.0, abs=0.021)
+    assert cut_lead(recording, ClipWindow(1.6, 2.6, "GX-0002", [], 0.0, []), rotation=180) == 0.0

@@ -26,7 +26,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 
-from videobrowser.clips import _reencode_pipelines, display_rotation_args, export_clip
+from videobrowser.clips import _reencode_pipelines, cut_lead, display_rotation_args, export_clip
 from videobrowser.decode import rotation_filter
 from videobrowser.events import ClipWindow
 from videobrowser.gopro import Recording
@@ -406,13 +406,20 @@ def export_vertical(
                 meta = probe(joined)
             except ProbeError as exc:
                 raise RuntimeError(str(exc)) from exc
+            # The joined copy starts on the keyframe before the window; skip
+            # that lead so crop path and overlay line up with the picture.
+            lead = cut_lead(recording, window, rotation)
             src = _Source(
-                input_args=["-noautorotate", "-i", str(joined)],
+                input_args=[
+                    "-noautorotate",
+                    *(["-ss", f"{lead:.3f}"] if lead > 0 else []),
+                    "-i", str(joined),
+                ],
                 rotation_vf=None,
                 width=meta.width,
                 height=meta.height,
                 fps=meta.fps or 30.0,
-                duration=meta.duration,
+                duration=max(0.2, meta.duration - lead),
             )
             enc_rotation = 0
 
