@@ -57,3 +57,9 @@ highlight detection + RaceBox telemetry overlays). Usage lives in
 16. **Auto-fetch:** optional Playwright download of new sessions before a scan;
     skipped cleanly if credentials or Playwright are missing (`--no-fetch` to
     force local-only).
+17. **License:** AGPL-3.0-only. `LICENSE` is the GNU AGPL version 3 text, and
+    `pyproject.toml` sets `license = "AGPL-3.0-only"` (version 3 only). That
+    matches `ultralytics` (AGPLv3+), `ultralytics-thop` (AGPLv3+), and
+    `ultralytics-platform` (AGPL-3.0-only). `nvidia-nvshmem-cu13` is accepted
+    as a proprietary NVIDIA CUDA runtime installed with Linux PyTorch. See
+    [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
