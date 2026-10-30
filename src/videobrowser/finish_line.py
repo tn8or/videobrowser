@@ -4,21 +4,20 @@ Footage without GoPro GPS is laid on the RaceBox log by scene motion
 (``racebox_align``), which lands within seconds at best and sometimes half a
 lap off. The finish line is painted across the track (white, full width),
 and RaceBox logs when the bike crosses it, so each time the line slides out
-under the camera is a time stamp on both clocks. A handful of them, with the
-lap times between them as a fingerprint, places a recording to a frame.
+under the camera is a time stamp on both clocks.
 
-The scan looks for the line in every frame it decodes anyway (a few per
-second, ``LineWatch``); that finds where it is, not when exactly. Each find
-is then decoded again at the full frame rate (``refine_passes``) and the
-pass is the frame it is closest in, just before it slides out of view. Lines
-that keep their place in the picture are the bike's own (windscreen, fairing
-edge) and are left out.
+At track speed the line is in view for a handful of frames only, and the
+bottom of the picture is motion blur, so a sparse scan steps over it. The
+search therefore decodes every frame, but only in windows around where
+RaceBox says the bike crossed (``PassFinder``; ``racebox_align.line_place``
+picks the windows).
 
 A line across the track runs across the picture, give or take the camera's
-roll: a thin bright band, wider than most of the road, with road above
-and below. Lane edges and kerbs run along the track, so they are tall in the
+roll: a thin bright band, wider than most of the road, with road above and
+below. Lane edges and kerbs run along the track, so they are tall in the
 picture and drop out; asphalt grain is bright but short; guardrails and far
-edges run nearly flat too, but high up or in the grass.
+edges run nearly flat too, but in the grass. Lines that keep their place in
+the picture are the bike's own (windscreen, fairing edge) and are left out.
 """
 
 from __future__ import annotations
@@ -28,17 +27,18 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-# The ground close ahead: from this share of the picture height down. Higher
-# up, guardrails and far edges run nearly flat across the picture too; the
-# line is found on its last few metres, which is when it passes anyway.
-LINE_TOP = 0.55
+# The ground ahead: from this share of the picture height down. At track
+# speed the line blurs away before the bottom of the picture: it is last
+# seen at 55-63 % of the height from a camera low on the bike.
+LINE_TOP = 0.4
 # Frames are searched at this width (px).
 LINE_WIDTH = 640
 # A line is at most this tall (px at LINE_WIDTH), motion blur included; a
 # taller bright patch (wall, sky, white paint along the track) is not one.
 LINE_MAX_PX = 15
 # Brighter than the ground just above and below it by this much (grey).
-LINE_CONTRAST = 30
+# Lower and the grain of the asphalt streaming past forms lines too.
+LINE_CONTRAST = 50
 # Roll of the camera (degrees) the line may show at.
 LINE_MAX_ANGLE = 20.0
 LINE_ANGLE_STEP = 2.0
@@ -62,16 +62,10 @@ LINE_APART = 0.03
 # STILL_LAG_S is fixed to the camera: a windscreen or fairing edge.
 STILL_ROW = 0.015
 STILL_LAG_S = 0.2
-
-# Sightings this close (s) are one pass.
-PASS_GAP_S = 0.6
-# The refine decode runs from this far before the last sighting to this far
-# after it (s): the line leaves the picture before the next scan frame.
-REFINE_BEFORE_S = 0.2
-REFINE_AFTER_S = 0.4
-# Passes refined per recording, strongest sightings first; a paddock full of
-# painted bays would otherwise decode for ever.
-MAX_REFINES = 80
+# A line followed from frame to frame: seen again within this long (s) and
+# at most this much higher up (it comes down the picture as it nears).
+TRACK_GAP_S = 0.13
+TRACK_BACK = 0.02
 
 
 @dataclass
@@ -86,8 +80,8 @@ class LineHit:
 
 @dataclass
 class LinePass:
-    """The camera riding over a line: *t* the recording time of the frame it
-    is closest in, *row* where it was then (share of the height)."""
+    """The camera riding over a line: *t* the recording time it leaves the
+    picture, *row* where it was last seen (share of the height)."""
 
     t: float
     row: float
@@ -183,86 +177,78 @@ def _still(hit: LineHit, others: list[LineHit]) -> bool:
     return any(abs(hit.row - o.row) <= STILL_ROW and abs(hit.angle - o.angle) <= LINE_ANGLE_STEP for o in others)
 
 
-class LineWatch:
-    """Line sightings over a recording, fed the frames the scan decodes."""
+def passes_from_hits(times: list[float], hits: list[list[LineHit]], fps: float) -> list[LinePass]:
+    """Every line that comes down the picture and leaves it, in time order.
 
-    def __init__(self) -> None:
-        self.hits: list[tuple[float, LineHit]] = []
-        self._prev: list[LineHit] = []
-
-    def update(self, t: float, image: np.ndarray) -> None:
-        lines = find_lines(image)
-        moving = [hit for hit in lines if not _still(hit, self._prev)]
-        self._prev = lines
-        if moving:
-            self.hits.append((t, moving[0]))
-
-    def candidates(self) -> list[float]:
-        """Recording time of the last sighting of each pass, the strongest
-        MAX_REFINES of them, in time order."""
-        groups: list[list[tuple[float, LineHit]]] = []
-        for t, hit in self.hits:
-            if groups and t - groups[-1][-1][0] <= PASS_GAP_S:
-                groups[-1].append((t, hit))
-            else:
-                groups.append([(t, hit)])
-        groups.sort(key=lambda g: max(h.run for _, h in g), reverse=True)
-        return sorted(g[-1][0] for g in groups[:MAX_REFINES])
-
-
-def pass_from_frames(times: list[float], images: list[np.ndarray]) -> LinePass | None:
-    """The pass in consecutive frames: the line coming down the picture, at
-    the frame it is closest (lowest) in.
-
-    Lines that hold their place STILL_LAG_S before or after are the bike's
-    own (windscreen, fairing edge) and do not count. The line must be seen
-    coming down in at least two frames.
+    *hits* are the lines of each frame at *times*. Lines that hold their
+    place STILL_LAG_S before or after are the bike's own and do not count. A
+    line is followed while it comes down; it passes half a frame after it was
+    last seen, once it has been seen in two frames or more.
     """
-    lines = [find_lines(image) for image in images]
-    moving: list[tuple[float, LineHit]] = []
-    for i, (t, hits) in enumerate(zip(times, lines)):
-        others = [
-            hit
-            for j, tj in enumerate(times)
-            if j != i and abs(abs(tj - t) - STILL_LAG_S) <= 0.5 * (times[1] - times[0] if len(times) > 1 else 0.04)
-            for hit in lines[j]
-        ]
-        moving.extend((t, hit) for hit in hits if not _still(hit, others))
-    if len(moving) < 2:
-        return None
-    t, hit = max(moving, key=lambda m: (round(m[1].row, 2), m[0]))
-    if not any(tt < t and h.row < hit.row - STILL_ROW for tt, h in moving):
-        return None
-    return LinePass(t, hit.row, hit.run)
+    lag = max(1, round(STILL_LAG_S * fps))
+    tracks: list[list[tuple[float, LineHit]]] = []
+    done: list[list[tuple[float, LineHit]]] = []
+    for i, (t, frame) in enumerate(zip(times, hits)):
+        others = [h for j in (i - lag, i + lag) if 0 <= j < len(hits) for h in hits[j]]
+        moving = sorted((h for h in frame if not _still(h, others)), key=lambda h: h.row, reverse=True)
+        open_ = [tr for tr in tracks if t - tr[-1][0] <= TRACK_GAP_S]
+        done.extend(tr for tr in tracks if t - tr[-1][0] > TRACK_GAP_S)
+        tracks = []
+        # Lowest line first onto the lowest track it can have come from.
+        for hit in moving:
+            fits = [tr for tr in open_ if tr[-1][1].row <= hit.row + TRACK_BACK]
+            if fits:
+                tr = max(fits, key=lambda tr: tr[-1][1].row)
+                open_.remove(tr)
+                tr.append((t, hit))
+                tracks.append(tr)
+            else:
+                tracks.append([(t, hit)])
+        tracks.extend(open_)
+    done.extend(tracks)
+    out = []
+    for tr in done:
+        first, (t1, last) = tr[0][1], tr[-1]
+        if len(tr) >= 2 and last.row - first.row >= STILL_ROW:
+            out.append(LinePass(t1 + 0.5 / fps, last.row, max(h.run for _, h in tr)))
+    return sorted(out, key=lambda p: p.t)
 
 
-def refine_passes(recording, candidates: list[float], max_side: int, rotation: int = 0) -> list[LinePass]:
-    """Each candidate decoded again at the full frame rate, as passes."""
-    from videobrowser.decode import decode_frames
+class PassFinder:
+    """Line passes in stretches of a recording, every frame decoded: called
+    with (t0, t1) in recording time, returns the passes in it."""
 
-    passes: list[LinePass] = []
-    for t in candidates:
-        start = max(0.0, t - REFINE_BEFORE_S)
-        chapter = next(
-            (c for c in recording.chapters if c.offset <= start < c.offset + c.duration),
-            None,
-        )
-        if chapter is None:
-            continue
-        fps = chapter.info.fps or 25.0
-        count = max(2, int(round((REFINE_BEFORE_S + REFINE_AFTER_S) * fps)))
-        local = start - chapter.offset
-        try:
-            images = decode_frames(
-                chapter.path, local, count, max_side, chapter.info.width, chapter.info.height, rotation
-            )
-        except Exception:
-            continue
-        times = [chapter.offset + local + i / fps for i in range(len(images))]
-        found = pass_from_frames(times, images)
-        if found is not None:
-            # The line leaves the picture between this frame and the next.
-            found.t += 0.5 / fps
-        if found is not None and (not passes or found.t - passes[-1].t > PASS_GAP_S):
-            passes.append(found)
-    return passes
+    def __init__(self, recording, max_side: int = 640, rotation: int = 0) -> None:
+        self.recording = recording
+        self.max_side = max_side
+        self.rotation = rotation
+        # Seconds of video decoded, for the log.
+        self.decoded_s = 0.0
+
+    def __call__(self, t0: float, t1: float) -> list[LinePass]:
+        from videobrowser.decode import FrameDecoder
+
+        out: list[LinePass] = []
+        for chapter in self.recording.chapters:
+            lo = max(t0, chapter.offset)
+            hi = min(t1, chapter.offset + chapter.duration)
+            if hi - lo < 0.1:
+                continue
+            fps = chapter.info.fps or 25.0
+            times: list[float] = []
+            hits: list[list[LineHit]] = []
+            with FrameDecoder(
+                chapter.path,
+                chapter.info,
+                fps=fps,
+                max_side=self.max_side,
+                rotation=self.rotation,
+                max_seconds=hi - lo,
+                start=lo - chapter.offset,
+            ) as decoder:
+                for frame in decoder.frames():
+                    times.append(chapter.offset + frame.t)
+                    hits.append(find_lines(frame.image))
+            self.decoded_s += hi - lo
+            out.extend(passes_from_hits(times, hits, fps))
+        return out

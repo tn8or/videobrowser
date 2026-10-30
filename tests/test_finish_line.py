@@ -1,6 +1,6 @@
 import numpy as np
 
-from videobrowser.finish_line import LineHit, LineWatch, find_line, pass_from_frames
+from videobrowser.finish_line import LineHit, find_line, passes_from_hits
 
 W, H = 640, 360
 
@@ -49,18 +49,18 @@ def test_a_short_stripe_is_not_a_line():
     assert find_line(_band(_road(), 0.7, 0, x0=0.45, x1=0.6)) is None
 
 
-def test_pass_is_the_last_frame_the_line_comes_down_in():
-    rows = [0.5, 0.6, 0.72, 0.86, None, None]
+def test_passes_follow_each_line_down_and_skip_the_bike():
+    # Two lines coming down one after the other, and a fairing edge that
+    # stays put at 0.5.
+    rows = [[0.45], [0.55], [0.7, 0.42], [0.52], [0.66], [], [], []]
     times = [10.0 + i * 0.04 for i in range(len(rows))]
-    images = [_band(_road(i), r, -4) if r is not None else _road(i) for i, r in enumerate(rows)]
-    found = pass_from_frames(times, images)
-    assert found is not None
-    assert abs(found.t - 10.12) < 1e-9
-    assert abs(found.row - 0.86) < 0.02
+    fairing = LineHit(0.5, 0.5, 0.0)
+    hits = [[LineHit(0.6, r, -4.0) for r in rs] + [fairing] for rs in rows]
+    passes = passes_from_hits(times, hits, 25.0)
+    assert [round(p.t, 2) for p in passes] == [10.1, 10.18]
+    assert [round(p.row, 2) for p in passes] == [0.7, 0.66]
 
 
-def test_watch_keeps_the_last_sighting_of_each_pass():
-    watch = LineWatch()
-    for t in (5.0, 5.2, 5.4, 90.0, 90.2):
-        watch.hits.append((t, LineHit(0.6, 0.7, 0.0)))
-    assert watch.candidates() == [5.4, 90.2]
+def test_one_sighting_is_no_pass():
+    hits = [[LineHit(0.6, 0.6, 0.0)], [], [], [], [], [], []]
+    assert passes_from_hits([i * 0.04 for i in range(7)], hits, 25.0) == []

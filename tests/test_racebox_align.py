@@ -142,18 +142,39 @@ def test_whole_day_places_paddock_only_recordings_too():
 
 # --- finish line --------------------------------------------------------------
 
-from videobrowser.racebox_align import LINE_LEAD_S, line_crossings, line_match  # noqa: E402
+from videobrowser.racebox_align import LINE_LEAD_S, finish_passes, line_crossings, line_place  # noqa: E402
 
-LAPS = np.array([96.5, 76.1, 74.9, 77.1, 75.6, 78.3, 75.2])
+LAPS = np.array([76.1, 74.9, 77.1, 75.6])
+# Knutstorp's straight at 176 km/h: grid and start lines 13-50 m before the
+# finish line, each passing this long before it.
+BEFORE = (1.02, 0.74, 0.58, 0.50, 0.26)
 
 
-def _crossings(first=1000.0):
-    return T0 + first + np.r_[0.0, np.cumsum(LAPS)]
+def _line_track(first=100.0, laps=LAPS):
+    utc = T0 + np.arange(0.0, 1000.0, 0.1)
+    crossings = T0 + first + np.r_[0.0, np.cumsum(laps)]
+    return RaceboxTrack(utc, np.full(len(utc), 176.0), np.zeros(len(utc)), crossings)
 
 
-def _passes(crossings, start, noise=0.03, seed=3):
+def _picture(track, start, seed=5, misses=()):
+    """Line passes the picture would show for a recording starting at *start*:
+    the grid, the start and the finish line on every lap, and lines in the
+    corners now and then."""
     rng = np.random.default_rng(seed)
-    return list(crossings - start - LINE_LEAD_S + rng.normal(0, noise, len(crossings)))
+    out = []
+    for i, c in enumerate(track.crossings):
+        finish = c - start - LINE_LEAD_S
+        out.extend(finish - b for b in BEFORE)
+        if i not in misses:
+            out.append(finish + rng.normal(0, 0.02))
+    out.extend(rng.uniform(0, 500, 40))
+    calls = []
+
+    def find(t0, t1):
+        calls.append((t0, t1))
+        return sorted(t for t in out if t0 <= t <= t1)
+
+    return find, calls
 
 
 def test_crossings_are_interpolated_between_samples():
@@ -175,30 +196,50 @@ def test_crossings_off_the_line_ends_do_not_count():
     assert line_crossings(T0 + t, lat, lon, line) == []
 
 
-def test_passes_fix_a_start_half_a_lap_off():
-    crossings = _crossings()
-    start = T0 + 900.0
-    passes = _passes(crossings, start) + [400.0]  # and a painted bay in the pits
-    match = line_match(passes, crossings, [start + 35.0])
+def test_finish_is_the_last_line_before_clear_track():
+    passes = [10.0 - b for b in BEFORE] + [10.0, 30.0]
+    assert finish_passes(passes, 176 / 3.6) == [10.0, 30.0]
+
+
+def test_finish_line_fixes_a_start_half_a_lap_off():
+    track = _line_track()
+    start = T0 + 10.0
+    find, calls = _picture(track, start)
+    match = line_place(start + 28.9, 450.0, track, find)
     assert match.start_utc is not None
     assert abs(match.start_utc - start) < 0.05
-    assert match.pairs == len(crossings)
+    assert len(match.passes) == len(track.crossings)
+    # One wide window, the rest narrow.
+    assert sum(t1 - t0 for t0, t1 in calls) < 80 + 2 * 25 * len(track.crossings)
 
 
-def test_lap_times_alike_to_the_tenth_are_ambiguous():
-    crossings = T0 + 1000.0 + np.arange(6) * 76.0
-    start = T0 + 900.0
-    match = line_match(_passes(crossings, start, noise=0.0), crossings, [start + 30.0])
+def test_a_missed_line_on_one_lap_still_places():
+    track = _line_track()
+    start = T0 + 10.0
+    find, _ = _picture(track, start, misses=(2,))
+    match = line_place(start - 12.0, 450.0, track, find)
+    assert abs(match.start_utc - start) < 0.05
+    assert len(match.passes) == len(track.crossings) - 1
+
+
+def test_lines_in_the_corners_alone_place_nothing():
+    track = _line_track()
+    rng = np.random.default_rng(1)
+    noise = sorted(rng.uniform(0, 450, 60))
+    match = line_place(T0 + 10.0, 450.0, track, lambda t0, t1: [t for t in noise if t0 <= t <= t1])
     assert match.start_utc is None
-    assert "ambiguous" in match.reason
 
 
-def test_two_passes_place_only_near_the_motion_match():
-    crossings = _crossings()
-    start = T0 + 900.0
-    passes = _passes(crossings, start)[2:4]
-    assert line_match(passes, crossings, [start + 3.0], near=start + 3.0).start_utc is not None
-    assert line_match(passes, crossings, [start + 30.0], near=start + 30.0).start_utc is None
+def test_one_crossing_places_only_near_the_motion_start():
+    track = _line_track(first=100.0, laps=np.array([]))
+    start = T0 + 10.0
+    finish = track.crossings[0] - start - LINE_LEAD_S
+
+    def find(t0, t1):
+        return [t for t in (finish,) if t0 <= t <= t1]
+
+    assert abs(line_place(start + 4.0, 150.0, track, find).start_utc - start) < 1e-6
+    assert line_place(start + 30.0, 150.0, track, find).start_utc is None
 
 
 def test_track_carries_the_sessions_finish_line_crossings():

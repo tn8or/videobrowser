@@ -274,21 +274,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     line = sub.add_parser(
         "finish-line",
-        help="Find the finish-line passes in one video and lay them on RaceBox (for tuning)",
+        help="Lay one recording on RaceBox by the painted finish line, around a start (for tuning)",
     )
-    line.add_argument("video", type=Path, help="Video file (one chapter)")
+    line.add_argument("video", type=Path, nargs="+", help="The recording's video file(s), all chapters")
     line.add_argument(
-        "--sessions-dir", type=Path, default=None, help="RaceBox .vbo sessions to lay the passes on"
+        "--sessions-dir", type=Path, default=None, help="RaceBox .vbo sessions (default: output/sessions)"
     )
     line.add_argument(
         "--near",
         type=float,
         default=None,
-        help="UTC start (epoch s) to search around, e.g. the scan's scene-motion start; "
+        help="UTC start (epoch s) to search around, e.g. the scan's scene-motion start_utc; "
         "default: the camera clock",
     )
-    line.add_argument("--frames", type=Path, default=None, help="Save each pass's last frame, line drawn, here")
-    line.add_argument("--fps", type=float, default=5.0, help="Scan frame rate (default 5)")
+    line.add_argument(
+        "--frames", type=Path, default=None, help="Save the three frames before each pass, lines drawn, here"
+    )
     return parser
 
 
@@ -494,64 +495,67 @@ def racebox_fetch_cmd(args: argparse.Namespace) -> int:
 
 
 def finish_line_cmd(args: argparse.Namespace) -> int:
+    import time
+
     import cv2
     import numpy as np
 
-    from videobrowser.decode import FrameDecoder, decode_one_frame
-    from videobrowser.finish_line import LineWatch, find_line, refine_passes
-    from videobrowser.gopro import group_recordings
-    from videobrowser.racebox_align import SEARCH_S, clock_guesses, line_match, load_track
+    from videobrowser.decode import decode_one_frame
+    from videobrowser.finish_line import PassFinder, find_lines
+    from videobrowser.gopro import chapter_at, group_recordings
+    from videobrowser.racebox_align import line_place, load_track
     from videobrowser.telemetry import creation_utc_prefer_gps
 
-    recordings = group_recordings([args.video.expanduser()])
+    recordings = group_recordings([v.expanduser() for v in args.video])
     if not recordings:
-        print(f"cannot read {args.video}", file=sys.stderr)
+        print("cannot read " + ", ".join(map(str, args.video)), file=sys.stderr)
         return 1
     recording = recordings[0]
-    chapter = recording.chapters[0]
-    info = chapter.info
+    info = recording.chapters[0].info
     rotation = info.rotation or 0
-    watch = LineWatch()
-    with FrameDecoder(chapter.path, info, fps=args.fps, max_side=640, rotation=rotation) as decoder:
-        for frame in decoder.frames():
-            watch.update(chapter.offset + frame.t, frame.image)
-    candidates = watch.candidates()
-    passes = refine_passes(recording, candidates, 640, rotation)
-    print(f"{len(watch.hits)} frame(s) with a line, {len(candidates)} sighting(s), {len(passes)} pass(es)")
-    for p in passes:
-        print(f"  pass {p.t:9.3f} s  row {p.row:.2f}  run {p.run:.2f}")
+    track = load_track((args.sessions_dir or Path("output/sessions")).expanduser())
+    if track is None or not len(track.crossings):
+        print("no RaceBox finish-line crossings in the sessions", file=sys.stderr)
+        return 1
+    near = args.near if args.near is not None else creation_utc_prefer_gps(info)
+    if near is None:
+        print("no start to search around: pass --near", file=sys.stderr)
+        return 1
+    finder = PassFinder(recording, 640, rotation)
+
+    def logged(t0: float, t1: float):
+        passes = finder(t0, t1)
+        print(f"  {t0:8.2f}-{t1:8.2f} s: " + (", ".join(f"{p.t:.2f}" for p in passes) or "no line"))
+        return passes
+
+    began = time.perf_counter()
+    match = line_place(near, recording.duration, track, logged)
+    print(f"RaceBox: {match.reason}")
+    print(f"decoded {finder.decoded_s:.0f} s of video in {time.perf_counter() - began:.0f} s")
+    for t, utc in match.passes:
+        print(f"  pass {t:9.3f} s  crossing {utc:.3f}")
         if args.frames:
             args.frames.mkdir(parents=True, exist_ok=True)
-            image = decode_one_frame(chapter.path, p.t - chapter.offset - 0.02, 640, info.width, info.height, rotation)
-            if image is None:
-                continue
-            hit = find_line(image)
-            if hit is not None:
+            chapter = chapter_at(recording, t)
+            fps = chapter.info.fps or 25.0
+            tiles = []
+            for k in (3, 2, 1):
+                image = decode_one_frame(
+                    chapter.path, t - k / fps - chapter.offset, 640, chapter.info.width, chapter.info.height, rotation
+                )
+                if image is None:
+                    continue
                 h, w = image.shape[:2]
-                y = hit.row * h
-                dy = np.tan(np.radians(hit.angle)) * w / 2
-                cv2.line(image, (0, int(y - dy)), (w, int(y + dy)), (0, 0, 255), 1)
-            cv2.imwrite(str(args.frames / f"pass_{p.t:09.3f}.jpg"), image)
-    if args.sessions_dir is None:
-        return 0
-    track = load_track(args.sessions_dir.expanduser())
-    if track is None or not len(track.crossings):
-        print("no RaceBox finish-line crossings in the sessions")
-        return 1
-    if args.near is not None:
-        match = line_match([p.t for p in passes], track.crossings, [args.near], near=args.near)
-    else:
-        guesses = clock_guesses(creation_utc_prefer_gps(info))
-        match = line_match([p.t for p in passes], track.crossings, guesses, SEARCH_S)
-    print(f"RaceBox: {match.reason}")
+                for hit in find_lines(image):
+                    y = hit.row * h
+                    dy = np.tan(np.radians(hit.angle)) * w / 2
+                    cv2.line(image, (0, int(y - dy)), (w, int(y + dy)), (0, 0, 255), 1)
+                tiles.append(image)
+            if tiles:
+                cv2.imwrite(str(args.frames / f"pass_{t:09.3f}.jpg"), np.hstack(tiles))
     if match.start_utc is None:
         return 1
-    print(f"start {match.start_utc:.3f} (UTC epoch s)")
-    for p in passes:
-        utc = match.start_utc + p.t
-        gaps = track.crossings - utc
-        gap = float(gaps[np.argmin(np.abs(gaps))])
-        print(f"  pass {p.t:9.3f} s -> nearest crossing {gap:+.3f} s")
+    print(f"start {match.start_utc:.3f} (UTC epoch s), {match.start_utc - near:+.2f} s from --near")
     return 0
 
 

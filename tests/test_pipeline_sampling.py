@@ -99,14 +99,17 @@ def test_finish_line_passes_place_to_the_frame(monkeypatch):
     laps = np.array([76.1, 74.9, 77.1, 75.6])
     true_start = t0 + 31.7
     crossings = true_start + 100.0 + np.r_[0.0, np.cumsum(laps)]
-    track = types.SimpleNamespace(
-        speeds=lambda s, d: ["speed"], turns=lambda s, d: ["turn"], crossings=crossings
-    )
+    utc = t0 + np.arange(0.0, 700.0, 0.1)
+    track = align.RaceboxTrack(utc, np.full(len(utc), 170.0), np.zeros(len(utc)), crossings)
+    track.speeds = lambda s, d: ["speed"]
+    track.turns = lambda s, d: ["turn"]
     config = types.SimpleNamespace(racebox_track=track)
     monkeypatch.setattr(pipeline, "speed_for_recording", lambda r: [])
     # Scene motion put it 30 s off.
     monkeypatch.setattr(align, "motion_match", lambda *a: align.MotionMatch(t0, "r=0.6", 0.6, 0.1))
     passes = list(crossings - true_start - align.LINE_LEAD_S)
-    _, _, start, source = pipeline.gps_for_recording(rec, config, [], t0, passes)
+    _, _, start, source = pipeline.gps_for_recording(
+        rec, config, [], t0, lambda a, b: [p for p in passes if a <= p <= b]
+    )
     assert source == "racebox-line"
     assert abs(start - true_start) < 1e-6

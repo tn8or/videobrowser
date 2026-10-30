@@ -43,23 +43,26 @@ MOTION_CLIP_PCT = 95.0
 SPEED_CLIP_KMH = 80.0
 
 # Finish-line passes in the picture (``finish_line``) against RaceBox's
-# crossings: a pass and a crossing pair up within this many seconds ...
-LINE_TOL_S = 0.2
-# ... the line leaves the bottom of the picture this long before the camera
-# is over it (a few metres of road below the frame edge) ...
+# crossings (``line_place``). The first crossing is searched this far (s)
+# either side of where scene motion put it (half a lap off happens) ...
+LINE_COARSE_S = 40.0
+# ... the others this far, once the first gives a start ...
+LINE_FINE_S = 0.5
+# ... and a pass pairs with a crossing within this many seconds.
+LINE_TOL_S = 0.1
+# The line leaves the picture this long before the camera is over it (a few
+# metres of road below the frame edge).
 LINE_LEAD_S = 0.06
-# ... at least this many pairs place a recording, or this many within
-# LINE_NEAR_S of where scene motion put it ...
-MIN_LINE_PAIRS = 3
-MIN_LINE_PAIRS_NEAR = 2
+# After the finish line the track has no painted line for this many metres;
+# grid lines and the start line lie 13-50 m before it, each like it.
+LINE_CLEAR_M = 30.0
+# Only crossings at speed: slow, the line is in view long and the pass vague.
+LINE_MIN_KMH = 60.0
+# Starts the first crossing's passes give that are checked against the rest.
+LINE_MAX_STARTS = 25
+# A recording with one crossing only is placed by it when the start lands
+# this close (s) to the scene-motion start.
 LINE_NEAR_S = 10.0
-# ... searched this far either side of the scene-motion match (half a lap
-# or more off happens) ...
-LINE_SEARCH_S = 90.0
-# ... and with this many pairs more than any start time over LINE_RIVAL_S
-# away with two or more (a lap off, another painted line).
-LINE_MARGIN = 2
-LINE_RIVAL_S = 1.0
 
 
 @dataclass
@@ -280,74 +283,100 @@ def motion_match(
 @dataclass
 class LineMatch:
     """Outcome of placing a recording by its finish-line passes; *start_utc*
-    None when unclear. *pairs* passes matched a crossing, *spread* (s) is how
-    far they scatter around the start time."""
+    None when unclear. *passes* are (recording time, crossing UTC) pairs, and
+    *spread* (s) is how far they scatter around the start."""
 
     start_utc: float | None
     reason: str
-    pairs: int = 0
+    passes: list[tuple[float, float]] = field(default_factory=list)
     spread: float = float("nan")
 
 
-def line_match(
-    passes: list[float],
-    crossings: np.ndarray,
-    guesses: list[float],
-    search_s: float = LINE_SEARCH_S,
-    near: float | None = None,
-) -> LineMatch:
-    """UTC of recording t=0 that lays the finish-line *passes* (recording
-    time) on RaceBox's *crossings*, searched within *search_s* of each guess.
+def finish_passes(passes: list[float], speed_ms: float) -> list[float]:
+    """The passes that can be the finish line: no other line follows within
+    LINE_CLEAR_M at *speed_ms* (the grid and start lines lie before it)."""
+    clear = LINE_CLEAR_M / max(speed_ms, 1.0)
+    p = sorted(passes)
+    return [t for i, t in enumerate(p) if i + 1 == len(p) or p[i + 1] - t > clear]
 
-    Every pass-crossing pair is a candidate start; the one most passes agree
-    with wins. Lap times differ by tenths, so a start a lap off pairs up only
-    by chance. *near* (where scene motion put the recording) lets two pairs
-    within LINE_NEAR_S of it do.
+
+def line_place(start0: float, duration: float, track: RaceboxTrack, find_passes) -> LineMatch:
+    """UTC of recording t=0 from the finish line, near *start0* (scene motion).
+
+    *find_passes(t0, t1)* returns the line passes (recording time, s) the
+    picture shows between t0 and t1. The crossing at the highest speed is
+    searched LINE_COARSE_S either side; each finish-line pass there gives a
+    start, which is checked at every other crossing in a LINE_FINE_S window.
+    Lap times differ by tenths, so a wrong start meets the line elsewhere by
+    chance at most. The start most crossings agree with wins.
     """
-    p = np.sort(np.asarray(passes, dtype=np.float64)) + LINE_LEAD_S
-    c = np.sort(np.asarray(crossings, dtype=np.float64))
-    if len(p) < MIN_LINE_PAIRS_NEAR:
-        return LineMatch(None, f"{len(p)} finish-line passes in the picture")
-    if not guesses:
-        return LineMatch(None, "no start time to search around")
-    lo = min(guesses) - search_s
-    hi = max(guesses) + search_s
-    c = c[(c >= lo + p[0] - 1.0) & (c <= hi + p[-1] + 1.0)]
-    if len(c) < MIN_LINE_PAIRS_NEAR:
-        return LineMatch(None, f"{len(c)} RaceBox finish-line crossings near the recording")
-    starts = (c[None, :] - p[:, None]).ravel()
-    starts = starts[np.any(np.abs(starts[:, None] - np.asarray(guesses)[None, :]) <= search_s, axis=1)]
-    if not len(starts):
-        return LineMatch(None, "no pass lines up with a crossing")
-    # For each candidate start, each pass's distance to its nearest crossing.
-    at = p[None, :] + starts[:, None]
-    i = np.clip(np.searchsorted(c, at), 1, len(c) - 1)
-    resid = np.minimum(np.abs(at - c[i - 1]), np.abs(c[i] - at))
-    paired = resid <= LINE_TOL_S
-    counts = paired.sum(axis=1)
-    err = np.where(paired, resid, 0.0).sum(axis=1) / np.maximum(counts, 1)
-    best = int(np.lexsort((err, -counts))[0])
-    start, n = float(starts[best]), int(counts[best])
-    away = np.abs(starts - start) > LINE_RIVAL_S
-    rival = int(counts[away].max()) if away.any() else 0
-    # The pairs again, the start their median.
-    pairs = paired[best]
-    offsets = []
-    for t in p[pairs]:
-        j = int(np.argmin(np.abs(c - (t + start))))
-        offsets.append(c[j] - t)
+    c = np.asarray(track.crossings, dtype=np.float64)
+    c = c[(c >= start0 - LINE_COARSE_S) & (c <= start0 + duration + LINE_COARSE_S)]
+    kmh = np.interp(c, track.utc, track.speed_kmh) if len(c) else c
+    keep = kmh >= LINE_MIN_KMH
+    c, ms = c[keep], kmh[keep] / 3.6
+    if not len(c):
+        return LineMatch(None, "no RaceBox finish-line crossing at speed in the recording")
+    windows: dict[tuple[float, float], list[float]] = {}
+
+    def passes_in(t0: float, t1: float) -> list[float]:
+        key = (round(max(0.0, t0), 2), round(min(duration, t1), 2))
+        if key[1] - key[0] < 0.2:
+            return []
+        if key not in windows:
+            windows[key] = [p.t if hasattr(p, "t") else float(p) for p in find_passes(*key)]
+        return windows[key]
+
+    def check(start: float) -> list[tuple[float, float]]:
+        pairs = []
+        for cj, vj in zip(c, ms):
+            t = cj - start - LINE_LEAD_S
+            if not 0.0 <= t <= duration:
+                continue
+            near = [p for p in finish_passes(passes_in(t - LINE_FINE_S, t + LINE_FINE_S), vj) if abs(p - t) <= LINE_TOL_S]
+            if near:
+                pairs.append((min(near, key=lambda p: abs(p - t)), float(cj)))
+        return pairs
+
+    results: list[tuple[float, list[tuple[float, float]]]] = []
+    tried = 0
+    for j in np.argsort(-ms)[:2]:
+        t = c[j] - start0
+        if not -LINE_COARSE_S <= t <= duration + LINE_COARSE_S:
+            continue
+        tried += 1
+        found = finish_passes(passes_in(t - LINE_COARSE_S, t + LINE_COARSE_S), ms[j])
+        starts = sorted((c[j] - p - LINE_LEAD_S for p in found), key=lambda s0: abs(s0 - start0))
+        for s0 in starts[:LINE_MAX_STARTS]:
+            if any(abs(s0 - r) <= LINE_TOL_S for r, _ in results):
+                continue
+            results.append((s0, check(s0)))
+        if any(len(pairs) >= 2 for _, pairs in results):
+            break
+    if not tried:
+        return LineMatch(None, "no RaceBox finish-line crossing inside the recording")
+    if not results:
+        return LineMatch(None, "no finish line in the picture near the first crossing")
+    results.sort(key=lambda r: len(r[1]), reverse=True)
+    best, pairs = results[0]
+    rival = len(results[1][1]) if len(results) > 1 else 0
+    in_view = sum(1 for cj in c if 0.0 <= cj - best <= duration)
+    offsets = np.array([cj - p - LINE_LEAD_S for p, cj in pairs])
     start = float(np.median(offsets))
-    spread = float(np.max(np.abs(np.asarray(offsets) - start)))
-    reason = f"{n} of {len(p)} passes on a crossing, spread {spread:.2f} s, next best {rival}"
-    needed = MIN_LINE_PAIRS
-    if near is not None and abs(start - near) <= LINE_NEAR_S:
-        needed = MIN_LINE_PAIRS_NEAR
-    if n < needed:
-        return LineMatch(None, reason + f" (need {needed})", n, spread)
-    # One pass meets some crossing at almost any start: a rival of one is noise.
-    if rival >= 2 and n < rival + LINE_MARGIN:
-        return LineMatch(None, reason + " (ambiguous)", n, spread)
-    return LineMatch(start, reason, n, spread)
+    spread = float(np.max(np.abs(offsets - start)))
+    reason = (
+        f"{len(pairs)} of {in_view} crossings on the line, spread {spread:.2f} s, "
+        f"next best {rival}, {start - start0:+.2f} s from scene motion"
+    )
+    if len(pairs) >= 2 and len(pairs) > rival:
+        return LineMatch(start, reason, pairs, spread)
+    # Each start pairs with the crossing it came from: one pair proves
+    # nothing unless the recording has one crossing only and no other
+    # finish-line pass gives a start as near.
+    near_rivals = [r for r, _ in results[1:] if abs(r - start0) <= LINE_NEAR_S]
+    if len(pairs) == 1 and in_view == 1 and abs(start - start0) <= LINE_NEAR_S and not near_rivals:
+        return LineMatch(start, reason + " (one crossing, near)", pairs, spread)
+    return LineMatch(None, reason + (" (ambiguous)" if len(pairs) and len(pairs) <= rival else ""), pairs, spread)
 
 
 def _prepare(raw: np.ndarray, width: int) -> tuple[np.ndarray, np.ndarray]:
