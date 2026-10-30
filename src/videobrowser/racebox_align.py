@@ -42,16 +42,17 @@ MOTION_CLIP_PCT = 95.0
 # Speed above this adds nothing to the pit/track pattern motion can see.
 SPEED_CLIP_KMH = 80.0
 
-# Venues with a landmark the camera sees on every lap: (name, start-line
+# Venues with landmarks the camera sees on every lap: (name, start-line
 # latitude, longitude (degrees, sign ignored), metres along the track from
-# RaceBox's start line to where the bridge's underside leaves the top of the
-# picture). Knutstorp: the "Porsche Center Malmö" bridge over the straight,
-# about 51 m on; its underside leaves the picture 1.14-1.22 s after the line
-# at 165-176 km/h. Anderstorp: the bridge over the start line (assumed 0 m
-# until measured). Other venues get no landmark.
+# RaceBox's start line to where each bridge's underside leaves the top of
+# the picture). Knutstorp: the "Porsche Center Malmö" bridge over the
+# straight (56-61 m measured on three recordings) and the "Förenade Bil"
+# bridge (664-668 m). Anderstorp: the "PORSCHE" bridge, 0.6 s past the
+# painted line at 135 km/h (23 m; RaceBox's line assumed on the painted
+# one). Other venues get none.
 VENUE_LANDMARKS = (
-    ("Knutstorp", 55.98689, 13.11448, 56.0),
-    ("Anderstorp", 57.26147, 13.59942, 0.0),
+    ("Knutstorp", 55.98689, 13.11448, (56.0, 666.0)),
+    ("Anderstorp", 57.26147, 13.59942, (23.0,)),
 )
 # A start line this close (m) to a venue's is that venue's.
 VENUE_RADIUS_M = 500.0
@@ -75,6 +76,22 @@ BRIDGE_WINDOWS = 3
 # (the grid line 0.26 s before it is a line too).
 BRIDGE_REFINE_S = 0.3
 BRIDGE_REFINE_TOL_S = 0.2
+# Crossings that must agree (within LINE_TOL_S) to move the bridge start:
+# one line pass alone has moved it the wrong way.
+BRIDGE_REFINE_MIN = 2
+
+# A recording scene motion could not place is searched whole for the bridge
+# (``bridge_place_anywhere``) and laid on the landmark passes within this
+# many seconds of its camera clock (local time read as UTC is hours off) ...
+ANYWHERE_S = 36 * 3600.0
+# ... pairing within this many seconds (a constant lag of the mount goes into
+# the start; what is left is a frame or so) ...
+ANYWHERE_TOL_S = 0.15
+# ... with this many pairs and this many times the next best start: chance
+# pairs up to five passes somewhere in a day, and laps of nearly the same
+# time pair up half of them a lap off.
+ANYWHERE_MIN_PAIRS = 6
+ANYWHERE_RATIO = 1.5
 
 # Finish-line passes in the picture (``finish_line``) against RaceBox's
 # crossings (``line_place``). The first crossing is searched this far (s)
@@ -148,8 +165,7 @@ def track_from_sessions(sessions: list) -> RaceboxTrack | None:
         if line is not None:
             crossed = line_crossings(utc, lat, lon, line)
             crossings.extend(crossed)
-            metres = venue_landmark_m(line)
-            if metres is not None:
+            for metres in venue_landmark_m(line):
                 landmarks.extend(along_track(utc, lat, lon, crossed, metres))
     if not parts:
         return None
@@ -171,9 +187,9 @@ def _degrees(x):
     return x / 60.0 if float(np.nanmedian(np.abs(x))) > 90.0 else x
 
 
-def venue_landmark_m(line: tuple[float, float, float, float]) -> float | None:
-    """Metres from the start line along the track to the venue's landmark, by
-    where the start line lies; None at venues without one."""
+def venue_landmark_m(line: tuple[float, float, float, float]) -> tuple[float, ...]:
+    """Metres from the start line along the track to each of the venue's
+    landmarks, by where the start line lies; none at other venues."""
     lat = float(_degrees([line[0], line[2]]).mean())
     lon = abs(float(_degrees([line[1], line[3]]).mean()))
     for _, vlat, vlon, metres in VENUE_LANDMARKS:
@@ -181,7 +197,7 @@ def venue_landmark_m(line: tuple[float, float, float, float]) -> float | None:
         east = (lon - vlon) * 111_320.0 * np.cos(np.radians(vlat))
         if np.hypot(north, east) <= VENUE_RADIUS_M:
             return metres
-    return None
+    return ()
 
 
 def along_track(
@@ -370,10 +386,16 @@ class LineMatch:
     reason: str
     passes: list[tuple[float, float]] = field(default_factory=list)
     spread: float = float("nan")
+    # Pairs the next best start (over LANDMARK_RIVAL_S away) has.
+    rival: int = 0
 
 
 def landmark_match(
-    passes: list[float], landmarks: np.ndarray, guesses: list[float], search_s: float = SEARCH_S
+    passes: list[float],
+    landmarks: np.ndarray,
+    guesses: list[float],
+    search_s: float = SEARCH_S,
+    tol_s: float = LANDMARK_TOL_S,
 ) -> LineMatch:
     """UTC of recording t=0 that lays the landmark *passes* (recording time)
     on RaceBox's *landmarks* (UTC), searched within *search_s* of each guess.
@@ -401,7 +423,7 @@ def landmark_match(
     resid = np.abs(at - lm[np.minimum(i, len(lm) - 1)])
     if len(lm) > 1:
         resid = np.minimum(resid, np.abs(at - lm[i - 1]))
-    paired = resid <= LANDMARK_TOL_S
+    paired = resid <= tol_s
     counts = paired.sum(axis=1)
     err = np.where(paired, resid, 0.0).sum(axis=1) / np.maximum(counts, 1)
     best = int(np.lexsort((err, -counts))[0])
@@ -417,11 +439,11 @@ def landmark_match(
     spread = float(np.max(np.abs(offsets - start)))
     reason = f"{n} of {len(p)} landmark passes on RaceBox's, spread {spread:.2f} s, next best {rival}"
     if n < MIN_LANDMARK_PAIRS:
-        return LineMatch(None, reason + f" (need {MIN_LANDMARK_PAIRS})", pairs, spread)
+        return LineMatch(None, reason + f" (need {MIN_LANDMARK_PAIRS})", pairs, spread, rival)
     # One pass meets some landmark at almost any start: a rival of one is noise.
     if rival >= 2 and n < rival + LANDMARK_MARGIN:
-        return LineMatch(None, reason + " (ambiguous)", pairs, spread)
-    return LineMatch(start, reason, pairs, spread)
+        return LineMatch(None, reason + " (ambiguous)", pairs, spread, rival)
+    return LineMatch(start, reason, pairs, spread, rival)
 
 
 def finish_passes(passes: list[float], speed_ms: float) -> list[float]:
@@ -480,8 +502,43 @@ def bridge_place(
             match = LineMatch(start, match.reason.split(" (")[0] + " (one bridge, near)", match.passes, 0.0)
     if match.start_utc is None:
         return match
+    reason = f"bridge: {match.reason}, {match.start_utc - start0:+.2f} s from scene motion"
+    return _refine_by_line(match, reason, duration, track, find_passes)
+
+
+def bridge_place_anywhere(
+    clock_utc: float, duration: float, track: RaceboxTrack, find_bridges, find_passes=None
+) -> LineMatch:
+    """UTC of recording t=0 from the venue's bridge, with no start to go by
+    but the camera clock's day: every bridge pass in the recording is laid on
+    every landmark pass within ANYWHERE_S of *clock_utc* (camera clocks are
+    hours off), refined by the finish line as ``bridge_place``.
+
+    Over a whole day, chance and laps of nearly the same time pair up a few
+    passes anywhere, so the start needs ANYWHERE_MIN_PAIRS and
+    ANYWHERE_RATIO times the next best.
+    """
+    lm = np.asarray(track.landmarks, dtype=np.float64)
+    lm = lm[(lm >= clock_utc - ANYWHERE_S) & (lm <= clock_utc + duration + ANYWHERE_S)]
+    if not len(lm):
+        return LineMatch(None, "no RaceBox landmark pass within a day of the camera clock")
+    passes = sorted({round(float(p), 3) for p in find_bridges(0.0, duration)})
+    match = landmark_match(passes, lm, [clock_utc], ANYWHERE_S, ANYWHERE_TOL_S)
+    if not match.passes:
+        return match
+    n, rival = len(match.passes), match.rival
+    reason = f"bridge, whole recording: {match.reason.split(' (')[0]}"
+    if n < ANYWHERE_MIN_PAIRS or n < ANYWHERE_RATIO * rival:
+        return LineMatch(None, reason + f" (need {ANYWHERE_MIN_PAIRS} and {ANYWHERE_RATIO:g}x the next best)")
+    start = float(np.median([u - t for t, u in match.passes]))
+    match = LineMatch(start, match.reason, match.passes, match.spread)
+    return _refine_by_line(match, reason + f", camera clock {start - clock_utc:+.1f} s", duration, track, find_passes)
+
+
+def _refine_by_line(match: LineMatch, reason: str, duration: float, track: RaceboxTrack, find_passes) -> LineMatch:
+    """*match* (a bridge start) moved to the frame by the finish line, where
+    BRIDGE_REFINE_MIN crossings or more agree; else as it is."""
     start = match.start_utc
-    reason = f"bridge: {match.reason}, {start - start0:+.2f} s from scene motion"
     if find_passes is None or not len(track.crossings):
         return LineMatch(start, reason, match.passes, match.spread)
     c = np.asarray(track.crossings, dtype=np.float64)
@@ -502,8 +559,8 @@ def bridge_place(
         return LineMatch(start, reason, match.passes, match.spread)
     mid = float(np.median(offsets))
     agree = [o for o in offsets if abs(o - mid) <= LINE_TOL_S]
-    if len(agree) * 2 < len(offsets):
-        reason += f"; finish line scattered ({len(offsets)} passes)"
+    if len(agree) < BRIDGE_REFINE_MIN or len(agree) * 2 < len(offsets):
+        reason += f"; finish line on {len(agree)} of {len(offsets)} crossings agreeing, not enough to refine by"
         return LineMatch(start, reason, match.passes, match.spread)
     line_start = float(np.median(agree))
     spread = float(np.max(np.abs(np.asarray(agree) - line_start)))

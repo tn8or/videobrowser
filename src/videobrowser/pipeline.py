@@ -267,7 +267,9 @@ def gps_for_recording(
     scene motion (``racebox_align``), then by the times it rode under the
     venue's bridge (*find_bridges*, ``bridge.BridgeFinder``) and to the frame
     over the finish line (*find_passes*, ``finish_line.PassFinder``) when they
-    pair up with RaceBox's; without a clear match there is none. Venues
+    pair up with RaceBox's; without a clear match there is none. Where scene
+    motion finds nothing (or nothing with a bridge near), the whole recording
+    is searched for the bridge against the camera clock's day. Venues
     without a bridge go by the finish line alone.
     """
     speeds = speed_for_recording(recording)
@@ -275,7 +277,13 @@ def gps_for_recording(
         if speeds:
             return speeds, turns_for_recording(recording), start_utc, "gps"
         return [], [], start_utc, "clock"
-    from videobrowser.racebox_align import bridge_place, clock_guesses, line_place, motion_match
+    from videobrowser.racebox_align import (
+        bridge_place,
+        bridge_place_anywhere,
+        clock_guesses,
+        line_place,
+        motion_match,
+    )
 
     track = config.racebox_track
     match = motion_match(per_second(motion_samples), track, clock_guesses(start_utc))
@@ -287,13 +295,23 @@ def gps_for_recording(
         shift = found - start_utc if start_utc is not None else 0.0
         print(f"  no GPS; laid on RaceBox by scene motion (camera clock {shift:+.1f} s, {match.reason})")
     placed = False
-    if found is not None and find_bridges is not None and len(getattr(track, "landmarks", ())):
+    bridged = find_bridges is not None and len(getattr(track, "landmarks", ()))
+    if found is not None and bridged:
         bridge = bridge_place(found, recording.duration, track, find_bridges, find_passes)
         if bridge.start_utc is not None:
             print(f"  laid on RaceBox by the bridge ({bridge.reason})")
             found, source, placed = bridge.start_utc, "racebox-line", True
         else:
             print(f"  bridge: no placement ({bridge.reason})")
+    if not placed and bridged and start_utc is not None:
+        # Scene motion found nothing, or nothing with a bridge near it: the
+        # whole recording against the whole day.
+        bridge = bridge_place_anywhere(start_utc, recording.duration, track, find_bridges, find_passes)
+        if bridge.start_utc is not None:
+            print(f"  laid on RaceBox by the bridge ({bridge.reason})")
+            found, source, placed = bridge.start_utc, "racebox-line", True
+        else:
+            print(f"  bridge, whole recording: no placement ({bridge.reason})")
     if not placed and found is not None and find_passes is not None and len(getattr(track, "crossings", ())):
         line = line_place(found, recording.duration, track, find_passes)
         if line.start_utc is not None:

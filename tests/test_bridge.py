@@ -51,3 +51,21 @@ def test_two_edges_of_one_bridge_are_one_pass():
     frames += [(10.32 + 0.08 * i, [EdgeHit(0.4, r, 0.0)]) for i, r in enumerate([0.1, 0.03], 1)]
     out = passes_from_edges([f[0] for f in frames], [f[1] for f in frames], 12.5)
     assert len(out) == 1
+
+
+def test_a_fence_leaving_after_the_bridge_does_not_time_it():
+    bridge = _rise(10.0, [0.35, 0.25, 0.12, 0.04])
+    fence = _rise(10.08, [0.4, 0.3, 0.2, 0.12, 0.05, 0.02, 0.01])
+    frames = {}
+    for t, hits in bridge + fence:
+        frames.setdefault(round(t, 2), []).extend(hits)
+    t = sorted(frames)
+    assert passes_from_edges(t, [frames[k] for k in t], 12.5) == [bridge[-1][0] + 0.04]
+
+
+def test_a_steep_edge_off_to_one_side_is_no_bridge():
+    image = _sky()
+    for x in range(100, 560):
+        y = int(40 + (x - 100) * 0.45)  # about 24 degrees
+        image[:y, x] = (60, 60, 60)
+    assert find_edges(image) == []

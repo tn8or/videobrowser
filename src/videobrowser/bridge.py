@@ -34,8 +34,9 @@ BRIDGE_CONTRAST = 40
 BRIDGE_MIN_RUN = 0.2
 BRIDGE_GAP_PX = 7
 # Roll of the camera (degrees) the edge may show at, and the rows of slack
-# for an underside that bows (wide lens).
-BRIDGE_MAX_ANGLE = 24.0
+# for an underside that bows (wide lens). Under the bridge the bike is
+# upright; a fence or pit wall runs off to one side at a steeper angle.
+BRIDGE_MAX_ANGLE = 12.0
 BRIDGE_ANGLE_STEP = 3.0
 BRIDGE_BOW_PX = 5
 # Edges found per frame, this far apart (share of the height).
@@ -53,7 +54,8 @@ TRACK_BACK = 0.02
 # was last seen this near the top.
 BRIDGE_RISE = 0.05
 BRIDGE_EXIT_ROW = 0.15
-# Passes this close (s) are one bridge (its edges leave one after another).
+# Passes this close (s) are one bridge, timed by the first: its edges leave
+# one after another, and a fence or wall just past it leaves later.
 BRIDGE_SAME_S = 0.5
 
 
@@ -117,9 +119,14 @@ def passes_from_edges(times: list[float], hits: list[list[EdgeHit]], fps: float)
     """
     tracks: list[list[tuple[float, EdgeHit]]] = []
     done: list[list[tuple[float, EdgeHit]]] = []
+    def ended(tr: list[tuple[float, EdgeHit]], t: float) -> bool:
+        # Lost for long, or gone a frame once at the top: it left.
+        last_t, last = tr[-1]
+        return t - last_t > TRACK_GAP_S or (last.row <= BRIDGE_EXIT_ROW and t - last_t > 1.5 / fps)
+
     for t, frame in zip(times, hits):
-        open_ = [tr for tr in tracks if t - tr[-1][0] <= TRACK_GAP_S]
-        done.extend(tr for tr in tracks if t - tr[-1][0] > TRACK_GAP_S)
+        open_ = [tr for tr in tracks if not ended(tr, t)]
+        done.extend(tr for tr in tracks if ended(tr, t))
         tracks = []
         # Highest edge first onto the highest track it can have come from.
         for hit in sorted(frame, key=lambda h: h.row):
@@ -142,9 +149,7 @@ def passes_from_edges(times: list[float], hits: list[list[EdgeHit]], fps: float)
     )
     out: list[float] = []
     for t in found:
-        if out and t - out[-1] <= BRIDGE_SAME_S:
-            out[-1] = t
-        else:
+        if not out or t - out[-1] > BRIDGE_SAME_S:
             out.append(t)
     return out
 

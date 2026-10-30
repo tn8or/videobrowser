@@ -507,7 +507,7 @@ def finish_line_cmd(args: argparse.Namespace) -> int:
     from videobrowser.decode import decode_one_frame
     from videobrowser.finish_line import PassFinder, find_lines
     from videobrowser.gopro import chapter_at, group_recordings
-    from videobrowser.racebox_align import bridge_place, line_place, load_track
+    from videobrowser.racebox_align import bridge_place, bridge_place_anywhere, line_place, load_track
     from videobrowser.telemetry import creation_utc_prefer_gps
 
     recordings = group_recordings([v.expanduser() for v in args.video])
@@ -543,6 +543,10 @@ def finish_line_cmd(args: argparse.Namespace) -> int:
     if len(track.landmarks) and not args.no_bridge:
         match = bridge_place(near, recording.duration, track, logged_bridges, logged)
         print(f"RaceBox by the bridge: {match.reason}")
+        if match.start_utc is None:
+            clock = creation_utc_prefer_gps(info) or near
+            match = bridge_place_anywhere(clock, recording.duration, track, logged_bridges, logged)
+            print(f"RaceBox by the bridge, whole recording: {match.reason}")
         by_bridge = match.start_utc is not None
     if match is None or match.start_utc is None:
         match = line_place(near, recording.duration, track, logged)

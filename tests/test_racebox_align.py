@@ -276,9 +276,9 @@ from videobrowser.racebox_align import along_track, landmark_match, venue_landma
 
 
 def test_venues_are_told_by_their_start_line_in_racebox_minutes():
-    assert venue_landmark_m((3359.21818, -786.87418, 3359.20913, -786.86331)) == 56.0  # Knutstorp
-    assert venue_landmark_m((3435.68832, -815.965, 3435.69406, -815.94955)) == 0.0  # Anderstorp
-    assert venue_landmark_m((3300.0, -600.0, 3300.01, -600.0)) is None
+    assert venue_landmark_m((3359.21818, -786.87418, 3359.20913, -786.86331)) == (56.0, 666.0)  # Knutstorp
+    assert venue_landmark_m((3435.68832, -815.965, 3435.69406, -815.94955)) == (23.0,)  # Anderstorp
+    assert venue_landmark_m((3300.0, -600.0, 3300.01, -600.0)) == ()
 
 
 def test_landmark_is_metres_along_the_track_past_each_crossing():
@@ -383,3 +383,57 @@ def test_line_refine_takes_the_finish_line_over_the_grid_line_before_it():
     lines, _ = _picture(track, start)
     match = bridge_place(start, 500.0, track, bridges, lines)
     assert abs(match.start_utc - start) < 0.03
+
+
+def test_one_line_pass_does_not_move_the_bridge_start():
+    track = _bridge_track()
+    start = T0 + 10.0
+    bridges, _ = _bridges(track, start, lag=0.08)
+    first = track.crossings[0] - start - LINE_LEAD_S
+    match = bridge_place(start, 500.0, track, bridges, lambda a, b: [first] if a <= first <= b else [])
+    assert abs(match.start_utc - (start - 0.08)) < 0.01
+    assert "not enough" in match.reason
+
+
+from videobrowser.racebox_align import bridge_place_anywhere  # noqa: E402
+
+
+def _day(seed=3):
+    """A day at Knutstorp: 7 sessions of 10 laps, two bridges a lap."""
+    rng = np.random.default_rng(seed)
+    utc = T0 + np.arange(0.0, 8 * 3600.0, 0.5)
+    crossings, landmarks = [], []
+    t = T0
+    for _ in range(7):
+        t += 3600.0
+        for _ in range(10):
+            lap = 77.0 + rng.normal(0, 0.5)
+            crossings.append(t)
+            landmarks += [t + 1.15, t + 0.333 * lap]
+            t += lap
+    track = RaceboxTrack(utc, np.full(len(utc), 176.0), np.zeros(len(utc)), np.array(crossings), np.array(landmarks))
+    return track, rng
+
+
+def test_whole_recording_finds_the_bridge_hours_off_the_camera_clock():
+    track, rng = _day()
+    start = track.landmarks[30] - 150.0
+    passes = [u - start + rng.normal(0, 0.03) for u in track.landmarks if 0 < u - start < 900]
+    passes += list(rng.uniform(0, 900, 28))  # paddock and other bridges
+    clock = start - 7230.5  # local time read as UTC
+    match = bridge_place_anywhere(clock, 900.0, track, lambda a, b: sorted(passes), lambda a, b: [])
+    assert abs(match.start_utc - start) < 0.05
+
+
+def test_whole_recording_of_the_paddock_places_nothing():
+    track, rng = _day()
+    for seed in range(5):
+        fake = sorted(np.random.default_rng(seed).uniform(0, 1500, 40))
+        assert bridge_place_anywhere(T0 + 3 * 3600, 1500.0, track, lambda a, b: fake).start_utc is None
+
+
+def test_whole_recording_needs_more_than_a_lap():
+    track, rng = _day()
+    start = track.landmarks[30] - 20.0
+    passes = [u - start for u in track.landmarks if 0 < u - start < 100]
+    assert bridge_place_anywhere(start, 100.0, track, lambda a, b: passes).start_utc is None
