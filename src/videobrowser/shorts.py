@@ -719,7 +719,7 @@ def day_moments(
     if min_speed <= 0:
         return _at_least(moments, day, dropped)
     kept: list[Moment] = []
-    stopped = slow = 0
+    stopped = slow = gated = 0
     for m in moments:
         if m.theme in SPEED_EXEMPT_THEMES:
             m.why.append("no pace check for this theme")
@@ -733,12 +733,19 @@ def day_moments(
             dropped.append(m)
         elif pace == "slow":
             slow += 1
-            m.why.append(f"left out: not on track (below {min_speed:g} km/h or unknown)")
+            if why.endswith("off track"):  # ``_bridge_gate``
+                gated += 1
+                m.why.append("left out: off track by the bridges")
+            else:
+                m.why.append(f"left out: not on track (below {min_speed:g} km/h or unknown)")
             dropped.append(m)
         else:
             kept.append(m)
     if stopped or slow:
-        print(f"  left out: {stopped} moment(s) standing still, {slow} not shown on track (paddock or unknown)")
+        print(
+            f"  left out: {stopped} moment(s) standing still, {slow} not shown on track (paddock or unknown"
+            + (f"; {gated} of them off track by the bridges)" if gated else ")")
+        )
     return _at_least(kept, day, dropped)
 
 
@@ -1007,7 +1014,7 @@ def collect_short(plan: ShortPlan, day: DayData, dest: Path, jobs: int = 1) -> P
     else:
         for item in cuts:
             cut(item)
-    (dest / "klip.txt").write_text("\n".join(lines) + "\n")
+    (dest / "klip.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return dest
 
 
@@ -1093,7 +1100,7 @@ def write_index(
                 parts.append(f"<div class=wide>{video(clip.clip_path, caption)}</div>")
         parts.append("</div>")
     dest = day_dir / "index.html"
-    dest.write_text("\n".join(parts))
+    dest.write_text("\n".join(parts), encoding="utf-8")
     return dest
 
 
@@ -1188,7 +1195,8 @@ def build_shorts(
                 },
                 indent=2,
                 ensure_ascii=False,
-            )
+            ),
+            encoding="utf-8",
         )
         counts = {t: sum(1 for m in moments if m.theme == t) for t in LABELS}
         print("  moments: " + ", ".join(f"{t}={n}" for t, n in counts.items() if n))
