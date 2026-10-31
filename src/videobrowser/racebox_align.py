@@ -47,12 +47,12 @@ SPEED_CLIP_KMH = 80.0
 # RaceBox's start line to where each bridge's underside leaves the top of
 # the picture). Knutstorp: the "Porsche Center Malmö" bridge over the
 # straight (56-61 m measured on three recordings) and the "Förenade Bil"
-# bridge (664-668 m). Anderstorp: the "PORSCHE" bridge, 0.6 s past the
-# painted line at 135 km/h (23 m; RaceBox's line assumed on the painted
-# one). Other venues get none.
+# bridge (664-668 m). Anderstorp: the "PORSCHE" bridge, right over the
+# second of two painted lines 18 m apart, taken as RaceBox's line (the
+# first, toothed one is 0.5 s before it). Other venues get none.
 VENUE_LANDMARKS = (
     ("Knutstorp", 55.98689, 13.11448, (56.0, 666.0)),
-    ("Anderstorp", 57.26147, 13.59942, (23.0,)),
+    ("Anderstorp", 57.26147, 13.59942, (0.0,)),
 )
 # A start line this close (m) to a venue's is that venue's.
 VENUE_RADIUS_M = 500.0

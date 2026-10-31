@@ -277,7 +277,7 @@ from videobrowser.racebox_align import along_track, landmark_match, venue_landma
 
 def test_venues_are_told_by_their_start_line_in_racebox_minutes():
     assert venue_landmark_m((3359.21818, -786.87418, 3359.20913, -786.86331)) == (56.0, 666.0)  # Knutstorp
-    assert venue_landmark_m((3435.68832, -815.965, 3435.69406, -815.94955)) == (23.0,)  # Anderstorp
+    assert venue_landmark_m((3435.68832, -815.965, 3435.69406, -815.94955)) == (0.0,)  # Anderstorp
     assert venue_landmark_m((3300.0, -600.0, 3300.01, -600.0)) == ()
 
 

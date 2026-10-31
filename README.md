@@ -409,7 +409,8 @@ top edge. Every mount sees it, shadow and fairing don't hide it, and
 nothing else on the lap looks like it. RaceBox gives the time the bike is
 under each bridge from the distance along the track past the start line:
 56 m and 666 m at Knutstorp (where the underside leaves the picture), and
-23 m at Anderstorp. The picture is searched at 12.5 fps ±40 s around three
+0 m at Anderstorp (RaceBox's line taken as the painted line under the
+bridge, the second of two 18 m apart). The picture is searched at 12.5 fps ±40 s around three
 of those times, and the start most bridge passes agree with (two or more;
 one alone lines up with some bridge near almost any start) wins. Where scene motion found nothing,
 or nothing with a bridge near, a recording of 250 s or more is searched
