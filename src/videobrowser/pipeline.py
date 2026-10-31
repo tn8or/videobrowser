@@ -19,6 +19,8 @@ from videobrowser.action import per_second as action_per_second
 from videobrowser.db import ScanDB
 from videobrowser.signals import blinking_seconds, red_lamp
 from videobrowser.decode import FrameDecoder, decode_frames, decode_one_frame
+from videobrowser.bridge import BridgeFinder
+from videobrowser.finish_line import PassFinder
 from videobrowser.events import (
     SPEED_EXEMPT,
     ClipWindow,
@@ -253,37 +255,85 @@ def gps_for_recording(
     config: ScanConfig,
     motion_samples: list[tuple[float, float]],
     start_utc: float | None,
+    find_passes=None,
+    find_bridges=None,
 ) -> tuple[list[SpeedSample], list[TurnSample], float | None, str]:
     """Speed and turn samples from the GoPro GPS, else from RaceBox, plus the
     recording's start (UTC), corrected when it was found on the RaceBox log,
-    and how that start is known: "gps", "racebox-motion" or "clock".
+    and how that start is known: "gps", "racebox-line", "racebox-motion" or
+    "clock".
 
     Without GoPro telemetry the recording is laid on the RaceBox log by its
-    scene motion (``racebox_align``); without a clear match there is none.
+    scene motion (``racebox_align``), then by the times it rode under the
+    venue's bridge (*find_bridges*, ``bridge.BridgeFinder``) and to the frame
+    over the finish line (*find_passes*, ``finish_line.PassFinder``) when they
+    pair up with RaceBox's; without a clear match there is none. Where scene
+    motion finds nothing (or nothing with a bridge near), the whole recording
+    is searched for the bridge against the camera clock's day. Venues
+    without a bridge go by the finish line alone.
     """
     speeds = speed_for_recording(recording)
     if speeds or config.racebox_track is None:
         if speeds:
             return speeds, turns_for_recording(recording), start_utc, "gps"
         return [], [], start_utc, "clock"
-    from videobrowser.racebox_align import clock_guesses, motion_match
-
-    match = motion_match(
-        per_second(motion_samples), config.racebox_track, clock_guesses(start_utc)
+    from videobrowser.racebox_align import (
+        bridge_place,
+        bridge_place_anywhere,
+        clock_guesses,
+        line_place,
+        motion_match,
     )
+
+    track = config.racebox_track
+    match = motion_match(per_second(motion_samples), track, clock_guesses(start_utc))
     found = match.start_utc
+    source = "racebox-motion"
     if found is None:
         print(f"  no GPS; no clear RaceBox match from scene motion: {match.reason}")
+    else:
+        shift = found - start_utc if start_utc is not None else 0.0
+        print(f"  no GPS; laid on RaceBox by scene motion (camera clock {shift:+.1f} s, {match.reason})")
+    placed = False
+    bridged = find_bridges is not None and len(getattr(track, "landmarks", ()))
+    if found is not None and bridged:
+        bridge = bridge_place(found, recording.duration, track, find_bridges, find_passes)
+        if bridge.start_utc is not None:
+            print(f"  laid on RaceBox by the bridge ({bridge.reason})")
+            found, source, placed = bridge.start_utc, "racebox-line", True
+        else:
+            print(f"  bridge: no placement ({bridge.reason})")
+    if not placed and bridged and start_utc is not None:
+        # Scene motion found nothing, or nothing with a bridge near it: the
+        # whole recording against the whole day.
+        bridge = bridge_place_anywhere(
+            start_utc,
+            recording.duration,
+            track,
+            find_bridges,
+            find_passes,
+            getattr(find_bridges, "sky_share", None),
+        )
+        if bridge.start_utc is not None:
+            print(f"  laid on RaceBox by the bridge ({bridge.reason})")
+            found, source, placed = bridge.start_utc, "racebox-line", True
+        else:
+            print(f"  bridge, whole recording: no placement ({bridge.reason})")
+    if not placed and found is not None and find_passes is not None and len(getattr(track, "crossings", ())):
+        line = line_place(found, recording.duration, track, find_passes)
+        if line.start_utc is not None:
+            print(f"  laid on RaceBox by the finish line ({line.reason})")
+            found, source = line.start_utc, "racebox-line"
+        else:
+            print(f"  finish line: no placement ({line.reason})")
+    if found is None:
         return [], [], start_utc, "clock"
-    shift = found - start_utc if start_utc is not None else 0.0
-    print(f"  no GPS; laid on RaceBox by scene motion (camera clock {shift:+.1f} s, {match.reason})")
-    track = config.racebox_track
     # A zero shift is still a RaceBox match: the camera clock was on the second.
     return (
         track.speeds(found, recording.duration),
         track.turns(found, recording.duration),
         found,
-        "racebox-motion",
+        source,
     )
 
 
@@ -596,8 +646,14 @@ def scan_recording(
     # How the start is known decides whether exports may put an overlay on
     # it: GoPro GPS time and a clear RaceBox match are sure, a bare camera
     # clock may be seconds off.
+    bridges = BridgeFinder(recording, config.max_side, profile.rotation, side=profile.name.startswith("side"))
     speeds, turns, start_utc, start_source = gps_for_recording(
-        recording, config, motion_samples, start_utc
+        recording,
+        config,
+        motion_samples,
+        start_utc,
+        PassFinder(recording, config.max_side, profile.rotation),
+        bridges,
     )
     riding = mount.per_second()
     if riding is None:
@@ -706,6 +762,9 @@ def scan_recording(
     db.save_motion(recording.recording_id, per_second(motion_samples))
     db.save_vehicles(recording.recording_id, vehicles_per_second(vehicle_samples))
     db.save_riding(recording.recording_id, riding)
+    # Every bridge pass, when the whole recording was searched: the shorts
+    # tell track from paddock by them where RaceBox cannot (``shorts``).
+    db.save_bridges(recording.recording_id, bridges.whole)
     db.save_action(
         recording.recording_id,
         action_per_second(

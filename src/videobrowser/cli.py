@@ -271,6 +271,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rb_fetch.add_argument("sessions_dir", type=Path, help="Folder to save .vbo files in")
     rb_fetch.add_argument("--headful", action="store_true", help="Show the browser window")
+
+    line = sub.add_parser(
+        "finish-line",
+        help="Lay one recording on RaceBox by the bridge and the painted finish line, around a start (for tuning)",
+    )
+    line.add_argument("video", type=Path, nargs="+", help="The recording's video file(s), all chapters")
+    line.add_argument(
+        "--sessions-dir", type=Path, default=None, help="RaceBox .vbo sessions (default: output/sessions)"
+    )
+    line.add_argument(
+        "--near",
+        type=float,
+        default=None,
+        help="UTC start (epoch s) to search around, e.g. the scan's scene-motion start_utc; "
+        "default: the camera clock",
+    )
+    line.add_argument(
+        "--frames", type=Path, default=None, help="Save the three frames before each pass, lines drawn, here"
+    )
+    line.add_argument(
+        "--no-bridge", action="store_true", help="Go by the finish line alone, also at venues with a bridge"
+    )
+    line.add_argument(
+        "--side", action="store_true", help="The camera is on the side of the bike: bridges may show tilted more"
+    )
     return parser
 
 
@@ -475,6 +500,89 @@ def racebox_fetch_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def finish_line_cmd(args: argparse.Namespace) -> int:
+    import time
+
+    import cv2
+    import numpy as np
+
+    from videobrowser.bridge import BridgeFinder, find_edges
+    from videobrowser.decode import decode_one_frame
+    from videobrowser.finish_line import PassFinder, find_lines
+    from videobrowser.gopro import chapter_at, group_recordings
+    from videobrowser.racebox_align import bridge_place, bridge_place_anywhere, line_place, load_track
+    from videobrowser.telemetry import creation_utc_prefer_gps
+
+    recordings = group_recordings([v.expanduser() for v in args.video])
+    if not recordings:
+        print("cannot read " + ", ".join(map(str, args.video)), file=sys.stderr)
+        return 1
+    recording = recordings[0]
+    info = recording.chapters[0].info
+    rotation = info.rotation or 0
+    track = load_track((args.sessions_dir or Path("output/sessions")).expanduser())
+    if track is None or not len(track.crossings):
+        print("no RaceBox finish-line crossings in the sessions", file=sys.stderr)
+        return 1
+    near = args.near if args.near is not None else creation_utc_prefer_gps(info)
+    if near is None:
+        print("no start to search around: pass --near", file=sys.stderr)
+        return 1
+    finder = PassFinder(recording, 640, rotation)
+    bridges = BridgeFinder(recording, 640, rotation, side=args.side)
+
+    def logged(t0: float, t1: float):
+        passes = finder(t0, t1)
+        print(f"  line   {t0:8.2f}-{t1:8.2f} s: " + (", ".join(f"{p.t:.2f}" for p in passes) or "none"))
+        return passes
+
+    def logged_bridges(t0: float, t1: float):
+        passes = bridges(t0, t1)
+        print(f"  bridge {t0:8.2f}-{t1:8.2f} s: " + (", ".join(f"{t:.2f}" for t in passes) or "none"))
+        return passes
+
+    began = time.perf_counter()
+    match, by_bridge = None, False
+    if len(track.landmarks) and not args.no_bridge:
+        match = bridge_place(near, recording.duration, track, logged_bridges, logged)
+        print(f"RaceBox by the bridge: {match.reason}")
+        if match.start_utc is None:
+            clock = creation_utc_prefer_gps(info) or near
+            match = bridge_place_anywhere(clock, recording.duration, track, logged_bridges, logged)
+            print(f"RaceBox by the bridge, whole recording: {match.reason}")
+        by_bridge = match.start_utc is not None
+    if match is None or match.start_utc is None:
+        match = line_place(near, recording.duration, track, logged)
+        print(f"RaceBox by the finish line: {match.reason}")
+    decoded = finder.decoded_s + bridges.decoded_s
+    print(f"decoded {decoded:.0f} s of video in {time.perf_counter() - began:.0f} s")
+    for t, utc in match.passes:
+        print(f"  {'bridge' if by_bridge else 'line'} {t:9.3f} s  RaceBox {utc:.3f}")
+        if args.frames:
+            args.frames.mkdir(parents=True, exist_ok=True)
+            chapter = chapter_at(recording, t)
+            fps = chapter.info.fps or 25.0
+            tiles = []
+            for k in (3, 2, 1):
+                image = decode_one_frame(
+                    chapter.path, t - k / fps - chapter.offset, 640, chapter.info.width, chapter.info.height, rotation
+                )
+                if image is None:
+                    continue
+                h, w = image.shape[:2]
+                for hit in (find_edges if by_bridge else find_lines)(image):
+                    y = hit.row * h
+                    dy = np.tan(np.radians(hit.angle)) * w / 2
+                    cv2.line(image, (0, int(y - dy)), (w, int(y + dy)), (0, 0, 255), 1)
+                tiles.append(image)
+            if tiles:
+                cv2.imwrite(str(args.frames / f"pass_{t:09.3f}.jpg"), np.hstack(tiles))
+    if match.start_utc is None:
+        return 1
+    print(f"start {match.start_utc:.3f} (UTC epoch s), {match.start_utc - near:+.2f} s from --near")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -490,5 +598,7 @@ def main(argv: list[str] | None = None) -> int:
         return racebox_login_cmd(args)
     if args.cmd == "racebox-fetch":
         return racebox_fetch_cmd(args)
+    if args.cmd == "finish-line":
+        return finish_line_cmd(args)
     parser.error(f"unknown command {args.cmd}")
     return 2

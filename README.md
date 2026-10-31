@@ -406,6 +406,59 @@ log near the camera clock ...`). Scene motion is median-filtered over a
 minute and capped first, so a camera picked up in the paddock does not look
 like a session.
 
+Scene motion lands within seconds at best, and sometimes half a lap off.
+At a venue with bridges over the track, the scan then looks for them:
+Knutstorp's "Porsche Center Malmö" and "Förenade Bil" bridges, and
+Anderstorp's "PORSCHE" bridge. A bridge's underside is a long, nearly level
+edge (12°, 20° from a side mount), dark above with sky below, rising up the picture and leaving over the
+top edge. Every mount sees it, shadow and fairing don't hide it, and
+nothing else on the lap looks like it. RaceBox gives the time the bike is
+under each bridge from the distance along the track past the start line:
+56 m and 666 m at Knutstorp (where the underside leaves the picture), and
+0 m at Anderstorp (RaceBox's line taken as the painted line under the
+bridge, the second of two 18 m apart). The picture is searched at 12.5 fps ±40 s around three
+of those times, and the start most bridge passes agree with (two or more;
+one alone lines up with some bridge near almost any start) wins. Where scene motion found nothing,
+or nothing with a bridge near, a recording of 250 s or more is searched
+whole and laid on
+every bridge pass within a day and a half of the camera clock (camera clocks
+set to local time are hours off); that needs six bridge passes on RaceBox's
+and 1.5 times the next best start. It is skipped (it decodes the whole
+recording) when RaceBox has fewer than six bridge passes in any stretch as
+long as the recording, or when the camera is pitched so far down that under
+2 % of the picture is sky.
+
+The painted finish line then sets the start to the frame: every frame is
+decoded ±0.35 s around each crossing (where the bridge leaves the picture
+depends on the camera's height and pitch), and the finish line is the last line
+with 30 m of clear track after it (grid and start lines lie 13-50 m before
+it). Two crossings or more must agree; otherwise, as where the line is in
+shadow, the bridge start stands. The scan log says `laid on RaceBox by the
+bridge (bridge: 8 of 8 landmark passes ...; finish line 3 of 4 crossings,
+-0.04 s, ...)` or why not.
+
+The bridges also tell the shorts when a recording without GPS is on track:
+the pit lane does not pass under them, so from the first bridge pass until
+100 s without one the bike is on track, and moments outside count as
+paddock. A recording placed on RaceBox goes by RaceBox's bridge times; one
+the scan searched whole by the passes it saw (one missed pass tolerated).
+
+Venues without a bridge (Padborg Park) go by the finish line alone: every
+frame ±40 s around the fastest crossing, then ±0.5 s around each other
+crossing for every start that gives. The start most crossings agree with
+(two or more) wins; a recording with one crossing only is placed by it
+within 10 s of scene motion. The scan log says `laid on RaceBox by the
+finish line (4 of 5 crossings on the line, spread 0.02 s, ...)` or why
+not. Either way the start source is then `racebox-line`, and overlays and
+shorts use it. Days scanned before this need `scan --force`.
+
+To check one recording by hand, `videobrowser finish-line VIDEO [VIDEO ...]
+--sessions-dir output/sessions --near START_UTC --frames passes/` prints the
+bridge passes and lines found in each window searched, the placement, and
+saves the three frames before each pass with the edges or lines it saw
+drawn. `START_UTC` is the scan's `start_utc` (epoch s) for the recording;
+`--no-bridge` goes by the finish line alone.
+
 The shorts then match each camera's remaining recordings of the day at once
 (one clock error per camera): hours of footage with pit stops between
 sessions match where a single recording does not, paddock-only recordings

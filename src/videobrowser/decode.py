@@ -190,8 +190,11 @@ class FrameDecoder:
         max_side: int,
         rotation: int = 0,
         max_seconds: float | None = None,
+        start: float = 0.0,
     ) -> None:
+        """*start* (s) seeks first; frame times then count from it."""
         self.path = path
+        self.start = max(0.0, start)
         self.info = info
         self.fps = fps
         self.rotation = rotation % 360
@@ -227,6 +230,7 @@ class FrameDecoder:
             "error",
             *hw,
             "-noautorotate",
+            *(["-ss", f"{self.start:.3f}"] if self.start else []),
             "-i",
             str(self.path),
             "-vf",
@@ -289,7 +293,7 @@ class FrameDecoder:
                     break
                 image = np.frombuffer(buf, dtype=np.uint8).reshape(self.height, self.width, 3)
                 yielded = True
-                yield Frame(t=t, image=image.copy())
+                yield Frame(t=self.start + t, image=image.copy())
                 t += dt
         finally:
             stop.set()

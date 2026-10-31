@@ -407,6 +407,34 @@ def test_whole_day_match_gets_camera_clock_starts_after_a_recording_was_placed(m
     assert clocks["B"].start_utc == 2000.0 and day.gps["B"][0][0].t == pytest.approx(0.0, abs=0.1)
 
 
+def test_finish_line_start_stays_out_of_the_whole_day_match(monkeypatch):
+    import numpy as np
+
+    import videobrowser.racebox_align as ra
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    # A: placed by the finish line in the scan (RaceBox time, 31 s off the
+    # camera clock); B: same camera, scene motion leaves it unplaced.
+    clocks = {"A": CameraClock("A", 1031.0, 300.0, []), "B": CameraClock("B", 2000.0, 300.0, [])}
+    day = shorts.DayData("2026-08-01", clocks, {"A": "cockpit", "B": "cockpit"}, {"A": 0, "B": 0}, [], [])
+    day.motion = {rid: [(t + 0.5, 5.0) for t in range(300)] for rid in clocks}
+    day.line_placed = {"A"}
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([], []))
+    monkeypatch.setattr(ra, "motion_match", lambda *a: ra.MotionMatch(None, "x"))
+    seen = []
+
+    def fake_day(recs, track):
+        seen.extend(start for start, _ in recs)
+        return ra.MotionMatch(1990.0, "r=0.70")
+
+    monkeypatch.setattr(ra, "day_match", fake_day)
+    utc = np.arange(0.0, 4000.0, 0.1)
+    shorts.place_without_gps(day, ra.RaceboxTrack(utc, np.full(len(utc), 100.0), np.zeros(len(utc))))
+    assert clocks["A"].start_utc == 1031.0 and clocks["A"].source == "racebox-line"
+    assert seen == [2000.0]
+
+
 def test_a_crash_needs_the_picture_to_stop_too():
     from videobrowser.shorts import _moving_after
 
@@ -489,3 +517,33 @@ def test_moments_with_a_red_signal_lamp_are_left_out(monkeypatch):
     assert [round(m.segments[0].t_start) for m in kept] == [47]
     assert left_out[0].why[-1] == "left out: red signal lamp (session over)"
     assert shorts.clip_drop_reason(day, "F", 195.0, 215.0) == "red signal lamp (session over)"
+
+
+def test_bridges_say_when_a_recording_is_on_track():
+    import numpy as np
+
+    import videobrowser.racebox_align as ra
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+    from videobrowser.themes import Moment, Segment
+
+    # A: placed on RaceBox, bridges at 100-400 s of it; B: not placed, the
+    # scan saw bridges at 50 and 300 s (one missed between).
+    clocks = {"A": CameraClock("A", 1000.0, 900.0, []), "B": CameraClock("B", 9000.0, 900.0, [])}
+    day = shorts.DayData("2026-08-01", clocks, {"A": "cockpit", "B": "cockpit"}, {"A": 0, "B": 0}, [], [])
+    utc = np.arange(0.0, 20000.0, 1.0)
+    landmarks = 1000.0 + np.array([100.0, 140.0, 180.0, 220.0, 260.0, 300.0, 340.0, 380.0, 400.0])
+    day.track = ra.RaceboxTrack(utc, np.full(len(utc), 100.0), np.zeros(len(utc)), landmarks - 1.0, landmarks)
+    day.line_placed = {"A"}
+    day.bridges = {"B": [50.0, 300.0]}
+
+    def gate(rid, t):
+        return shorts._bridge_gate(Moment("action", t, t + 4, 0.0, [Segment(rid, t, t + 4)]), day)
+
+    assert gate("A", 50.0).startswith("before the first bridge")
+    assert gate("A", 250.0) is None
+    assert gate("A", 480.0) is None  # the in-lap after the last
+    assert gate("A", 600.0).startswith("no bridge for")
+    assert gate("B", 200.0) is None  # one missed bridge is tolerated
+    assert gate("B", 700.0).startswith("no bridge for")
+    assert gate("C", 10.0) is None  # nothing to tell by

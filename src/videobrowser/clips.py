@@ -235,7 +235,7 @@ def export_clip(
             _cut(chapter.path, start, duration, piece, rotation=0)
             pieces.append(piece)
         listing = tmp_path / "concat.txt"
-        listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in pieces))
+        listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in pieces), encoding="utf-8")
         input_args = [
             "-noautorotate",
             "-f",

@@ -257,6 +257,12 @@ class DayData:
     action: dict = field(default_factory=dict)
     # recording id -> "front"/"rear" the scan read from scene flow.
     facings: dict = field(default_factory=dict)
+    # recordings the scan placed on RaceBox by the finish line: their start
+    # is RaceBox time to the frame, scene motion would only blur it.
+    line_placed: set = field(default_factory=set)
+    # recording id -> every bridge pass (recording time) the scan saw, for
+    # recordings it searched whole (``bridge.py``).
+    bridges: dict = field(default_factory=dict)
 
     def facing(self, rid: str) -> str:
         """Which way the camera looks: scene flow when the scan had it, else
@@ -288,6 +294,8 @@ def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
         day.rotations[rid] = int(row["rotation"])
         if "facing" in row.keys() and row["facing"]:
             day.facings[rid] = row["facing"]
+        if "start_source" in row.keys() and row["start_source"] == "racebox-line":
+            day.line_placed.add(rid)
     owner = {rid: day for day in days.values() for rid in day.clocks}
     for rid, samples in db.motion().items():
         if rid in owner:
@@ -298,6 +306,9 @@ def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
     for rid, samples in db.riding().items():
         if rid in owner:
             owner[rid].riding[rid] = samples
+    for rid, passes in db.bridges().items():
+        if rid in owner:
+            owner[rid].bridges[rid] = passes
     for rid, samples in db.vehicles().items():
         if rid in owner:
             owner[rid].vehicles[rid] = samples
@@ -477,8 +488,12 @@ def _pace(m: Moment, day: DayData, min_speed: float) -> tuple[str | None, str]:
     scan could not tell. Scene motion alone never makes a moment track, for
     the same reason, but with another rider in view it does (helmet cameras,
     which show no part of the bike). Without any of these the moment counts
-    as slow.
+    as slow. Before that, at a venue with bridges, a moment off the stretches
+    the bridges say were on track is slow (``_bridge_gate``).
     """
+    gated = _bridge_gate(m, day)
+    if gated is not None and not _has_gopro_gps(m, day):
+        return "slow", gated
     riding = _moment_riding(m, day)
     if riding is not None and not _has_gopro_gps(m, day):
         why = f"riding {riding:.0%} of the time"
@@ -511,6 +526,44 @@ def _pace(m: Moment, day: DayData, min_speed: float) -> tuple[str | None, str]:
     return "slow", "no GPS, RaceBox or bike in view says track"
 
 
+def _bridge_spans(rid: str, day: DayData) -> list[tuple[float, float]] | None:
+    """Stretches of *rid* on track by the bridges, None where they cannot
+    tell (no bridge at the venue, or neither placed on RaceBox nor searched
+    whole). Placed on RaceBox, RaceBox's bridge times say it, every lap;
+    else the passes the scan saw, where one may be missed."""
+    from videobrowser.bridge import GATE_GAP_S, on_track_spans
+
+    clock = day.clocks.get(rid)
+    landmarks = np.asarray(getattr(day.track, "landmarks", ()), dtype=np.float64)
+    if rid in day.line_placed and clock is not None and clock.start_utc is not None and len(landmarks):
+        start = float(clock.start_utc)
+        # Only at a venue with bridges: one within a day.
+        if np.any(np.abs(landmarks - start) <= 86_400.0):
+            inside = landmarks[(landmarks >= start) & (landmarks <= start + clock.duration)] - start
+            return on_track_spans(list(inside), GATE_GAP_S)
+    if rid in day.bridges:
+        return on_track_spans(day.bridges[rid], 2 * GATE_GAP_S)
+    return None
+
+
+def _bridge_gate(m: Moment, day: DayData) -> str | None:
+    """Why *m* is off track by the bridges, None when on track or they
+    cannot tell."""
+    for seg in m.segments:
+        spans = _bridge_spans(seg.recording_id, day)
+        if spans is None:
+            continue
+        mid = (seg.t_start + seg.t_end) / 2.0
+        if any(a <= mid <= b for a, b in spans):
+            return None
+        if not spans:
+            return "no bridge passed in the recording: off track"
+        if mid < spans[0][0]:
+            return f"before the first bridge pass ({spans[0][0]:.0f} s): off track"
+        return "no bridge for 100 s or more: off track"
+    return None
+
+
 def place_without_gps(day: DayData, track) -> None:
     """Lay recordings without GoPro GPS on the RaceBox log by scene motion.
 
@@ -533,14 +586,22 @@ def place_without_gps(day: DayData, track) -> None:
         if rid in day.motion and clock.start_utc is not None and not _day_gps(day, rid)[0]:
             cameras.setdefault(day.profiles[rid], []).append(rid)
 
-    def place(rid: str, found: float, how: str) -> None:
+    def place(rid: str, found: float, how: str, source: str = "racebox-motion") -> None:
         clock = day.clocks[rid]
-        print(f"  {rid}: no GPS, laid on RaceBox by scene motion ({found - clock.start_utc:+.1f} s, {how})")
+        by = "the bridge or finish line" if source == "racebox-line" else "scene motion"
+        print(f"  {rid}: no GPS, laid on RaceBox by {by} ({found - clock.start_utc:+.1f} s, {how})")
         clock.start_utc = found
-        clock.source = "racebox-motion"
+        clock.source = source
         day.from_racebox.add(rid)
         day.gps[rid] = (track.speeds(found, clock.duration), track.turns(found, clock.duration))
 
+    # The scan placed these to the frame: their start is RaceBox time, not
+    # the camera clock the whole-day match below shares between recordings.
+    for rids in cameras.values():
+        for rid in [r for r in rids if r in day.line_placed]:
+            rids.remove(rid)
+            place(rid, day.clocks[rid].start_utc, "from the scan", "racebox-line")
+    cameras = {profile: rids for profile, rids in cameras.items() if rids}
     # Camera-clock starts, before any recording is moved onto RaceBox time:
     # the whole-day match needs them all on the same (camera) clock.
     camera_start = {rid: day.clocks[rid].start_utc for rids in cameras.values() for rid in rids}
@@ -658,7 +719,7 @@ def day_moments(
     if min_speed <= 0:
         return _at_least(moments, day, dropped)
     kept: list[Moment] = []
-    stopped = slow = 0
+    stopped = slow = gated = 0
     for m in moments:
         if m.theme in SPEED_EXEMPT_THEMES:
             m.why.append("no pace check for this theme")
@@ -672,12 +733,19 @@ def day_moments(
             dropped.append(m)
         elif pace == "slow":
             slow += 1
-            m.why.append(f"left out: not on track (below {min_speed:g} km/h or unknown)")
+            if why.endswith("off track"):  # ``_bridge_gate``
+                gated += 1
+                m.why.append("left out: off track by the bridges")
+            else:
+                m.why.append(f"left out: not on track (below {min_speed:g} km/h or unknown)")
             dropped.append(m)
         else:
             kept.append(m)
     if stopped or slow:
-        print(f"  left out: {stopped} moment(s) standing still, {slow} not shown on track (paddock or unknown)")
+        print(
+            f"  left out: {stopped} moment(s) standing still, {slow} not shown on track (paddock or unknown"
+            + (f"; {gated} of them off track by the bridges)" if gated else ")")
+        )
     return _at_least(kept, day, dropped)
 
 
@@ -946,7 +1014,7 @@ def collect_short(plan: ShortPlan, day: DayData, dest: Path, jobs: int = 1) -> P
     else:
         for item in cuts:
             cut(item)
-    (dest / "klip.txt").write_text("\n".join(lines) + "\n")
+    (dest / "klip.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return dest
 
 
@@ -1032,7 +1100,7 @@ def write_index(
                 parts.append(f"<div class=wide>{video(clip.clip_path, caption)}</div>")
         parts.append("</div>")
     dest = day_dir / "index.html"
-    dest.write_text("\n".join(parts))
+    dest.write_text("\n".join(parts), encoding="utf-8")
     return dest
 
 
@@ -1127,7 +1195,8 @@ def build_shorts(
                 },
                 indent=2,
                 ensure_ascii=False,
-            )
+            ),
+            encoding="utf-8",
         )
         counts = {t: sum(1 for m in moments if m.theme == t) for t in LABELS}
         print("  moments: " + ", ".join(f"{t}={n}" for t, n in counts.items() if n))

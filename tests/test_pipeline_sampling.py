@@ -82,3 +82,93 @@ def test_facing_from_a_video_moving_into_or_out_of_the_scene(tmp_path, reverse, 
     rec.chapters.append(Chapter(path, "", 1, "Z", info.duration, 0.0, info))
     # The left-side ego mask of a "rear" mount guess must not matter.
     assert facing_for_recording(rec, 640, REAR) == expected
+
+
+def test_finish_line_passes_place_to_the_frame(monkeypatch):
+    import types
+
+    import numpy as np
+
+    import videobrowser.pipeline as pipeline
+    import videobrowser.racebox_align as align
+
+    t0 = 1785571200.0
+    info = VideoInfo(Path("R.mov"), 600.0, 1920, 1080, 25.0, 0, "hevc", False, None, t0)
+    rec = Recording("R", "", "R")
+    rec.chapters.append(Chapter(info.path, "", 1, "R", 600.0, 0.0, info))
+    laps = np.array([76.1, 74.9, 77.1, 75.6])
+    true_start = t0 + 31.7
+    crossings = true_start + 100.0 + np.r_[0.0, np.cumsum(laps)]
+    utc = t0 + np.arange(0.0, 700.0, 0.1)
+    track = align.RaceboxTrack(utc, np.full(len(utc), 170.0), np.zeros(len(utc)), crossings)
+    track.speeds = lambda s, d: ["speed"]
+    track.turns = lambda s, d: ["turn"]
+    config = types.SimpleNamespace(racebox_track=track)
+    monkeypatch.setattr(pipeline, "speed_for_recording", lambda r: [])
+    # Scene motion put it 30 s off.
+    monkeypatch.setattr(align, "motion_match", lambda *a: align.MotionMatch(t0, "r=0.6", 0.6, 0.1))
+    passes = list(crossings - true_start - align.LINE_LEAD_S)
+    _, _, start, source = pipeline.gps_for_recording(
+        rec, config, [], t0, lambda a, b: [p for p in passes if a <= p <= b]
+    )
+    assert source == "racebox-line"
+    assert abs(start - true_start) < 1e-6
+
+
+def test_bridge_places_before_the_finish_line(monkeypatch):
+    import types
+
+    import numpy as np
+
+    import videobrowser.pipeline as pipeline
+    import videobrowser.racebox_align as align
+
+    t0 = 1785571200.0
+    info = VideoInfo(Path("R.mov"), 600.0, 1920, 1080, 25.0, 0, "hevc", False, None, t0)
+    rec = Recording("R", "", "R")
+    rec.chapters.append(Chapter(info.path, "", 1, "R", 600.0, 0.0, info))
+    true_start = t0 + 28.9
+    crossings = true_start + 100.0 + np.r_[0.0, np.cumsum([76.1, 74.9, 77.1, 75.6])]
+    utc = t0 + np.arange(0.0, 700.0, 0.1)
+    track = align.RaceboxTrack(utc, np.full(len(utc), 170.0), np.zeros(len(utc)), crossings, crossings + 1.2)
+    track.speeds = lambda s, d: ["speed"]
+    track.turns = lambda s, d: ["turn"]
+    config = types.SimpleNamespace(racebox_track=track)
+    monkeypatch.setattr(pipeline, "speed_for_recording", lambda r: [])
+    monkeypatch.setattr(align, "motion_match", lambda *a: align.MotionMatch(t0, "r=0.6", 0.6, 0.1))
+    bridges = list(crossings + 1.2 - true_start + 0.05)
+    _, _, start, source = pipeline.gps_for_recording(
+        rec, config, [], t0, lambda a, b: [], lambda a, b: [p for p in bridges if a <= p <= b]
+    )
+    assert source == "racebox-line"
+    assert abs(start - (true_start - 0.05)) < 1e-3
+
+
+def test_bridge_searches_the_whole_recording_when_scene_motion_fails(monkeypatch):
+    import types
+
+    import numpy as np
+
+    import videobrowser.pipeline as pipeline
+    import videobrowser.racebox_align as align
+
+    t0 = 1785571200.0
+    info = VideoInfo(Path("R.mov"), 900.0, 1920, 1080, 25.0, 0, "hevc", False, None, t0)
+    rec = Recording("R", "", "R")
+    rec.chapters.append(Chapter(info.path, "", 1, "R", 900.0, 0.0, info))
+    rng = np.random.default_rng(4)
+    laps = 77.0 + rng.normal(0, 0.5, 10)
+    true_start = t0 + 7230.5  # the camera clock is local time read as UTC
+    crossings = true_start + 50.0 + np.r_[0.0, np.cumsum(laps)]
+    landmarks = np.sort(np.r_[crossings + 1.15, crossings + 25.0])
+    utc = t0 + np.arange(0.0, 9000.0, 0.5)
+    track = align.RaceboxTrack(utc, np.full(len(utc), 170.0), np.zeros(len(utc)), crossings, landmarks)
+    track.speeds = lambda s, d: ["speed"]
+    track.turns = lambda s, d: ["turn"]
+    config = types.SimpleNamespace(racebox_track=track)
+    monkeypatch.setattr(pipeline, "speed_for_recording", lambda r: [])
+    monkeypatch.setattr(align, "motion_match", lambda *a: align.MotionMatch(None, "weak", 0.2, 0.1))
+    bridges = sorted(u - true_start for u in landmarks if 0 < u - true_start < 900)
+    _, _, start, source = pipeline.gps_for_recording(rec, config, [], t0, None, lambda a, b: bridges)
+    assert source == "racebox-line"
+    assert abs(start - true_start) < 1e-3
