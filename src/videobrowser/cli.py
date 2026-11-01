@@ -232,7 +232,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     shorts.add_argument("--date", action="append", default=[], metavar="YYYY-MM-DD", help="Only this day (repeatable)")
     shorts.add_argument("--short-seconds", type=float, default=50.0, help="Max length of each short (default 50)")
-    shorts.add_argument("--max-action", type=int, default=6, help="Max mixed action shorts per day (default 6)")
+    shorts.add_argument(
+        "--max-action", type=int, default=0, help="Max mixed action shorts per day (default 0: no limit)"
+    )
     shorts.add_argument("--no-audio-sync", action="store_true", help="Sync cameras by GPS only")
     shorts.add_argument("--no-crash", action="store_true", help="Skip crash detection from telemetry")
     shorts.add_argument(
