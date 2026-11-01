@@ -367,8 +367,9 @@ scanned before it need `scan --force` to get the check.
 **Session over.** When a session ends the marshal posts blink a red lamp
 and everyone rides into the pit lane. The scan looks for a small, bright red
 spot above the track (not on a rider) that comes, goes and comes back within
-a few seconds, and stores it per second (`action` in `scan.sqlite`); moments
-and clips with it are left out. Every piece of a short is at least 8 s long,
+a few seconds, and stores it per second (`action` in `scan.sqlite`). Leaving
+moments and clips with it out is switched off for now (`shorts.RED_LAMP_GATE`):
+on real footage it fired all through the sessions on the rear cameras. Every piece of a short is at least 8 s long,
 widened around its middle; a moment on a recording shorter than that is
 left out. Days scanned before need `scan --force`.
 
@@ -480,7 +481,7 @@ the source folders once: `videobrowser shorts -o output inputclips`.
 |------|---------|---------|
 | `--date` | all | Only this day (repeatable) |
 | `--short-seconds` | 50 | Max length of each short |
-| `--max-action` | 6 | Max mixed action shorts per day |
+| `--max-action` | 0 | Max mixed action shorts per day (0: no limit, one for every moment) |
 | `--no-audio-sync` | off | Sync cameras by GPS only |
 | `--no-crash` | off | Skip crash detection |
 | `--min-speed` | 40 | Track speed (km/h): slower moments (standing still, paddock) are left out |

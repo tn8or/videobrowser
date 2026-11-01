@@ -107,6 +107,11 @@ KNEE_BONUS = 1.0
 # Every piece of a short is at least this long (s): shorter ones are too
 # short to use. A moment on a recording shorter than this is left out.
 MIN_PIECE_S = 8.0
+# Leave out moments with a red signal lamp blinking (session over). Off: on
+# real footage (2026-07-31) it fired all through the sessions on the rear
+# cameras, at 60-170 km/h, likely on our own brake light, and left out most
+# moments. The scan still stores the lamp, so turning it on needs no rescan.
+RED_LAMP_GATE = False
 
 
 @dataclass
@@ -150,12 +155,17 @@ def _pack(moments: list[Moment], max_seconds: float) -> list[list[Moment]]:
 
 
 def plan_shorts(
-    moments: list[Moment], max_seconds: float = 50.0, max_action_shorts: int = 6
+    moments: list[Moment], max_seconds: float = 50.0, max_action_shorts: int = 0
 ) -> list[ShortPlan]:
+    """Shorts for the day's *moments*: mixed action shorts, best first, then
+    one series per theme. *max_action_shorts* caps the action shorts, 0
+    makes one for every moment."""
     plans: list[ShortPlan] = []
     best_first = sorted(moments, key=lambda m: -m.score)
     packed = _pack(best_first, max_seconds)
-    for i, group in enumerate(packed[:max_action_shorts], start=1):
+    if max_action_shorts > 0:
+        packed = packed[:max_action_shorts]
+    for i, group in enumerate(packed, start=1):
         group.sort(key=lambda m: m.utc_start)
         plans.append(ShortPlan(f"{FILE_NAMES['action']}-{i:02d}", "action", group))
     for theme in THEME_ORDER:
@@ -752,6 +762,8 @@ def day_moments(
 def _red_lamp(m: Moment, day: DayData) -> bool:
     from videobrowser.action import red_lamp_in
 
+    if not RED_LAMP_GATE:
+        return False
     return any(
         red_lamp_in(day.action.get(s.recording_id, []), s.t_start, s.t_end) for s in m.segments
     )
@@ -1134,7 +1146,7 @@ def build_shorts(
     sessions_dir: Path | None = None,
     dates: list[str] | None = None,
     max_seconds: float = 50.0,
-    max_action_shorts: int = 6,
+    max_action_shorts: int = 0,
     audio_sync: bool = True,
     crashes: bool = True,
     render: bool = True,

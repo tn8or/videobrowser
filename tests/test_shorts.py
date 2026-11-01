@@ -34,6 +34,13 @@ def test_plan_makes_several_action_shorts_and_theme_series():
     assert any(m.theme == "crash" for m in plans[0].moments)
 
 
+def test_plan_makes_action_shorts_for_every_moment_by_default():
+    moments = [_moment("action", i * 100, 8, score=i) for i in range(30)]
+    plans = plan_shorts(moments, max_seconds=40)
+    assert len(plans) == 6  # five 8 s moments to a 40 s short
+    assert sum(len(p.moments) for p in plans) == 30
+
+
 def _video(path: Path, seconds: int, size: str, audio: bool = True) -> None:
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc2=size={size}:rate=30:duration={seconds}"]
     if audio:
@@ -499,7 +506,7 @@ def test_moments_rank_by_how_near_and_how_many_riders(monkeypatch):
     assert any(w.startswith("action ") for w in moments[0].why)
 
 
-def test_moments_with_a_red_signal_lamp_are_left_out(monkeypatch):
+def _lamp_day(monkeypatch):
     import videobrowser.shorts as shorts
     from videobrowser.sync import CameraClock
     from videobrowser.telemetry import SpeedSample
@@ -512,11 +519,29 @@ def test_moments_with_a_red_signal_lamp_are_left_out(monkeypatch):
     # The session ends at 195 s: red lamps blink at the marshal posts.
     day.action["F"] = [(t + 0.5, 1, 0.0, 0.2, 1 if 195 <= t < 210 else 0) for t in range(300)]
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([SpeedSample(t, 110.0) for t in range(300)], []))
+    return day
+
+
+def test_moments_with_a_red_signal_lamp_are_left_out_when_the_gate_is_on(monkeypatch):
+    import videobrowser.shorts as shorts
+
+    day = _lamp_day(monkeypatch)
+    monkeypatch.setattr(shorts, "RED_LAMP_GATE", True)
     left_out = []
     kept = shorts.day_moments(day, crashes=False, left_out=left_out)
     assert [round(m.segments[0].t_start) for m in kept] == [47]
     assert left_out[0].why[-1] == "left out: red signal lamp (session over)"
     assert shorts.clip_drop_reason(day, "F", 195.0, 215.0) == "red signal lamp (session over)"
+
+
+def test_a_red_signal_lamp_leaves_nothing_out_by_default(monkeypatch):
+    import videobrowser.shorts as shorts
+
+    day = _lamp_day(monkeypatch)
+    left_out = []
+    kept = shorts.day_moments(day, crashes=False, left_out=left_out)
+    assert len(kept) == 2 and not left_out
+    assert shorts.clip_drop_reason(day, "F", 195.0, 215.0) is None
 
 
 def test_bridges_say_when_a_recording_is_on_track():
