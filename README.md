@@ -539,7 +539,12 @@ videobrowser train --use 3     # go back to model v3
 ```
 
 A logistic regression (plain numpy) on each voted moment's features: riders,
-kerb, speed, pace, theme, camera, event types and so on. It needs at least 6
+kerb, speed, pace, theme, camera, event types; the bike's own riding (top and
+lowest speed, speeding up or slowing, hardest braking and acceleration in g,
+sharpest turn, time in corners, deepest lean from the GoPro IMU); and the
+other riders (time with one or a group in view, how fast the nearest one
+grows in the frame). Moments registered before a feature existed simply lack
+it; running `shorts` again refreshes their snapshot. It needs at least 6
 votes, some up and some down. The rating page re-trains between rounds and
 when it stops. A vote a moment only got from the same footage elsewhere
 counts once; a "great" tag counts twice.
