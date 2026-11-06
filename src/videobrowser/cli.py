@@ -326,7 +326,11 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--use", type=int, metavar="VERSION", help="Go back to an earlier model instead of training")
 
     ratings_p = sub.add_parser("ratings", help="The ratings database")
-    ratings_p.add_argument("action", choices=("stats",))
+    ratings_p.add_argument("action", choices=("stats", "sync"))
+    ratings_p.add_argument(
+        "dir", type=Path, nargs="?", default=None,
+        help="sync: the shared folder (e.g. in Dropbox); default sync_dir in ~/.videobrowser/config.toml",
+    )
 
     sub.add_parser(
         "racebox-login",
@@ -711,7 +715,11 @@ def train_cmd(args: argparse.Namespace) -> int:
             print(f"using model v{args.use}")
         else:
             from videobrowser.rate import reweigh
+            from videobrowser.sync_ratings import sync_if_configured
 
+            db.close()
+            sync_if_configured()  # learn from the other machine's votes too
+            db = RatingsDB.open()
             print(reweigh(db))
         found = learn.current(db)
         if args.explain and found is not None:
@@ -726,6 +734,15 @@ def train_cmd(args: argparse.Namespace) -> int:
 def ratings_cmd(args: argparse.Namespace) -> int:
     from videobrowser.ratings import RatingsDB
 
+    if args.action == "sync":
+        from videobrowser.sync_ratings import configured_dir, sync
+
+        folder = args.dir.expanduser() if args.dir else configured_dir()
+        if folder is None:
+            print("ratings sync: give a folder, or set sync_dir in ~/.videobrowser/config.toml", file=sys.stderr)
+            return 1
+        print(f"ratings sync {folder}: {sync(folder)}")
+        return 0
     db = RatingsDB.open()
     try:
         s = db.stats()

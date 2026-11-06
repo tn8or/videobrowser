@@ -404,6 +404,9 @@ def serve(
     under: Path | None = None,
     open_browser: bool = True,
 ) -> None:
+    from videobrowser.sync_ratings import sync_if_configured
+
+    sync_if_configured(db_path)
     server = make_server(host, port, db_path, tags, under)
     shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     url = f"http://{shown}:{server.server_address[1]}/"
@@ -416,6 +419,7 @@ def serve(
         pass
     finally:
         server.server_close()
+        sync_if_configured(db_path)
         db = RatingsDB.open(db_path)
         try:
             print(f"rate: {reweigh(db)}")
