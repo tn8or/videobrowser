@@ -292,6 +292,11 @@ def build_parser() -> argparse.ArgumentParser:
     vote.add_argument("vote", choices=("up", "down", "clear"))
     vote.add_argument("--tag", action="append", default=[], metavar="TEXT", help="Tag (repeatable)")
 
+    train = sub.add_parser("train", help="Learn a score from your votes (rate) and score every moment with it")
+    train.add_argument("--explain", action="store_true", help="Print what the model weighs, in plain words")
+    train.add_argument("--list", action="store_true", help="List the trained models and stop")
+    train.add_argument("--use", type=int, metavar="VERSION", help="Go back to an earlier model instead of training")
+
     ratings_p = sub.add_parser("ratings", help="The ratings database")
     ratings_p.add_argument("action", choices=("stats",))
 
@@ -647,6 +652,43 @@ def vote_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def train_cmd(args: argparse.Namespace) -> int:
+    import json
+
+    from videobrowser import learn
+    from videobrowser.ratings import RatingsDB
+
+    db = RatingsDB.open()
+    try:
+        if args.list:
+            found = learn.current(db)
+            for row in db.conn.execute("SELECT version, trained_at, metrics FROM models ORDER BY version"):
+                m = json.loads(row["metrics"])
+                mark = "*" if found and found[0] == row["version"] else " "
+                print(f"{mark} v{row['version']}  {row['trained_at']}  {m.get('n')} votes  "
+                      f"accuracy {m.get('cv_accuracy')}  AUC {m.get('cv_auc')}")
+            return 0
+        if args.use is not None:
+            try:
+                learn.use(db, args.use)
+            except KeyError:
+                print(f"no model v{args.use}", file=sys.stderr)
+                return 1
+            print(f"using model v{args.use}")
+        else:
+            from videobrowser.rate import reweigh
+
+            print(reweigh(db))
+        found = learn.current(db)
+        if args.explain and found is not None:
+            print("What the votes say (per standard deviation; + pulls a moment up):")
+            for line in learn.explain(found[1]):
+                print("  " + line)
+    finally:
+        db.close()
+    return 0
+
+
 def ratings_cmd(args: argparse.Namespace) -> int:
     from videobrowser.ratings import RatingsDB
 
@@ -682,5 +724,7 @@ def main(argv: list[str] | None = None) -> int:
         return vote_cmd(args)
     if args.cmd == "ratings":
         return ratings_cmd(args)
+    if args.cmd == "train":
+        return train_cmd(args)
     parser.error(f"unknown command {args.cmd}")
     return 2

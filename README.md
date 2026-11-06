@@ -505,8 +505,8 @@ machine keeps its files.
 Votes (up, down, cleared, plus tags) are append-only; the latest counts. A
 vote also goes to the same footage in the other outputs (the vertical and
 landscape clips of a short's moment), and a moment a rescan moved a little
-keeps the vote of the old one it overlaps. Training a score from the votes,
-skipping low scorers and syncing between machines come next (VIDE-1).
+keeps the vote of the old one it overlaps. Skipping low scorers and syncing
+between machines come next (VIDE-1).
 
 ### Rating
 
@@ -529,6 +529,26 @@ re-weighed from the votes and the next round drawn (until the learned score
 exists, the hand-tuned score draws the rounds). The order menu also offers
 time order, best score first and most uncertain first. `--host 0.0.0.0`
 opens it to other devices on the network (a phone on the same Wi-Fi).
+
+### Learned score
+
+```bash
+videobrowser train             # learn from the votes, score every moment
+videobrowser train --explain   # what the votes say, in plain words
+videobrowser train --list      # trained models; * is the one in use
+videobrowser train --use 3     # go back to model v3
+```
+
+A logistic regression (plain numpy) on each voted moment's features: riders,
+kerb, speed, pace, theme, camera, event types and so on. It needs at least 6
+votes, some up and some down. The rating page re-trains between rounds and
+when it stops. A vote a moment only got from the same footage elsewhere
+counts once; a "great" tag counts twice.
+
+`shorts` then ranks moments by a blend: the learned score counts 0% below 30
+votes, rising to 100% at 200, against the hand-tuned score's rank. Your own
+crash and off-track moments always come first. Each moment's `why` says what
+the model gave it.
 
 ---
 

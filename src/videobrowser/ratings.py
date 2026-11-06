@@ -147,6 +147,9 @@ class ClipRecord:
     files: list[tuple[str, Path]] = field(default_factory=list)  # (kind, path)
     # Why the pipeline kept it (``Moment.why``), shown on the rating page.
     why: list[str] = field(default_factory=list)
+    # The learned score (``learn.py``) and its model version, when known.
+    model_score: float | None = None
+    model_version: int | None = None
 
     @property
     def key(self) -> str:
@@ -210,6 +213,11 @@ class RatingsDB:
                 json.dumps(record.why, ensure_ascii=False), now, now,
             ),
         )
+        if record.model_score is not None:
+            self.conn.execute(
+                "UPDATE clips SET model_score = ?, model_version = ? WHERE clip_key = ?",
+                (record.model_score, record.model_version, key),
+            )
         for kind, path in record.files:
             self.conn.execute(
                 "INSERT OR IGNORE INTO clip_files(clip_key, machine_id, kind, path) VALUES (?, ?, ?, ?)",
@@ -349,7 +357,13 @@ def register_all(
     try:
         for item in forget:
             db.forget_files(*item)
+        from videobrowser.learn import current
+
+        model = current(db)
         for record in records:
+            if model is not None and record.model_score is None:
+                record.model_score = model[1].predict(record.features)
+                record.model_version = model[0]
             db.register(record, commit=False)
         db.conn.commit()
         return len(records)
