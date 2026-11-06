@@ -223,7 +223,9 @@ def _rating_records(days, meta, done: list, kind: str, min_speed: float) -> list
     return records
 
 
-def _register(days, meta, done: list, kind: str, folder: Path, min_speed: float, ratings: bool) -> None:
+def _register(
+    days, meta, done: list, kind: str, folder: Path, min_speed: float, ratings: bool, verdicts=None
+) -> None:
     if not ratings:
         return
     from videobrowser.ratings import register_all
@@ -233,7 +235,70 @@ def _register(days, meta, done: list, kind: str, folder: Path, min_speed: float,
     except Exception as exc:  # a feature that fails must not stop the cutting
         print(f"  ratings: not saved ({exc})")
         return
+    for record in records:
+        why = (verdicts or {}).get(record.key)
+        if why:  # kept to explore although the learned score rates it low
+            record.why.append(why)
     register_all(records, forget=[(kind, folder, f"{meta['recording_id']}_")])
+
+
+def _score_verdicts(db, days, metas, kind, min_speed, max_share, min_score, top, explore) -> dict | None:
+    """(recording id, clips row id), and clip key, -> ``learn.gate`` verdict for every
+    window the speed and car checks keep, per day; None when the score gate
+    is off or there is no learned score yet."""
+    if min_score <= 0 and top <= 0:
+        return None
+    import sqlite3
+
+    from videobrowser.learn import current, gate
+    from videobrowser.ratings import RatingsDB
+    from videobrowser.shorts import clip_drop_reason
+
+    try:
+        rdb = RatingsDB.open()
+        try:
+            found = current(rdb)
+        finally:
+            rdb.close()
+    except (sqlite3.Error, OSError):
+        found = None
+    if found is None:
+        print("--min-score/--top: no learned score yet (videobrowser train); nothing skipped")
+        return None
+    model = found[1]
+    per_day: dict[str, list] = {}
+    ids: dict[str, tuple] = {}
+    for meta in metas:
+        rid = meta["recording_id"]
+        day = days.get(meta["date_label"]) if days else None
+        for row, window in windows_for(db, rid):
+            if day is not None and clip_drop_reason(day, rid, window.t_start, window.t_end, min_speed, max_share):
+                continue
+            [record] = _rating_records(days, meta, [(window, None)], kind, min_speed)
+            per_day.setdefault(meta["date_label"], []).append((record.key, model.predict(record.features), "clip"))
+            ids[record.key] = (rid, row["id"])
+    verdicts: dict[tuple, str | None] = {}
+    for items in per_day.values():
+        for key, why in gate(items, min_score, top, explore).items():
+            verdicts[ids[key]] = why
+            verdicts[key] = why  # by clip key too, for the ratings database
+    return verdicts
+
+
+def _skip_low(db, verdicts, meta, pairs: list, column: str) -> list:
+    """*pairs* without the windows the learned score leaves out."""
+    if verdicts is None:
+        return pairs
+    kept = []
+    for row, window in pairs:
+        why = verdicts.get((meta["recording_id"], row["id"]))
+        if why is not None and why.startswith("left out"):
+            db.set_clip_path(row["id"], column, None)
+            continue
+        kept.append((row, window))
+    if len(kept) < len(pairs):
+        print(f"{meta['recording_id']}: left out {len(pairs) - len(kept)} by the learned score")
+    return kept
 
 
 def _racebox_context(out_dir: Path, sessions_dir: Path, font_path: str, stats_path: Path | None):
@@ -265,6 +330,9 @@ def export_horizontals(
     min_speed: float = DEFAULT_MIN_TRACK_KMH,
     max_vehicle_share: float = DEFAULT_MAX_SHARE,
     ratings: bool = True,
+    min_score: float = 0.0,
+    top: float = 0.0,
+    explore: float = 0.1,
 ) -> int:
     """Cut landscape clips (and RaceBox overlay renders); returns how many
     were cut. *ratings*: register them in the local ratings database."""
@@ -277,6 +345,9 @@ def export_horizontals(
     try:
         days = _track_days(db, out_dir, dates, sessions_dir, min_speed, max_vehicle_share)
         metas = list(_days(db, dates))
+        verdicts = _score_verdicts(
+            db, days, metas, "horizontal", min_speed, max_vehicle_share, min_score, top, explore
+        )
         for i, meta in enumerate(metas, 1):
             rid = meta["recording_id"]
             at = f"[file {i} of {len(metas)}]"
@@ -289,6 +360,7 @@ def export_horizontals(
                 print(f"{at} {rid}: source unavailable ({exc}); skipped")
                 continue
             pairs = _on_track(db, days, meta, pairs, "clip_path", min_speed, max_vehicle_share)
+            pairs = _skip_low(db, verdicts, meta, pairs, "clip_path")
             clip_dir = out_dir / "clips" / meta["date_label"]
             _clear_others(clip_dir, rid, {_clip_name(w) for _, w in pairs})
             todo = []
@@ -316,7 +388,7 @@ def export_horizontals(
                 new += 1
             cut += new
             print(f"{at} {rid}: {new} landscape clip(s) cut, {len(pairs) - new} kept")
-            _register(days, meta, done, "horizontal", clip_dir, min_speed, ratings)
+            _register(days, meta, done, "horizontal", clip_dir, min_speed, ratings, verdicts)
             if not overlay:
                 continue
             source = start_source(meta, recording)
@@ -350,6 +422,9 @@ def export_verticals(
     min_speed: float = DEFAULT_MIN_TRACK_KMH,
     max_vehicle_share: float = DEFAULT_MAX_SHARE,
     ratings: bool = True,
+    min_score: float = 0.0,
+    top: float = 0.0,
+    explore: float = 0.1,
 ) -> int:
     """Cut 1080x1920 follow-cam clips; returns how many were cut.
     *ratings*: register them in the local ratings database."""
@@ -367,6 +442,9 @@ def export_verticals(
         days = _track_days(db, out_dir, dates, sessions_dir, min_speed, max_vehicle_share)
         riding = db.riding()
         metas = list(_days(db, dates))
+        verdicts = _score_verdicts(
+            db, days, metas, "vertical", min_speed, max_vehicle_share, min_score, top, explore
+        )
         for i, meta in enumerate(metas, 1):
             rid = meta["recording_id"]
             at = f"[file {i} of {len(metas)}]"
@@ -379,6 +457,7 @@ def export_verticals(
                 print(f"{at} {rid}: source unavailable ({exc}); skipped")
                 continue
             pairs = _on_track(db, days, meta, pairs, "vertical_path", min_speed, max_vehicle_share)
+            pairs = _skip_low(db, verdicts, meta, pairs, "vertical_path")
             vdir = out_dir / "vertical" / meta["date_label"]
             _clear_others(vdir, rid, {_clip_name(w) for _, w in pairs})
             todo = []
@@ -391,7 +470,7 @@ def export_verticals(
                     done.append((window, vdir / _clip_name(window)))
             if not todo:
                 print(f"{at} {rid}: {len(pairs)} vertical clip(s) kept")
-                _register(days, meta, done, "vertical", vdir, min_speed, ratings)
+                _register(days, meta, done, "vertical", vdir, min_speed, ratings, verdicts)
                 continue
 
             source = start_source(meta, recording)
@@ -459,7 +538,7 @@ def export_verticals(
                 new += 1
             cut += new
             print(f"{at} {rid}: {new} vertical clip(s) cut, {len(pairs) - len(todo)} kept")
-            _register(days, meta, done, "vertical", vdir, min_speed, ratings)
+            _register(days, meta, done, "vertical", vdir, min_speed, ratings, verdicts)
     finally:
         db.close()
     return cut

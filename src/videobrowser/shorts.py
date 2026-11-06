@@ -986,6 +986,41 @@ def learned_scores(moments: list[Moment], day: DayData, scorer, min_speed: float
     return known
 
 
+def skip_low_scores(
+    moments: list[Moment], day: DayData, known: dict, left_out: list[Moment],
+    min_score: float, top: float, explore: float, min_speed: float = DEFAULT_MIN_TRACK_KMH,
+) -> list[Moment]:
+    """*moments* without those the learned score rates low (``learn.gate``);
+    those go to *left_out*. *known*: ``learned_scores``' result."""
+    from videobrowser.learn import gate
+
+    if min_score <= 0 and top <= 0:
+        return moments
+    if not any(known[id(m)][2] is not None for m in moments):
+        if moments:
+            print("  --min-score/--top: no learned score yet (videobrowser train); nothing skipped")
+        return moments
+    keys = {
+        id(m): moment_record(m, day, (), min_speed, known[id(m)][0], known[id(m)][1]).key for m in moments
+    }
+    verdict = gate(
+        [(keys[id(m)], known[id(m)][2], m.theme) for m in moments], min_score, top, explore
+    )
+    kept: list[Moment] = []
+    for m in moments:
+        why = verdict[keys[id(m)]]
+        if why is not None:
+            m.why.append(why)
+        if why is not None and why.startswith("left out"):
+            left_out.append(m)
+        else:
+            kept.append(m)
+    skipped = len(moments) - len(kept)
+    explored = sum(1 for m in kept if verdict[keys[id(m)]])
+    print(f"  learned score: {skipped} moment(s) left out, {explored} kept to explore")
+    return kept
+
+
 def _with_learned(record, model_score: float | None, scorer):
     if model_score is not None and scorer is not None:
         record.model_score, record.model_version = model_score, scorer.version
@@ -1286,9 +1321,13 @@ def build_shorts(
     jobs: int = 1,
     max_vehicle_share: float = DEFAULT_MAX_SHARE,
     ratings: bool = True,
+    min_score: float = 0.0,
+    top: float = 0.0,
+    explore: float = 0.1,
 ) -> dict[str, list[Path]]:
     """*ratings*: register the day's moments and their files in the local
-    ratings database (``ratings.py``)."""
+    ratings database (``ratings.py``). *min_score* / *top* / *explore*:
+    skip moments the learned score rates low (``learn.gate``)."""
     db = ScanDB.open(out_dir / "scan.sqlite")
     try:
         if inputs:
@@ -1301,7 +1340,7 @@ def build_shorts(
         return {}
     rb_offset = _racebox_offsets(sessions_dir)
     scorer = None
-    if ratings:
+    if ratings or min_score > 0 or top > 0:
         from videobrowser.learn import load_scorer
 
         scorer = load_scorer()
@@ -1323,6 +1362,7 @@ def build_shorts(
             left_out=left_out,
         )
         known = learned_scores(moments, day, scorer, min_speed)
+        moments = skip_low_scores(moments, day, known, left_out, min_score, top, explore, min_speed)
         plans = plan_shorts(moments, max_seconds, max_action_shorts)
         day_dir = out_dir / "shorts" / label
         day_dir.mkdir(parents=True, exist_ok=True)

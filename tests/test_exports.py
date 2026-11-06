@@ -188,3 +188,31 @@ def test_horizontals_register_their_clips_for_rating(tmp_path, monkeypatch):
     ratings = RatingsDB.open(Path(os.environ["VIDEOBROWSER_RATINGS"]))
     assert ratings.conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 1
     ratings.close()
+
+
+def test_horizontals_skip_windows_the_learned_score_rates_low(tmp_path, monkeypatch):
+    import videobrowser.clips as clips
+    import videobrowser.exports as exports
+    import videobrowser.learn as learn
+
+    out = tmp_path / "out"
+    _scan(out, "clock")
+    monkeypatch.setattr(exports, "recording_from_meta", _recording)
+
+    def fake_clip(recording, window, dest, rotation=0):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"c")
+        return dest
+
+    monkeypatch.setattr(clips, "export_clip", fake_clip)
+
+    class Low:
+        def predict(self, features):
+            return 0.1
+
+    common = dict(min_speed=0, max_vehicle_share=0, explore=0.0)
+    # No learned score yet: nothing skipped.
+    assert exports.export_horizontals(out, min_score=0.5, **common) == 1
+    monkeypatch.setattr(learn, "current", lambda db: (1, Low(), {}))
+    assert exports.export_horizontals(out, min_score=0.5, force=True, **common) == 0
+    assert exports.export_horizontals(out, min_score=0.05, force=True, **common) == 1

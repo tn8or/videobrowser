@@ -132,3 +132,48 @@ def test_train_command(tmp_path, monkeypatch, capsys):
     assert "model v1 from 40 votes" in out and "riders in view" in out
     assert main(["train", "--list"]) == 0 and "* v1" in capsys.readouterr().out
     assert main(["train", "--use", "7"]) == 1
+
+
+def test_gate_min_score_top_explore_and_exemptions():
+    items = [(f"k{n:02d}", n / 100, "action") for n in range(100)]
+    items += [("crash", 0.01, "crash"), ("unscored", None, "action")]
+    off = learn.gate(items)
+    assert set(off.values()) == {None}
+    verdict = learn.gate(items, min_score=0.3, explore=0.0)
+    assert verdict["k29"].startswith("left out: model score 0.29 < 0.3") and verdict["k30"] is None
+    assert verdict["crash"] is None and verdict["unscored"] is None
+    top = learn.gate(items, top=20, explore=0.0)
+    kept = [k for k, v in top.items() if v is None and k.startswith("k")]
+    assert sorted(kept) == [f"k{n}" for n in range(80, 100)]
+    assert "not in the top 20%" in top["k10"]
+    # Exploration keeps a stable share of the left-out ones.
+    a = learn.gate(items, min_score=0.5, explore=0.2)
+    b = learn.gate(items, min_score=0.5, explore=0.2)
+    explored = [k for k, v in a.items() if v and v.startswith("explore:")]
+    assert a == b and 4 <= len(explored) <= 18
+    assert all("kept to learn from" in a[k] for k in explored)
+
+
+def test_shorts_skip_low_scores_into_left_out(tmp_path):
+    from videobrowser.shorts import skip_low_scores
+    from videobrowser.themes import Moment, Segment
+    from videobrowser.sync import CameraClock
+
+    class Day:
+        date_label = "2026-08-01"
+        clocks = {"A": CameraClock("A", 0.0, 600.0, [])}
+
+        def facing(self, rid):
+            return "front"
+
+    low = Moment("action", 0, 8, 1.0, [Segment("A", 0, 8)])
+    high = Moment("action", 100, 108, 1.0, [Segment("A", 100, 108)])
+    crash = Moment("crash", 200, 208, 10.0, [Segment("A", 200, 208)])
+    known = {id(low): ({}, 1.0, 0.1), id(high): ({}, 1.0, 0.9), id(crash): ({}, 10.0, 0.05)}
+    left_out = []
+    kept = skip_low_scores([low, high, crash], Day(), known, left_out, 0.5, 0, 0.0)
+    assert kept == [high, crash] and left_out == [low]
+    assert low.why[-1].startswith("left out: model score 0.10")
+    # Without a learned score nothing is skipped.
+    plain = {k: (f, h, None) for k, (f, h, _) in known.items()}
+    assert skip_low_scores([low, high], Day(), plain, [], 0.5, 0, 0.0) == [low, high]
