@@ -505,8 +505,8 @@ machine keeps its files.
 Votes (up, down, cleared, plus tags) are append-only; the latest counts. A
 vote also goes to the same footage in the other outputs (the vertical and
 landscape clips of a short's moment), and a moment a rescan moved a little
-keeps the vote of the old one it overlaps. Skipping low scorers and syncing
-between machines come next (VIDE-1).
+keeps the vote of the old one it overlaps. Syncing between machines comes
+next (VIDE-1).
 
 ### Rating
 
@@ -549,6 +549,22 @@ counts once; a "great" tag counts twice.
 votes, rising to 100% at 200, against the hand-tuned score's rank. Your own
 crash and off-track moments always come first. Each moment's `why` says what
 the model gave it.
+
+### Skipping low scorers
+
+`shorts`, `horizontals` and `verticals` take:
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--min-score P` | 0 (off) | Leave out what the learned score rates below P (0..1) |
+| `--top PCT` | 0 (off) | Keep only the best PCT percent per day |
+| `--explore SHARE` | 0.1 | Keep this share of the left-out ones anyway, marked "explore" on the rating page |
+
+Exploring keeps the model seeing what it rates low; without it a threshold
+only ever confirms its first guesses. The same moments are explored on every
+run. Your own crash and off-track moments are never left out, and without a
+trained model nothing is. Left-out moments are listed in `moments.json`
+(`left_out`) with the score that dropped them.
 
 ---
 

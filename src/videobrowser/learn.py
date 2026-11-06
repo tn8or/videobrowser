@@ -288,3 +288,51 @@ def load_scorer(path=None) -> Scorer | None:
         return None
     finally:
         db.close()
+
+
+# --- skipping low scorers (--min-score / --top) ----------------------------
+
+# Themes about our own bike are never skipped.
+NEVER_SKIP = frozenset({"crash", "own_off_track"})
+DEFAULT_EXPLORE = 0.1
+
+
+def _explore_draw(key: str) -> float:
+    """A stable 0..1 number per moment, so the same moments are explored on
+    every run."""
+    import hashlib
+
+    return int(hashlib.sha1(f"explore|{key}".encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
+
+
+def gate(
+    items: list[tuple[str, float | None, str]],
+    min_score: float = 0.0,
+    top: float = 0.0,
+    explore: float = DEFAULT_EXPLORE,
+) -> dict[str, str | None]:
+    """Which of *items* ((key, model score or None, theme), one day) to skip.
+
+    Returns key -> None to keep, "explore: ..." to keep although below the
+    bar (so the model keeps seeing what it rates low), or "left out: ..."
+    to skip. *min_score*: skip a model score below it (0..1, 0 = off).
+    *top*: keep only the best *top* percent by model score (0 = off).
+    Moments without a model score, and own crashes and off-track moments,
+    are always kept.
+    """
+    out: dict[str, str | None] = {key: None for key, _, _ in items}
+    scored = [(key, p) for key, p, theme in items if p is not None and theme not in NEVER_SKIP]
+    if not scored or (min_score <= 0 and top <= 0):
+        return out
+    best_first = sorted(scored, key=lambda kp: -kp[1])
+    keep_n = math.ceil(len(best_first) * min(top, 100.0) / 100.0) if top > 0 else len(best_first)
+    for rank, (key, p) in enumerate(best_first):
+        reason = None
+        if min_score > 0 and p < min_score:
+            reason = f"model score {p:.2f} < {min_score:g}"
+        elif rank >= keep_n:
+            reason = f"model score {p:.2f} not in the top {top:g}%"
+        if reason is None:
+            continue
+        out[key] = f"explore: {reason}, kept to learn from" if _explore_draw(key) < explore else f"left out: {reason}"
+    return out

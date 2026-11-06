@@ -99,6 +99,7 @@ def list_moments(
                 "features": json.loads(row["features"] or "{}"),
                 "vote": vote,
                 "tags": json.loads(row["tags"] or "[]"),
+                "explore": any(str(w).startswith("explore:") for w in json.loads(row["why"] or "[]")),
                 "files": [{"n": i, "kind": kind, "name": Path(path).name} for i, (kind, path) in shown],
             }
         )
@@ -563,6 +564,9 @@ function show() {
   $('title').innerHTML = '';
   if (m.bucket) { const b = document.createElement('span'); b.className = 'bucket';
     b.textContent = `${m.bucket}`; $('title').append(b, ' '); }
+  if (m.explore) { const b = document.createElement('span'); b.className = 'bucket';
+    b.title = 'Kept although the learned score rates it low, so it can learn from your vote';
+    b.textContent = 'explore'; $('title').append(b, ' '); }
   $('title').append(`${m.theme} · ${m.camera || ''}`);
   $('pos').textContent = (rounds() ? `round ${round}: ` : '') + `${i + 1} of ${list.length}`;
   const score = m.model_score != null ? `model ${(m.model_score * 100).toFixed(0)}%` :
