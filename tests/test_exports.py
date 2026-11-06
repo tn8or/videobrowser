@@ -216,3 +216,24 @@ def test_horizontals_skip_windows_the_learned_score_rates_low(tmp_path, monkeypa
     monkeypatch.setattr(learn, "current", lambda db: (1, Low(), {}))
     assert exports.export_horizontals(out, min_score=0.5, force=True, **common) == 0
     assert exports.export_horizontals(out, min_score=0.05, force=True, **common) == 1
+
+
+def test_learned_score_never_leaves_out_own_off_track_windows(tmp_path, monkeypatch):
+    import videobrowser.exports as exports
+    import videobrowser.learn as learn
+    out = tmp_path / "out"
+    _scan(out, "clock")
+    db = ScanDB.open(out / "scan.sqlite")
+    db.conn.execute("UPDATE clips SET types = 'own_off_track'")
+    db.conn.commit()
+
+    class Low:
+        def predict(self, features):
+            return 0.1
+
+    monkeypatch.setattr(learn, "current", lambda rdb: (1, Low(), {}))
+    metas = list(exports._days(db, None))
+    verdicts = exports._score_verdicts(db, None, metas, "horizontal", 0, 0, 0.5, 0, 0.0)
+    [(row, _)] = exports.windows_for(db, "R")
+    assert verdicts[("R", row["id"])] is None
+    db.close()
