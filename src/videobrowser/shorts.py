@@ -934,9 +934,15 @@ def _into_local(utc: float, fmt: str) -> str:
 
 
 def moment_record(
-    m: Moment, day: DayData, files: list[tuple[str, Path]] = (), min_speed: float = DEFAULT_MIN_TRACK_KMH
+    m: Moment,
+    day: DayData,
+    files: list[tuple[str, Path]] = (),
+    min_speed: float = DEFAULT_MIN_TRACK_KMH,
+    features: dict | None = None,
+    heuristic: float | None = None,
 ):
-    """The ratings-database row for *m* (``ratings.ClipRecord``)."""
+    """The ratings-database row for *m* (``ratings.ClipRecord``).
+    *features* and *heuristic* (the hand-tuned score) when already known."""
     from videobrowser.ratings import ClipRecord
 
     first = m.segments[0]
@@ -950,11 +956,40 @@ def moment_record(
         t_end=first.t_end,
         utc_start=m.utc_start,
         camera="+".join(day.facing(s.recording_id) for s in m.segments),
-        features=moment_features(m, day, min_speed),
-        heuristic_score=m.score,
+        features=features if features is not None else moment_features(m, day, min_speed),
+        heuristic_score=m.score if heuristic is None else heuristic,
         files=list(files),
         why=list(m.why),
     )
+
+
+def learned_scores(moments: list[Moment], day: DayData, scorer, min_speed: float) -> dict:
+    """Rank *moments* by the learned score blended with the hand-tuned one
+    (``learn.Scorer``): each ``score`` is replaced by the blend. Returns
+    id(moment) -> (features, hand-tuned score, model score or None), for the
+    ratings database."""
+    known: dict[int, tuple] = {}
+    for m in moments:
+        known[id(m)] = (moment_features(m, day, min_speed), m.score, None)
+    if scorer is None or not moments:
+        return known
+    by_hand = sorted(moments, key=lambda m: m.score)
+    rank = {id(m): (i / (len(moments) - 1) if len(moments) > 1 else 0.5) for i, m in enumerate(by_hand)}
+    for m in moments:
+        features, hand, _ = known[id(m)]
+        p = scorer.model.predict(features)
+        known[id(m)] = (features, hand, p)
+        if m.theme in ACTION_EXEMPT_THEMES:  # own crash / off-track: always first
+            continue
+        m.score = scorer.blend(p, rank[id(m)])
+        m.why.append(f"learned score {p:.0%} (counts {scorer.weight:.0%})")
+    return known
+
+
+def _with_learned(record, model_score: float | None, scorer):
+    if model_score is not None and scorer is not None:
+        record.model_score, record.model_version = model_score, scorer.version
+    return record
 
 
 def _approach(m: Moment) -> Moment:
@@ -1265,6 +1300,11 @@ def build_shorts(
         print("shorts: nothing scanned yet (or scanned before this version; pass the input folders)")
         return {}
     rb_offset = _racebox_offsets(sessions_dir)
+    scorer = None
+    if ratings:
+        from videobrowser.learn import load_scorer
+
+        scorer = load_scorer()
     from videobrowser.racebox_align import load_track
 
     track = load_track(sessions_dir)
@@ -1282,6 +1322,7 @@ def build_shorts(
             day, crashes=crashes, min_speed=min_speed, max_vehicle_share=max_vehicle_share,
             left_out=left_out,
         )
+        known = learned_scores(moments, day, scorer, min_speed)
         plans = plan_shorts(moments, max_seconds, max_action_shorts)
         day_dir = out_dir / "shorts" / label
         day_dir.mkdir(parents=True, exist_ok=True)
@@ -1358,7 +1399,11 @@ def build_shorts(
             from videobrowser.ratings import register_all
 
             records = [
-                moment_record(m, day, moment_files.get(id(m), []), min_speed) for m in moments
+                _with_learned(
+                    moment_record(m, day, moment_files.get(id(m), []), min_speed, *known[id(m)][:2]),
+                    known[id(m)][2], scorer,
+                )
+                for m in moments
             ]
             # Only the folders written this run: a short that failed keeps its
             # old folder, and so its old file rows.

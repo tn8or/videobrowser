@@ -8,8 +8,8 @@ tags go to the ratings database (``ratings.py``).
 On the page: ↑/K up, ↓/J down, 0 clears, →/space next, ← back, 1-9 toggle
 the quick tags, which can also be clicked with the mouse. By default it
 goes in rounds: 5 unrated moments the score puts high, 5 it puts low, 5 in
-the middle; then the score is re-weighed from the votes and the next round
-drawn.
+the middle; then the score is re-weighed from the votes (``learn.py``) and
+the next round drawn. Stopping the server re-weighs once more.
 
 Only files the ratings database lists for this machine are served, and only
 by their place in a moment's file list, so the page cannot be used to read
@@ -150,9 +150,18 @@ def draw_round(moments: list[dict], each: int = ROUND_EACH) -> list[dict]:
 
 
 def reweigh(db: RatingsDB) -> str:
-    """Re-weigh the score from the votes so far, between rounds. Nothing to
-    do until the learned score exists (VIDE-4); returns what was done."""
-    return "the learned score comes with videobrowser train; drawing from the hand-tuned score"
+    """Re-weigh the score from the votes so far (``learn.train``), between
+    rounds; returns what was done."""
+    from videobrowser.learn import MIN_VOTES, blend_weight, train
+
+    result = train(db)
+    if result is None:
+        return f"not enough votes to learn from yet (needs {MIN_VOTES}, some up and some down)"
+    auc = f", held-out AUC {result['cv_auc']:.2f}" if result.get("cv_auc") is not None else ""
+    return (
+        f"model v{result['version']} from {result['n']} votes ({result['up']} up, {result['down']} down{auc}); "
+        f"counts {blend_weight(result['n']):.0%} against the hand-tuned score"
+    )
 
 
 def _shown_files(files: list[tuple[str, str]], under: Path | None) -> list[tuple[int, tuple[str, str]]]:
@@ -406,6 +415,11 @@ def serve(
         pass
     finally:
         server.server_close()
+        db = RatingsDB.open(db_path)
+        try:
+            print(f"rate: {reweigh(db)}")
+        finally:
+            db.close()
 
 
 PAGE = r"""<!doctype html>
