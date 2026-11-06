@@ -166,6 +166,11 @@ def build_parser() -> argparse.ArgumentParser:
         )
         cmd.add_argument("--force", action="store_true", help="Cut clips again even if the file exists")
         cmd.add_argument(
+            "--no-ratings",
+            action="store_true",
+            help="Don't register the clips in the ratings database (~/.videobrowser/ratings.sqlite)",
+        )
+        cmd.add_argument(
             "--min-speed",
             type=float,
             default=DEFAULT_MIN_TRACK_KMH,
@@ -251,6 +256,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     shorts.add_argument("--dry-run", action="store_true", help="Write moments.json and index.html only")
     shorts.add_argument(
+        "--no-ratings",
+        action="store_true",
+        help="Don't register the moments in the ratings database (~/.videobrowser/ratings.sqlite)",
+    )
+    shorts.add_argument(
         "--jobs",
         type=int,
         default=None,
@@ -322,6 +332,7 @@ def shorts_cmd(args: argparse.Namespace) -> int:
         min_speed=args.min_speed,
         max_vehicle_share=args.max_vehicle_share,
         jobs=max(1, args.jobs) if args.jobs else default_jobs(),
+        ratings=not args.no_ratings,
     )
     return 0
 
@@ -390,6 +401,7 @@ def exports_cmd(args: argparse.Namespace) -> int:
         jobs=max(1, args.jobs) if args.jobs else default_jobs(),
         min_speed=args.min_speed,
         max_vehicle_share=args.max_vehicle_share,
+        ratings=not args.no_ratings,
     )
     if args.cmd == "horizontals":
         export_horizontals(out, stats_path=args.stats, **common)

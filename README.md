@@ -487,6 +487,26 @@ the source folders once: `videobrowser shorts -o output inputclips`.
 | `--min-speed` | 40 | Track speed (km/h): slower moments (standing still, paddock) are left out |
 | `--dry-run` | off | Only write `moments.json` and `index.html` |
 | `--jobs` | CPU threads / 4, max 4 | Clips cut from the GoPro files at once |
+| `--no-ratings` | off | Don't register the moments in the ratings database |
+
+---
+
+## Ratings database
+
+`shorts`, `horizontals` and `verticals` register every moment they cut in a
+local SQLite file, `~/.videobrowser/ratings.sqlite` (set
+`VIDEOBROWSER_RATINGS` to use another file; `--no-ratings` skips it). It is
+kept apart from `scan.sqlite`, so votes outlive a rescan, and one file covers
+every output folder. Per moment it stores the day, recording, theme, the
+detector features behind it (riders in view, kerb, speed and pace, riding
+and car share, event types, ...), the hand-tuned score, and where this
+machine keeps its files.
+
+Votes (up, down, cleared, plus tags) are append-only; the latest counts. A
+vote also goes to the same footage in the other outputs (the vertical and
+landscape clips of a short's moment), and a moment a rescan moved a little
+keeps the vote of the old one it overlaps. Rating, training a score from the
+votes, skipping low scorers and syncing between machines come next (VIDE-1).
 
 ---
 

@@ -572,3 +572,44 @@ def test_bridges_say_when_a_recording_is_on_track():
     assert gate("B", 200.0) is None  # one missed bridge is tolerated
     assert gate("B", 700.0).startswith("no bridge for")
     assert gate("C", 10.0) is None  # nothing to tell by
+
+
+@needs_ffmpeg
+def test_build_shorts_registers_moments_for_rating(tmp_path):
+    import os
+
+    from videobrowser.ratings import RatingsDB
+
+    out = tmp_path / "out"
+    src = tmp_path / "GX010001.MP4"
+    _video(src, 20, "320x180")
+    db = ScanDB.open(out / "scan.sqlite")
+    db.save_recording_meta("F", "cockpit", 0, 1785571200.0, "2026-08-01", 20.0,
+                           [{"path": str(src), "offset": 0.0, "duration": 20.0}])
+    db.replace_events("F", [("F", "nearby_rider", 8.0, 10.0, 0.5, "1", None, "{}")])
+    db.save_riding("F", [(t + 0.5, 1.0) for t in range(20)])
+    db.save_action("F", [(t + 0.5, 1, 0.0, 0.2, 0) for t in range(20)])
+    db.close()
+
+    build_shorts(out, audio_sync=False, crashes=False)
+    ratings = RatingsDB.open(Path(os.environ["VIDEOBROWSER_RATINGS"]))
+    rows = ratings.conn.execute("SELECT * FROM clips").fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row["date_label"], row["recording_id"], row["camera"]) == ("2026-08-01", "F", "front")
+    features = json.loads(row["features"])
+    assert features["riders"] == 1 and features["pace"] == "track" and features["riding_share"] == 1.0
+    assert "nearby_rider" in features["event_types"] and features["hour"] == 10
+    files = [Path(f["path"]) for f in ratings.files(row["clip_key"])]
+    assert files and all(f.exists() and f.parent.name == "action-01" for f in files)
+    key = row["clip_key"]
+    ratings.vote(key, 1)
+    ratings.close()
+
+    # A second run keeps the same key, the vote and one set of files.
+    build_shorts(out, audio_sync=False, crashes=False)
+    ratings = RatingsDB.open(Path(os.environ["VIDEOBROWSER_RATINGS"]))
+    assert [r["clip_key"] for r in ratings.conn.execute("SELECT clip_key FROM clips")] == [key]
+    assert ratings.latest_vote(key)["vote"] == 1
+    assert len(ratings.files(key)) == len(files)
+    ratings.close()
