@@ -953,6 +953,7 @@ def moment_record(
         features=moment_features(m, day, min_speed),
         heuristic_score=m.score,
         files=list(files),
+        why=list(m.why),
     )
 
 

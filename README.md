@@ -505,8 +505,30 @@ machine keeps its files.
 Votes (up, down, cleared, plus tags) are append-only; the latest counts. A
 vote also goes to the same footage in the other outputs (the vertical and
 landscape clips of a short's moment), and a moment a rescan moved a little
-keeps the vote of the old one it overlaps. Rating, training a score from the
-votes, skipping low scorers and syncing between machines come next (VIDE-1).
+keeps the vote of the old one it overlaps. Training a score from the votes,
+skipping low scorers and syncing between machines come next (VIDE-1).
+
+### Rating
+
+```bash
+videobrowser rate                 # opens http://127.0.0.1:8765/ in the browser
+videobrowser rate -o ~/scan-out   # only moments with files in that output folder
+videobrowser vote path/to/clip.mp4 down --tag boring
+videobrowser ratings stats
+```
+
+`rate` runs a small web server on this machine and serves the clips straight
+from disk; it needs no network. One moment at a time plays on a loop (a
+short's moment shows all its cameras side by side). Keys: `↑`/`K` up,
+`↓`/`J` down, `0` clear, `→`/space next, `←` back, `1`-`9` toggle the quick
+tags, which can also be clicked (add your own with `--tag`).
+
+By default it goes in rounds: 5 unrated moments the score puts high, 5 it
+puts low and 5 from the middle. At the end of a round the score is
+re-weighed from the votes and the next round drawn (until the learned score
+exists, the hand-tuned score draws the rounds). The order menu also offers
+time order, best score first and most uncertain first. `--host 0.0.0.0`
+opens it to other devices on the network (a phone on the same Wi-Fi).
 
 ---
 
