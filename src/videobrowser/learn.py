@@ -35,6 +35,9 @@ TAG_WEIGHT = {"great": 2.0}
 NUMERIC = (
     "riders", "kerb_share", "nearest_rider", "action_density", "speed_kmh", "riding_share",
     "vehicle_share", "motion", "duration", "pieces", "hour",
+    # VIDE-7: the bike's own riding and the other riders over the moment
+    "speed_max", "speed_min", "speed_change", "brake_g", "accel_g", "turn_rate_max",
+    "cornering_share", "lean_max", "rider_share", "group_share", "closing",
 )
 FLAGS = ("kneepuck", "red_lamp", "gopro_gps")
 # Plain words for ``--explain``.
@@ -42,7 +45,11 @@ NAMES = {
     "riders": "riders in view", "kerb_share": "kerb close by", "nearest_rider": "nearest rider's size",
     "action_density": "action per second", "speed_kmh": "speed", "riding_share": "riding on the bike",
     "vehicle_share": "car in view", "motion": "scene motion", "duration": "length", "pieces": "cameras in it",
-    "hour": "time of day", "kneepuck": "knee down", "red_lamp": "red signal lamp", "gopro_gps": "GoPro GPS",
+    "hour": "time of day", "speed_max": "top speed", "speed_min": "lowest speed",
+    "speed_change": "speeding up (vs slowing)", "brake_g": "hard braking", "accel_g": "hard acceleration",
+    "turn_rate_max": "sharpest turn", "cornering_share": "time in corners", "lean_max": "deepest lean",
+    "rider_share": "time with a rider in view", "group_share": "time with a group in view",
+    "closing": "closing in on a rider", "kneepuck": "knee down", "red_lamp": "red signal lamp", "gopro_gps": "GoPro GPS",
 }
 
 

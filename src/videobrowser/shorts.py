@@ -926,7 +926,99 @@ def moment_features(m: Moment, day: DayData, min_speed: float = DEFAULT_MIN_TRAC
     features["gopro_gps"] = _has_gopro_gps(m, day)
     if m.utc_start >= LANES_END:
         features["hour"] = int(_into_local(m.utc_start, "%H"))
+    features.update(_motion_features(m, day))
+    features.update(_rider_features(m, day))
     return features
+
+
+# Turn rate (deg/s) from which a stretch counts as a corner.
+CORNER_DEG_S = 15.0
+
+
+def _motion_features(m: Moment, day: DayData) -> dict:
+    """The bike's own riding over the moment, from GoPro GPS/IMU or RaceBox:
+    speed range and change, hardest braking and acceleration (g), sharpest
+    turn and share of time cornering, deepest lean."""
+    out: dict = {}
+    speeds: list = []
+    turns: list = []
+    for seg in m.segments:
+        sp, tu = _day_gps(day, seg.recording_id)
+        speeds.extend(s for s in sp if seg.t_start <= s.t <= seg.t_end)
+        turns.extend(t for t in tu if seg.t_start <= t.t <= seg.t_end)
+    speeds.sort(key=lambda s: s.t)
+    if len(speeds) >= 2:
+        v = np.array([s.speed_kmh for s in speeds])
+        t = np.array([s.t for s in speeds])
+        out["speed_max"] = round(float(v.max()), 1)
+        out["speed_min"] = round(float(v.min()), 1)
+        out["speed_change"] = round(float(v[-1] - v[0]), 1)
+        dt = np.diff(t)
+        ok = dt > 0.05
+        if ok.any():
+            accel = np.diff(v)[ok] / 3.6 / dt[ok] / 9.81
+            out["brake_g"] = round(float(max(0.0, -accel.min())), 2)
+            out["accel_g"] = round(float(max(0.0, accel.max())), 2)
+    if turns:
+        rates = np.abs(np.array([t.yaw_rate for t in turns], dtype=float))
+        out["turn_rate_max"] = round(float(rates.max()), 1)
+        out["cornering_share"] = round(float((rates >= CORNER_DEG_S).mean()), 3)
+    leans = [
+        abs(s.lean_deg)
+        for seg in m.segments
+        for s in _day_lean(day, seg.recording_id)
+        if seg.t_start <= s.t <= seg.t_end
+    ]
+    if leans:
+        out["lean_max"] = round(float(max(leans)), 1)
+    return out
+
+
+def _day_lean(day: DayData, rid: str) -> list:
+    """GoPro IMU lean samples of a recording (recording time), cached."""
+    cache = day.__dict__.setdefault("_leans", {})
+    if rid not in cache:
+        from videobrowser.telemetry import LeanSample, extract_gpmd_bytes, lean_series
+
+        found: list = []
+        clock = day.clocks.get(rid)
+        for chapter in clock.chapters if clock is not None else []:
+            try:
+                info = probe(chapter.path)
+            except (ProbeError, OSError):
+                continue
+            if not info.has_gpmd or info.gpmd_index is None:
+                continue
+            blob = extract_gpmd_bytes(chapter.path, info.gpmd_index)
+            if blob:
+                found.extend(LeanSample(s.t + chapter.offset, s.lean_deg) for s in lean_series(info, blob))
+        cache[rid] = found
+    return cache[rid]
+
+
+def _rider_features(m: Moment, day: DayData) -> dict:
+    """Other riders over the moment, per second (``action.py``): share of
+    seconds with one in view and with two or more (a group), and how fast
+    the nearest one grows in the frame (+: closing in, -: pulling away)."""
+    rows = [
+        row
+        for seg in m.segments
+        for row in day.action.get(seg.recording_id, [])
+        if seg.t_start - 0.5 <= row[0] <= seg.t_end + 0.5
+    ]
+    if not rows:
+        return {}
+    out = {
+        "rider_share": round(sum(1 for r in rows if r[1] >= 1) / len(rows), 3),
+        "group_share": round(sum(1 for r in rows if r[1] >= 2) / len(rows), 3),
+    }
+    near = sorted((r[0], r[3]) for r in rows if len(r) > 3 and r[3] > 0)
+    if len(near) >= 3:
+        t = np.array([n[0] for n in near])
+        h = np.array([n[1] for n in near])
+        if np.ptp(t) > 0:
+            out["closing"] = round(float(np.polyfit(t, h, 1)[0]), 4)
+    return out
 
 
 def _into_local(utc: float, fmt: str) -> str:
