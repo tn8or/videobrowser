@@ -865,6 +865,97 @@ def _with_action(
     return kept
 
 
+def moment_features(m: Moment, day: DayData, min_speed: float = DEFAULT_MIN_TRACK_KMH) -> dict:
+    """What the detectors saw in *m*, for the ratings database: the inputs
+    a learned score weighs. Values the scan did not store are left out."""
+    from videobrowser.action import red_lamp_in
+
+    rids = {s.recording_id for s in m.segments}
+    types = sorted(
+        {
+            row["type"]
+            for row in day.events
+            if row["recording_id"] in rids
+            and any(
+                s.recording_id == row["recording_id"]
+                and row["t_end"] >= s.t_start
+                and row["t_start"] <= s.t_end
+                for s in m.segments
+            )
+        }
+    )
+    features: dict = {
+        "theme": m.theme,
+        "event_types": types,
+        "duration": round(m.duration, 2),
+        "pieces": len(m.segments),
+        "cameras": sorted({day.facing(s.recording_id) for s in m.segments}),
+        "kneepuck": "kneepuck" in types,
+    }
+    seen = _moment_action(m, day)
+    if seen is not None:
+        features["riders"], features["kerb_share"] = seen[0], round(seen[1], 3)
+    nearest = [
+        row[3]
+        for s in m.segments
+        for row in day.action.get(s.recording_id, [])
+        if len(row) > 3 and s.t_start - 0.5 <= row[0] <= s.t_end + 0.5
+    ]
+    if nearest:
+        features["nearest_rider"] = round(max(nearest), 3)
+    density = _moment_density(m, day)
+    if density is not None:
+        features["action_density"] = round(density, 3)
+    speed = _moment_speed(m, day)
+    if speed is not None:
+        features["speed_kmh"] = round(speed, 1)
+    pace, why = _pace(_approach(m), day, min_speed) if min_speed > 0 else (None, "")
+    if pace is not None:
+        features["pace"] = pace
+        features["pace_from"] = why
+    for name, value in (
+        ("riding_share", _moment_riding(m, day)),
+        ("vehicle_share", _moment_vehicles(m, day)),
+        ("motion", _moment_motion(m, day)),
+    ):
+        if value is not None:
+            features[name] = round(value, 3)
+    features["red_lamp"] = any(
+        red_lamp_in(day.action.get(s.recording_id, []), s.t_start, s.t_end) for s in m.segments
+    )
+    features["gopro_gps"] = _has_gopro_gps(m, day)
+    if m.utc_start >= LANES_END:
+        features["hour"] = int(_into_local(m.utc_start, "%H"))
+    return features
+
+
+def _into_local(utc: float, fmt: str) -> str:
+    return datetime.fromtimestamp(utc, tz=timezone.utc).astimezone(_TZ).strftime(fmt)
+
+
+def moment_record(
+    m: Moment, day: DayData, files: list[tuple[str, Path]] = (), min_speed: float = DEFAULT_MIN_TRACK_KMH
+):
+    """The ratings-database row for *m* (``ratings.ClipRecord``)."""
+    from videobrowser.ratings import ClipRecord
+
+    first = m.segments[0]
+    clock = day.clocks.get(first.recording_id)
+    return ClipRecord(
+        date_label=day.date_label,
+        recording_id=first.recording_id,
+        recording_duration=clock.duration if clock is not None else 0.0,
+        theme=m.theme,
+        t_start=first.t_start,
+        t_end=first.t_end,
+        utc_start=m.utc_start,
+        camera="+".join(day.facing(s.recording_id) for s in m.segments),
+        features=moment_features(m, day, min_speed),
+        heuristic_score=m.score,
+        files=list(files),
+    )
+
+
 def _approach(m: Moment) -> Moment:
     """The part of *m* whose speed tells track from paddock: the run-up for
     ``APPROACH_THEMES``, else the whole moment."""
@@ -972,13 +1063,16 @@ def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
     return export_vertical(recording, window, dest, day.rotations[segment.recording_id], focus)
 
 
-def collect_short(plan: ShortPlan, day: DayData, dest: Path, jobs: int = 1) -> Path | None:
+def collect_short(
+    plan: ShortPlan, day: DayData, dest: Path, jobs: int = 1, names: dict[int, list[str]] | None = None
+) -> Path | None:
     """Folder with the source clips of *plan*, in order, for editing by hand.
 
     Each moment's camera pieces are copied whole from the scan's vertical
     clips (no cuts, so no audio clicks at the joins); a piece no clip covers
     is cut from the GoPro files, *jobs* of those cuts at a time. ``klip.txt``
-    lists each file with the part the plan would use.
+    lists each file with the part the plan would use. *names*, when given,
+    gets each moment's file names by its index in ``plan.moments``.
     """
     dest.mkdir(parents=True, exist_ok=True)
     lines = [f"{plan.name}: {len(plan.moments)} moments, {plan.duration:.0f} s", ""]
@@ -1005,6 +1099,8 @@ def collect_short(plan: ShortPlan, day: DayData, dest: Path, jobs: int = 1) -> P
             except Exception as exc:
                 # All or nothing: an incomplete folder must not replace a whole one.
                 raise RuntimeError(f"{segment.recording_id}@{segment.t_start:.0f}s: {exc}") from exc
+            if names is not None:
+                names.setdefault(i - 1, []).append(name)
             why = f"; {', '.join(moment.why)}" if moment.why else ""
             lines.append(f"{name}  ({moment.label}, {_clock_label(moment.utc_start)}, use {use}{why})")
     if len(lines) == 2:
@@ -1153,7 +1249,10 @@ def build_shorts(
     min_speed: float = DEFAULT_MIN_TRACK_KMH,
     jobs: int = 1,
     max_vehicle_share: float = DEFAULT_MAX_SHARE,
+    ratings: bool = True,
 ) -> dict[str, list[Path]]:
+    """*ratings*: register the day's moments and their files in the local
+    ratings database (``ratings.py``)."""
     db = ScanDB.open(out_dir / "scan.sqlite")
     try:
         if inputs:
@@ -1213,6 +1312,7 @@ def build_shorts(
         counts = {t: sum(1 for m in moments if m.theme == t) for t in LABELS}
         print("  moments: " + ", ".join(f"{t}={n}" for t, n in counts.items() if n))
         written: dict[str, Path] = {}
+        moment_files: dict[int, list[tuple[str, Path]]] = {}
         if render:
             for n, plan in enumerate(plans, 1):
                 # Fill a folder beside the old one and swap it in only once
@@ -1220,8 +1320,9 @@ def build_shorts(
                 final = day_dir / plan.name
                 partial = day_dir / f".{plan.name}.partial"
                 shutil.rmtree(partial, ignore_errors=True)
+                names: dict[int, list[str]] = {}
                 try:
-                    path = collect_short(plan, day, partial, jobs=jobs)
+                    path = collect_short(plan, day, partial, jobs=jobs, names=names)
                 except Exception as exc:
                     print(f"  [short {n} of {len(plans)}] {plan.name} failed: {exc}")
                     shutil.rmtree(partial, ignore_errors=True)
@@ -1238,6 +1339,10 @@ def build_shorts(
                 os.replace(partial, final)
                 shutil.rmtree(aside, ignore_errors=True)
                 written[plan.name] = final
+                for idx, files in names.items():
+                    moment_files.setdefault(id(plan.moments[idx]), []).extend(
+                        ("short", final / name) for name in files
+                    )
                 print(f"  [short {n} of {len(plans)}] wrote {final.relative_to(out_dir)}/ ({plan.duration:.0f}s)")
             # Shorts this plan no longer produces (fewer moments than last
             # run), and finished .mp4 shorts from before the folders.
@@ -1248,5 +1353,16 @@ def build_shorts(
                 if old.is_dir() and old.name not in names and (old / "klip.txt").exists():
                     shutil.rmtree(old)
         write_index(day_dir, day, plans, written)
+        if ratings:
+            from videobrowser.ratings import register_all
+
+            records = [
+                moment_record(m, day, moment_files.get(id(m), []), min_speed) for m in moments
+            ]
+            # Only the folders written this run: a short that failed keeps its
+            # old folder, and so its old file rows.
+            n = register_all(records, forget=[("short", f) for f in written.values()])
+            if n:
+                print(f"  ratings: {n} moment(s) registered")
         results[label] = list(written.values())
     return results

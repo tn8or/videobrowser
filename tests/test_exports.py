@@ -154,3 +154,37 @@ def test_racebox_renders_run_side_by_side_and_survive_a_failure():
 
     _run_renders([lambda n=n: render(n) for n in range(3)], jobs=3)
     assert sorted(done) == [0, 2]
+
+
+def test_horizontals_register_their_clips_for_rating(tmp_path, monkeypatch):
+    import json
+    import os
+
+    import videobrowser.clips as clips
+    import videobrowser.exports as exports
+    from videobrowser.ratings import RatingsDB
+
+    out = tmp_path / "out"
+    _scan(out, "clock")
+    monkeypatch.setattr(exports, "recording_from_meta", _recording)
+
+    def fake_clip(recording, window, dest, rotation=0):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"c")
+        return dest
+
+    monkeypatch.setattr(clips, "export_clip", fake_clip)
+    assert exports.export_horizontals(out, min_speed=0, max_vehicle_share=0) == 1
+    ratings = RatingsDB.open(Path(os.environ["VIDEOBROWSER_RATINGS"]))
+    row = ratings.conn.execute("SELECT * FROM clips").fetchone()
+    assert (row["recording_id"], row["theme"], row["t_start"]) == ("R", "clip", 5.0)
+    assert json.loads(row["features"])["event_types"] == ["approaching_rider"]
+    [f] = ratings.files(row["clip_key"])
+    assert f["kind"] == "horizontal" and f["path"].endswith("R_00005_approaching_rider.mp4")
+    ratings.close()
+    # A kept file on the next run registers again under the same key; --no-ratings skips it.
+    assert exports.export_horizontals(out, min_speed=0, max_vehicle_share=0) == 0
+    exports.export_horizontals(out, min_speed=0, max_vehicle_share=0, ratings=False)
+    ratings = RatingsDB.open(Path(os.environ["VIDEOBROWSER_RATINGS"]))
+    assert ratings.conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 1
+    ratings.close()

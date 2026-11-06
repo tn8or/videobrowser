@@ -178,6 +178,64 @@ def _on_track(
     return kept
 
 
+def _rating_records(days, meta, done: list, kind: str, min_speed: float) -> list:
+    """Ratings-database rows (``ratings.ClipRecord``) for the clip windows
+    cut for one recording; *done* is (window, file) pairs."""
+    from videobrowser.ratings import ClipRecord
+    from videobrowser.themes import Moment, Segment, facing
+
+    rid = meta["recording_id"]
+    day = days.get(meta["date_label"]) if days else None
+    records = []
+    for window, path in done:
+        if day is not None and rid in day.clocks:
+            from videobrowser.shorts import moment_record
+
+            start = day.offset(rid)
+            m = Moment(
+                "clip", start + window.t_start, start + window.t_end, window.score,
+                [Segment(rid, window.t_start, window.t_end)],
+            )
+            record = moment_record(m, day, [(kind, path)], min_speed)
+            record.features["event_types"] = sorted(set(record.features["event_types"]) | set(window.types))
+        else:
+            looks = meta["facing"] if "facing" in meta.keys() and meta["facing"] else facing(meta["profile"])
+            record = ClipRecord(
+                date_label=meta["date_label"],
+                recording_id=rid,
+                recording_duration=float(meta["duration"]),
+                theme="clip",
+                t_start=window.t_start,
+                t_end=window.t_end,
+                utc_start=(meta["start_utc"] or 0.0) + window.t_start,
+                camera=looks,
+                features={
+                    "theme": "clip",
+                    "event_types": sorted(set(window.types)),
+                    "duration": round(window.t_end - window.t_start, 2),
+                    "cameras": [looks],
+                    "kneepuck": "kneepuck" in window.types,
+                },
+                heuristic_score=window.score,
+                files=[(kind, path)],
+            )
+        records.append(record)
+    return records
+
+
+def _register(days, meta, done: list, kind: str, folder: Path, min_speed: float, ratings: bool) -> None:
+    if not ratings:
+        return
+    from videobrowser.ratings import register_all
+
+    try:
+        records = _rating_records(days, meta, done, kind, min_speed)
+    except Exception as exc:  # a feature that fails must not stop the cutting
+        print(f"  ratings: not saved ({exc})")
+        return
+    register_all(records, forget=[(kind, folder, f"{meta['recording_id']}_")])
+
+
 def _racebox_context(out_dir: Path, sessions_dir: Path, font_path: str, stats_path: Path | None):
     """Overlay context with the RaceBox sessions, or a session-less one."""
     from videobrowser import racebox_stage as rbs
@@ -206,8 +264,10 @@ def export_horizontals(
     jobs: int = 1,
     min_speed: float = DEFAULT_MIN_TRACK_KMH,
     max_vehicle_share: float = DEFAULT_MAX_SHARE,
+    ratings: bool = True,
 ) -> int:
-    """Cut landscape clips (and RaceBox overlay renders); returns how many were cut."""
+    """Cut landscape clips (and RaceBox overlay renders); returns how many
+    were cut. *ratings*: register them in the local ratings database."""
     from videobrowser.clips import export_clip
 
     sessions_dir = sessions_dir or (out_dir / "sessions")
@@ -232,12 +292,14 @@ def export_horizontals(
             clip_dir = out_dir / "clips" / meta["date_label"]
             _clear_others(clip_dir, rid, {_clip_name(w) for _, w in pairs})
             todo = []
+            done = []
             for row, window in pairs:
                 dest = clip_dir / _clip_name(window)
                 if force or not dest.exists():
                     todo.append((row, window))
                 else:
                     db.set_clip_path(row["id"], "clip_path", str(dest))
+                    done.append((window, dest))
 
             def cut_one(item, recording=recording, clip_dir=clip_dir, rotation=meta["rotation"]):
                 _, window = item
@@ -250,9 +312,11 @@ def export_horizontals(
                     db.set_clip_path(row["id"], "clip_path", None)
                     continue
                 db.set_clip_path(row["id"], "clip_path", str(dest))
+                done.append((window, dest))
                 new += 1
             cut += new
             print(f"{at} {rid}: {new} landscape clip(s) cut, {len(pairs) - new} kept")
+            _register(days, meta, done, "horizontal", clip_dir, min_speed, ratings)
             if not overlay:
                 continue
             source = start_source(meta, recording)
@@ -285,8 +349,10 @@ def export_verticals(
     jobs: int = 1,
     min_speed: float = DEFAULT_MIN_TRACK_KMH,
     max_vehicle_share: float = DEFAULT_MAX_SHARE,
+    ratings: bool = True,
 ) -> int:
-    """Cut 1080x1920 follow-cam clips; returns how many were cut."""
+    """Cut 1080x1920 follow-cam clips; returns how many were cut.
+    *ratings*: register them in the local ratings database."""
     from videobrowser.racebox_align import load_track
     from videobrowser.themes import facing
     from videobrowser.vertical import export_vertical, focus_samples
@@ -316,13 +382,16 @@ def export_verticals(
             vdir = out_dir / "vertical" / meta["date_label"]
             _clear_others(vdir, rid, {_clip_name(w) for _, w in pairs})
             todo = []
+            done = []
             for row, window in pairs:
                 if force or not (vdir / _clip_name(window)).exists():
                     todo.append((row, window))
                 else:
                     db.set_clip_path(row["id"], "vertical_path", str(vdir / _clip_name(window)))
+                    done.append((window, vdir / _clip_name(window)))
             if not todo:
                 print(f"{at} {rid}: {len(pairs)} vertical clip(s) kept")
+                _register(days, meta, done, "vertical", vdir, min_speed, ratings)
                 continue
 
             source = start_source(meta, recording)
@@ -386,9 +455,11 @@ def export_verticals(
                     db.set_clip_path(row["id"], "vertical_path", None)
                     continue
                 db.set_clip_path(row["id"], "vertical_path", str(dest))
+                done.append((window, dest))
                 new += 1
             cut += new
             print(f"{at} {rid}: {new} vertical clip(s) cut, {len(pairs) - len(todo)} kept")
+            _register(days, meta, done, "vertical", vdir, min_speed, ratings)
     finally:
         db.close()
     return cut
