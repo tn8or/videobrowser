@@ -505,8 +505,7 @@ machine keeps its files.
 Votes (up, down, cleared, plus tags) are append-only; the latest counts. A
 vote also goes to the same footage in the other outputs (the vertical and
 landscape clips of a short's moment), and a moment a rescan moved a little
-keeps the vote of the old one it overlaps. Syncing between machines comes
-next (VIDE-1).
+keeps the vote of the old one it overlaps.
 
 ### Rating
 
@@ -565,6 +564,31 @@ only ever confirms its first guesses. The same moments are explored on every
 run. Your own crash and off-track moments are never left out, and without a
 trained model nothing is. Left-out moments are listed in `moments.json`
 (`left_out`) with the score that dropped them.
+
+### Sharing ratings between machines (Dropbox)
+
+Put a `sync_dir` in `~/.videobrowser/config.toml` on each machine, pointing
+at the same Dropbox folder:
+
+```toml
+# macOS
+sync_dir = "~/Dropbox/videobrowser-ratings"
+```
+
+```toml
+# Windows (forward slashes, or doubled backslashes)
+sync_dir = "C:/Users/tommy/Dropbox/videobrowser-ratings"
+```
+
+`rate` then syncs when it starts and stops, and `train` before it trains;
+`videobrowser ratings sync [DIR]` syncs by hand. Each machine appends what it
+registered and voted to its own `<machine id>.jsonl` in that folder and
+reads the others'; the SQLite file itself stays out of Dropbox (two machines
+writing one live database through Dropbox would corrupt it). It works
+offline: at the track nothing is lost, and the next sync catches up once
+Dropbox has. The latest vote on a moment counts, wherever it was cast. File
+paths stay per machine, and each machine trains its own model from the
+merged votes.
 
 ---
 
