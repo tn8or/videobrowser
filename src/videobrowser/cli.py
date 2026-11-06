@@ -273,6 +273,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="RaceBox .vbo sessions for absolute time (default: <out>/sessions)",
     )
 
+    rate = sub.add_parser(
+        "rate",
+        help="Vote on the cut moments in a local page in the browser (offline; ~/.videobrowser/ratings.sqlite)",
+    )
+    rate.add_argument(
+        "-o", "--out", type=Path, default=None, help="Only moments with files in this output directory"
+    )
+    rate.add_argument("--host", default="127.0.0.1", help="Address to listen on (0.0.0.0: also other devices)")
+    rate.add_argument("--port", type=int, default=8765, help="Port (default 8765; a free one if busy)")
+    rate.add_argument(
+        "--tag", action="append", default=[], metavar="TEXT", help="Extra quick tag on the page (repeatable)"
+    )
+    rate.add_argument("--no-browser", action="store_true", help="Don't open the browser")
+
+    vote = sub.add_parser("vote", help="Vote on the moment a cut file belongs to")
+    vote.add_argument("path", type=Path, help="A short piece, vertical or landscape clip")
+    vote.add_argument("vote", choices=("up", "down", "clear"))
+    vote.add_argument("--tag", action="append", default=[], metavar="TEXT", help="Tag (repeatable)")
+
+    ratings_p = sub.add_parser("ratings", help="The ratings database")
+    ratings_p.add_argument("action", choices=("stats",))
+
     sub.add_parser(
         "racebox-login",
         help="Log in to racebox.pro in Chrome (solve the captcha) and save the session for fetches",
@@ -597,6 +619,46 @@ def finish_line_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def rate_cmd(args: argparse.Namespace) -> int:
+    from videobrowser.rate import serve
+
+    under = args.out.expanduser().resolve() if args.out else None
+    serve(args.host, args.port, tags=args.tag, under=under, open_browser=not args.no_browser)
+    return 0
+
+
+def vote_cmd(args: argparse.Namespace) -> int:
+    from videobrowser.ratings import RatingsDB
+
+    db = RatingsDB.open()
+    try:
+        path = args.path.expanduser()
+        key = db.key_for_path(path.resolve()) or db.key_for_path(path.absolute())
+        if key is None:
+            print(f"{args.path}: not in the ratings database (cut it with shorts/verticals/horizontals first)",
+                  file=sys.stderr)
+            return 1
+        value = {"up": 1, "down": -1, "clear": 0}[args.vote]
+        keys = db.vote(key, value, args.tag)
+        also = f" (and {len(keys) - 1} clip(s) of the same footage)" if len(keys) > 1 else ""
+        print(f"{args.vote}: {args.path.name}{also}")
+    finally:
+        db.close()
+    return 0
+
+
+def ratings_cmd(args: argparse.Namespace) -> int:
+    from videobrowser.ratings import RatingsDB
+
+    db = RatingsDB.open()
+    try:
+        s = db.stats()
+        print(f"{db.path}: {s['moments']} moments, {s['up']} up, {s['down']} down")
+    finally:
+        db.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -614,5 +676,11 @@ def main(argv: list[str] | None = None) -> int:
         return racebox_fetch_cmd(args)
     if args.cmd == "finish-line":
         return finish_line_cmd(args)
+    if args.cmd == "rate":
+        return rate_cmd(args)
+    if args.cmd == "vote":
+        return vote_cmd(args)
+    if args.cmd == "ratings":
+        return ratings_cmd(args)
     parser.error(f"unknown command {args.cmd}")
     return 2

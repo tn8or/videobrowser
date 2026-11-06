@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS clips (
     utc_start REAL NOT NULL,
     features TEXT NOT NULL,
     heuristic_score REAL,
+    why TEXT NOT NULL DEFAULT '[]',
     model_score REAL,
     model_version INTEGER,
     first_seen TEXT NOT NULL,
@@ -144,6 +145,8 @@ class ClipRecord:
     features: dict = field(default_factory=dict)
     heuristic_score: float | None = None
     files: list[tuple[str, Path]] = field(default_factory=list)  # (kind, path)
+    # Why the pipeline kept it (``Moment.why``), shown on the rating page.
+    why: list[str] = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -163,6 +166,9 @@ class RatingsDB:
         conn = sqlite3.connect(path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.executescript(SCHEMA)
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(clips)")}
+        if "why" not in columns:  # files from before the rating page
+            conn.execute("ALTER TABLE clips ADD COLUMN why TEXT NOT NULL DEFAULT '[]'")
         row = conn.execute("SELECT value FROM meta WHERE key = 'machine_id'").fetchone()
         if row is None:
             machine_id = uuid.uuid4().hex
@@ -190,17 +196,18 @@ class RatingsDB:
         self.conn.execute(
             """
             INSERT INTO clips(clip_key, date_label, recording_id, camera, theme, t_start, t_end,
-                              utc_start, features, heuristic_score, first_seen, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              utc_start, features, heuristic_score, why, first_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(clip_key) DO UPDATE SET
                 camera = excluded.camera, t_start = excluded.t_start, t_end = excluded.t_end,
                 features = excluded.features, heuristic_score = excluded.heuristic_score,
-                last_seen = excluded.last_seen
+                why = excluded.why, last_seen = excluded.last_seen
             """,
             (
                 key, record.date_label, record.recording_id, record.camera, record.theme,
                 record.t_start, record.t_end, record.utc_start,
-                json.dumps(record.features, sort_keys=True), record.heuristic_score, now, now,
+                json.dumps(record.features, sort_keys=True), record.heuristic_score,
+                json.dumps(record.why, ensure_ascii=False), now, now,
             ),
         )
         for kind, path in record.files:
@@ -264,11 +271,11 @@ class RatingsDB:
 
     # --- votes -----------------------------------------------------------
 
-    def vote(self, key: str, vote: int, tags: list[str] | None = None, spread: bool = True) -> None:
+    def vote(self, key: str, vote: int, tags: list[str] | None = None, spread: bool = True) -> list[str]:
         """Vote on *key*. With *spread*, the same footage in the other
         outputs (moments on the same recording overlapping it by
         ``INHERIT_IOU`` or more, e.g. its vertical and landscape clips) gets
-        the vote too."""
+        the vote too. Returns every key that got the vote, *key* first."""
         if vote not in VOTES:
             raise ValueError(f"vote must be one of {VOTES}, not {vote!r}")
         clip = self.clip(key)
@@ -288,6 +295,7 @@ class RatingsDB:
             rows,
         )
         self.conn.commit()
+        return [r[0] for r in rows]
 
     def _overlapping(self, date_label: str, recording_id: str, span: tuple[float, float], key: str) -> list[str]:
         """Moments on the same recording overlapping *span* by

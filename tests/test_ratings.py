@@ -143,3 +143,24 @@ def test_register_all_never_raises(tmp_path, capsys):
     assert register_all([_record()], path=blocker / "r.sqlite") == 0
     assert "ratings: not saved" in capsys.readouterr().out
     assert register_all([_record(), _record(30.0, 40.0)], path=tmp_path / "r.sqlite") == 2
+
+
+def test_opening_a_file_from_before_the_rating_page_adds_why(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE clips (clip_key TEXT PRIMARY KEY, date_label TEXT NOT NULL, recording_id TEXT NOT NULL,"
+        " camera TEXT, theme TEXT NOT NULL, t_start REAL NOT NULL, t_end REAL NOT NULL, utc_start REAL NOT NULL,"
+        " features TEXT NOT NULL, heuristic_score REAL, model_score REAL, model_version INTEGER,"
+        " first_seen TEXT NOT NULL, last_seen TEXT NOT NULL)"
+    )
+    conn.commit()
+    conn.close()
+    db = RatingsDB.open(path)
+    record = _record()
+    record.why = ["2 rider(s) in view"]
+    key = db.register(record)
+    assert json.loads(db.clip(key)["why"]) == ["2 rider(s) in view"]
+    db.close()
