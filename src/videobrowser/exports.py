@@ -275,7 +275,9 @@ def _score_verdicts(db, days, metas, kind, min_speed, max_share, min_score, top,
             if day is not None and clip_drop_reason(day, rid, window.t_start, window.t_end, min_speed, max_share):
                 continue
             [record] = _rating_records(days, meta, [(window, None)], kind, min_speed)
-            per_day.setdefault(meta["date_label"], []).append((record.key, model.predict(record.features), "clip"))
+            # An own off-track window is never left out, as in shorts (learn.NEVER_SKIP).
+            theme = "own_off_track" if "own_off_track" in window.types else "clip"
+            per_day.setdefault(meta["date_label"], []).append((record.key, model.predict(record.features), theme))
             ids[record.key] = (rid, row["id"])
     verdicts: dict[tuple, str | None] = {}
     for items in per_day.values():
