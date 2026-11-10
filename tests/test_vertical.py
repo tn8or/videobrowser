@@ -345,6 +345,24 @@ def test_focus_ignores_the_cameras_own_exhaust_on_the_frame_edge():
     assert samples and all(s.cx == pytest.approx(0.85) for s in samples)
 
 
+def test_focus_ignores_the_own_cockpit_boxed_as_a_bike():
+    """A big box on the bottom-left that jitters with the lean (so the still
+    edge-box check misses it) is the camera's own handlebar, not a rider."""
+    from dataclasses import replace
+
+    cockpit = []
+    for i in range(16):
+        p = _pt(i / 5, 9, 0.12 + 0.06 * (i % 3), h=0.45 + 0.15 * (i % 2), w=0.3)
+        cockpit.append(replace(p, y2=360.0, y1=360.0 - p.height))  # sits on the bottom edge
+    rider = [_pt(i / 5, 3, 0.7, h=0.2, w=0.08) for i in range(16)]
+    samples = focus_samples(_window(), {9: cockpit, 3: rider})
+    assert samples and all(s.cx == pytest.approx(0.7) for s in samples)
+    # A fork camera looking back: the radiator fills the frame, not on an edge.
+    radiator = [_pt(i / 5, 8, 0.6 + 0.05 * (i % 3), h=0.75 - 0.1 * (i % 2), w=0.5) for i in range(16)]
+    samples = focus_samples(_window(), {8: radiator, 3: rider})
+    assert samples and all(s.cx == pytest.approx(0.7) for s in samples)
+
+
 def test_dead_ffmpeg_pipe_on_windows_is_an_encode_failure(monkeypatch):
     """Windows raises EINVAL, not BrokenPipeError, writing to a dead ffmpeg.
 

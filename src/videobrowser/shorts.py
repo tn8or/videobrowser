@@ -273,6 +273,9 @@ class DayData:
     # recording id -> every bridge pass (recording time) the scan saw, for
     # recordings it searched whole (``bridge.py``).
     bridges: dict = field(default_factory=dict)
+    # recording id -> the scan's rider box rows (``ScanDB.tracks``), inside
+    # its clip windows: what a piece cut from source follows.
+    tracks: dict = field(default_factory=dict)
 
     def facing(self, rid: str) -> str:
         """Which way the camera looks: scene flow when the scan had it, else
@@ -322,6 +325,10 @@ def load_days(db: ScanDB, out_dir: Path) -> dict[str, DayData]:
     for rid, samples in db.vehicles().items():
         if rid in owner:
             owner[rid].vehicles[rid] = samples
+    for rid, day in owner.items():
+        rows = db.tracks(rid)
+        if rows:
+            day.tracks[rid] = rows
     for row in db.all_events():
         if row["recording_id"] in owner:
             owner[row["recording_id"]].events.append(row)
@@ -1208,7 +1215,8 @@ _probe_once = lru_cache(maxsize=None)(probe)
 def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
     """9:16 cut straight from the GoPro files (no HUD), looking into corners."""
     from videobrowser.gopro import Chapter, Recording
-    from videobrowser.vertical import export_vertical, turn_focus
+    from videobrowser.riders import TrackPoint
+    from videobrowser.vertical import export_vertical, focus_samples
 
     clock = day.clocks[segment.recording_id]
     recording = Recording(segment.recording_id, "", segment.recording_id)
@@ -1222,7 +1230,15 @@ def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
     _speeds, turns = _day_gps(day, segment.recording_id)
     if not day.riding.get(segment.recording_id):
         turns = []  # a helmet camera already looks into the corner (see exports)
-    focus = turn_focus(turns, segment.t_start, end, day.facing(segment.recording_id))
+    # Follow the riders the scan boxed, as ``verticals`` does; before this a
+    # piece no vertical clip covered only looked into corners, so on a dash
+    # camera it sat on the middle of the dashboard while a rider went by.
+    tracks: dict[int, list[TrackPoint]] = {}
+    for track_id, t, x1, y1, x2, y2, w, h in day.tracks.get(segment.recording_id, []):
+        if segment.t_start <= t <= end:
+            point = TrackPoint(t, x1, y1, x2, y2, 1.0, 0, int(track_id), int(w), int(h))
+            tracks.setdefault(point.track_id, []).append(point)
+    focus = focus_samples(window, tracks, turns, day.facing(segment.recording_id))
     return export_vertical(recording, window, dest, day.rotations[segment.recording_id], focus)
 
 

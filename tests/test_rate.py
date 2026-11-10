@@ -174,3 +174,48 @@ def test_server_rounds_and_reweigh(server):
     assert result["ok"] and result["done"]
     _post(base + "/api/vote", {"key": keys["moment"], "vote": -1, "tags": []})
     assert json.loads(_get(base + "/api/moments?order=rounds")[2]) == []
+
+
+@pytest.mark.parametrize("error", [ConnectionAbortedError, ConnectionResetError, BrokenPipeError])
+def test_a_dropped_video_stream_is_not_an_error(setup, error):
+    """The browser drops a stream when it moves to the next clip or seeks; on
+    Windows that is WinError 10053, which used to print a traceback per clip."""
+    db_path, out, keys = setup
+    srv = make_server(port=0, db_path=db_path)
+    try:
+        handler = srv.RequestHandlerClass.__new__(srv.RequestHandlerClass)
+        handler.headers = {}
+        handler.send_response = handler.send_header = handler.end_headers = lambda *a: None
+
+        class Dropped:
+            def write(self, data):
+                raise error
+
+        handler.wfile = Dropped()
+        handler.close_connection = False
+        handler._send_file(keys["front"])  # no exception
+        assert handler.close_connection
+    finally:
+        srv.server_close()
+
+
+def test_a_moment_in_two_shorts_shows_its_clip_once(setup, tmp_path):
+    import shutil
+
+    db_path, out, keys = setup
+    front = keys["front"]
+    other = out / "shorts" / "2026-08-01" / "indhentninger-01"
+    other.mkdir(parents=True)
+    copy = other / "03_front.mp4"
+    shutil.copy2(front, copy)  # as collect_short copies the scan clip
+    db = RatingsDB.open(db_path)
+    db.conn.execute(
+        "INSERT INTO clip_files (clip_key, machine_id, kind, path) VALUES (?, ?, 'short', ?)",
+        (keys["moment"], db.machine_id, str(copy)),
+    )
+    db.conn.commit()
+    [m] = [m for m in list_moments(db) if m["key"] == keys["moment"]]
+    names = [f["name"] for f in m["files"]]
+    assert names.count("01a_front.mp4") + names.count("03_front.mp4") == 1
+    assert "01b_rear.mp4" in names  # another camera still shows
+    db.close()

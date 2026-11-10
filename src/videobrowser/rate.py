@@ -176,8 +176,23 @@ def _shown_files(files: list[tuple[str, str]], under: Path | None) -> list[tuple
     for kind in KIND_ORDER:
         picked = [(i, f) for i, f in present if f[0] == kind]
         if picked:
-            return picked
-    return present
+            return _distinct(picked)
+    return _distinct(present)
+
+
+def _distinct(files: list[tuple[int, tuple[str, str]]]) -> list[tuple[int, tuple[str, str]]]:
+    """*files* without copies of the same clip: a moment that lands in two
+    shorts (an action short and a theme short) has the same scan clip copied
+    into both, with the same size and, from ``copy2``, the same mtime."""
+    seen: set[tuple[int, int]] = set()
+    out = []
+    for i, f in files:
+        st = Path(f[1]).stat()
+        if (st.st_size, st.st_mtime_ns) in seen:
+            continue
+        seen.add((st.st_size, st.st_mtime_ns))
+        out.append((i, f))
+    return out
 
 
 def moment_file(db: RatingsDB, key: str, n: int) -> Path | None:
@@ -360,12 +375,17 @@ class _Handler(BaseHTTPRequestHandler):
         with path.open("rb") as f:
             f.seek(start)
             left = end - start + 1
-            while left > 0:
-                chunk = f.read(min(CHUNK, left))
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                left -= len(chunk)
+            try:
+                while left > 0:
+                    chunk = f.read(min(CHUNK, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+            except ConnectionError:
+                # The browser dropped the stream (next clip, a seek): nothing to report.
+                # Covers WinError 10053, ConnectionResetError and BrokenPipeError.
+                self.close_connection = True
 
 
 def make_server(
