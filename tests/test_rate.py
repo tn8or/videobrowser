@@ -197,3 +197,25 @@ def test_a_dropped_video_stream_is_not_an_error(setup, error):
         assert handler.close_connection
     finally:
         srv.server_close()
+
+
+def test_a_moment_in_two_shorts_shows_its_clip_once(setup, tmp_path):
+    import shutil
+
+    db_path, out, keys = setup
+    front = keys["front"]
+    other = out / "shorts" / "2026-08-01" / "indhentninger-01"
+    other.mkdir(parents=True)
+    copy = other / "03_front.mp4"
+    shutil.copy2(front, copy)  # as collect_short copies the scan clip
+    db = RatingsDB.open(db_path)
+    db.conn.execute(
+        "INSERT INTO clip_files (clip_key, machine_id, kind, path) VALUES (?, ?, 'short', ?)",
+        (keys["moment"], db.machine_id, str(copy)),
+    )
+    db.conn.commit()
+    [m] = [m for m in list_moments(db) if m["key"] == keys["moment"]]
+    names = [f["name"] for f in m["files"]]
+    assert names.count("01a_front.mp4") + names.count("03_front.mp4") == 1
+    assert "01b_rear.mp4" in names  # another camera still shows
+    db.close()

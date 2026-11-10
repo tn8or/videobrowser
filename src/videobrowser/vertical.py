@@ -56,7 +56,9 @@ LEAD_IN_S = 1.0
 # Turn rate (deg/s) at which the crop looks fully into the corner.
 FULL_TURN_DEG_S = 25.0
 # Largest look-into-the-corner shift from the centre, fraction of frame width.
-MAX_TURN_SHIFT = 0.35
+# Kept small: on a cockpit camera the frame's sides are the bike itself (the
+# clutch reservoir, the clamp), so looking far into a corner shows the bike.
+MAX_TURN_SHIFT = 0.2
 # A front camera looks this far ahead into the coming corner, seconds.
 TURN_LOOK_AHEAD_S = 0.7
 # A turn sample this close before a rider sample yields to the rider.
