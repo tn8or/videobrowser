@@ -1189,8 +1189,9 @@ def _file_time(utc: float) -> str:
     return datetime.fromtimestamp(utc, tz=timezone.utc).astimezone(_TZ).strftime("%H%M%S")
 
 
-def _source_for(segment: Segment, clips: list[ClipRow]) -> tuple[Path, float, float] | None:
-    """(vertical file, start inside it, duration) covering most of *segment*."""
+def _source_for(segment: Segment, clips: list[ClipRow]) -> tuple[Path, float, float, float] | None:
+    """(vertical file, start inside it, duration, the file's own start in
+    recording time) covering most of *segment*."""
     best: tuple[float, ClipRow] | None = None
     for clip in clips:
         if clip.recording_id != segment.recording_id or clip.vertical_path is None:
@@ -1205,7 +1206,7 @@ def _source_for(segment: Segment, clips: list[ClipRow]) -> tuple[Path, float, fl
     clip = best[1]
     lo = max(segment.t_start, clip.t_start)
     hi = min(segment.t_end, clip.t_end)
-    return clip.vertical_path, lo - clip.t_start, hi - lo
+    return clip.vertical_path, lo - clip.t_start, hi - lo, clip.t_start
 
 
 # Every cut used to probe its recording's files again, over the network share.
@@ -1243,7 +1244,12 @@ def _from_source(day: DayData, segment: Segment, dest: Path) -> Path:
 
 
 def collect_short(
-    plan: ShortPlan, day: DayData, dest: Path, jobs: int = 1, names: dict[int, list[str]] | None = None
+    plan: ShortPlan,
+    day: DayData,
+    dest: Path,
+    jobs: int = 1,
+    names: dict[int, list[str]] | None = None,
+    starts: dict[str, float] | None = None,
 ) -> Path | None:
     """Folder with the source clips of *plan*, in order, for editing by hand.
 
@@ -1251,7 +1257,8 @@ def collect_short(
     clips (no cuts, so no audio clicks at the joins); a piece no clip covers
     is cut from the GoPro files, *jobs* of those cuts at a time. ``klip.txt``
     lists each file with the part the plan would use. *names*, when given,
-    gets each moment's file names by its index in ``plan.moments``.
+    gets each moment's file names by its index in ``plan.moments``, and
+    *starts* each file's first frame on the day's clock.
     """
     dest.mkdir(parents=True, exist_ok=True)
     lines = [f"{plan.name}: {len(plan.moments)} moments, {plan.duration:.0f} s", ""]
@@ -1268,8 +1275,9 @@ def collect_short(
                     name = f"{stem}.mp4"
                     cuts.append((segment, name))
                     use = "whole file"
+                    file_t0 = segment.t_start
                 else:
-                    src, start, duration = found
+                    src, start, duration, file_t0 = found
                     name = copied.get(src) or f"{stem}_{src.name}"
                     if src not in copied:
                         shutil.copy2(src, dest / name)
@@ -1280,6 +1288,8 @@ def collect_short(
                 raise RuntimeError(f"{segment.recording_id}@{segment.t_start:.0f}s: {exc}") from exc
             if names is not None:
                 names.setdefault(i - 1, []).append(name)
+            if starts is not None:
+                starts[name] = day.offset(segment.recording_id) + file_t0
             why = f"; {', '.join(moment.why)}" if moment.why else ""
             lines.append(f"{name}  ({moment.label}, {_clock_label(moment.utc_start)}, use {use}{why})")
     if len(lines) == 2:
@@ -1511,8 +1521,9 @@ def build_shorts(
                 partial = day_dir / f".{plan.name}.partial"
                 shutil.rmtree(partial, ignore_errors=True)
                 names: dict[int, list[str]] = {}
+                starts: dict[str, float] = {}
                 try:
-                    path = collect_short(plan, day, partial, jobs=jobs, names=names)
+                    path = collect_short(plan, day, partial, jobs=jobs, names=names, starts=starts)
                 except Exception as exc:
                     print(f"  [short {n} of {len(plans)}] {plan.name} failed: {exc}")
                     shutil.rmtree(partial, ignore_errors=True)
@@ -1531,7 +1542,7 @@ def build_shorts(
                 written[plan.name] = final
                 for idx, files in names.items():
                     moment_files.setdefault(id(plan.moments[idx]), []).extend(
-                        ("short", final / name) for name in files
+                        ("short", final / name, starts.get(name)) for name in files
                     )
                 print(f"  [short {n} of {len(plans)}] wrote {final.relative_to(out_dir)}/ ({plan.duration:.0f}s)")
             # Shorts this plan no longer produces (fewer moments than last

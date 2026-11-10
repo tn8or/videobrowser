@@ -219,3 +219,25 @@ def test_a_moment_in_two_shorts_shows_its_clip_once(setup, tmp_path):
     assert names.count("01a_front.mp4") + names.count("03_front.mp4") == 1
     assert "01b_rear.mp4" in names  # another camera still shows
     db.close()
+
+
+def test_files_carry_their_start_for_playing_cameras_in_step(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "old.sqlite"
+    # A database from before file starts: clip_files without the column.
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE clip_files (clip_key TEXT NOT NULL, machine_id TEXT NOT NULL, "
+                 "kind TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY (clip_key, machine_id, kind, path))")
+    conn.commit()
+    conn.close()
+    rear, front = tmp_path / "01a_rear.mp4", tmp_path / "01b_front.mp4"
+    rear.write_bytes(b"rear")
+    front.write_bytes(b"front!")
+    db = RatingsDB.open(db_path)
+    key = db.register(_record(tmp_path, 44.0, "overtaken", [("short", rear, 1040.0), ("short", front, None)]))
+    # A later run knows the front file's start too.
+    db.register(_record(tmp_path, 44.0, "overtaken", [("short", front, 1049.7)]))
+    [m] = [m for m in list_moments(db) if m["key"] == key]
+    assert {f["name"]: f["start"] for f in m["files"]} == {"01a_rear.mp4": 1040.0, "01b_front.mp4": 1049.7}
+    db.close()
