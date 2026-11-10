@@ -45,6 +45,15 @@ MIN_FOLLOW_HEIGHT_FRAC = 0.05
 KEEP_FOLLOW_HEIGHT_FRAC = 0.03
 # Stay on the current target until another candidate is this much larger.
 SWITCH_RATIO = 0.5
+# A box reaching this close to the frame's bottom edge is the camera's own
+# bike (handlebar, clutch reservoir, dash), which the tracker sometimes boxes
+# as a motorcycle and, being the largest box, the crop then followed. A rider
+# ahead stands on the road above the cockpit.
+OWN_BIKE_BOTTOM_FRAC = 0.03
+# A box taller than this share of the frame is the own bike too: a camera on
+# the fork looking back sees the fairing and radiator fill the frame, and no
+# other rider is ever that close.
+OWN_BIKE_HEIGHT_FRAC = 0.6
 # Zero-phase smoothing time constant, seconds.
 SMOOTH_TAU = 0.35
 # Fastest pan, in source-frame widths per second.
@@ -133,6 +142,10 @@ def focus_samples(
                 continue
             if point.height_frac < KEEP_FOLLOW_HEIGHT_FRAC:
                 continue
+            if point.y2 >= (1.0 - OWN_BIKE_BOTTOM_FRAC) * max(1, point.frame_h):
+                continue  # reaches the bottom edge: the camera's own bike, not a rider ahead
+            if point.height_frac > OWN_BIKE_HEIGHT_FRAC:
+                continue  # fills the frame: the own fairing or radiator seen from a fork camera
             by_t.setdefault(point.t, []).append(point)
 
     samples: list[FocusSample] = []
