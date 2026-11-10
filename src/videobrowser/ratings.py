@@ -73,6 +73,9 @@ CREATE TABLE IF NOT EXISTS clip_files (
     machine_id TEXT NOT NULL,
     kind TEXT NOT NULL,
     path TEXT NOT NULL,
+    -- When the file's first frame was filmed, on the day's shared clock (s);
+    -- the rating page plays a moment's cameras in step with it.
+    start REAL,
     PRIMARY KEY (clip_key, machine_id, kind, path)
 );
 
@@ -144,7 +147,8 @@ class ClipRecord:
     camera: str | None = None
     features: dict = field(default_factory=dict)
     heuristic_score: float | None = None
-    files: list[tuple[str, Path]] = field(default_factory=list)  # (kind, path)
+    # (kind, path) or (kind, path, start on the day clock)
+    files: list[tuple] = field(default_factory=list)
     # Why the pipeline kept it (``Moment.why``), shown on the rating page.
     why: list[str] = field(default_factory=list)
     # The learned score (``learn.py``) and its model version, when known.
@@ -172,6 +176,8 @@ class RatingsDB:
         columns = {r["name"] for r in conn.execute("PRAGMA table_info(clips)")}
         if "why" not in columns:  # files from before the rating page
             conn.execute("ALTER TABLE clips ADD COLUMN why TEXT NOT NULL DEFAULT '[]'")
+        if "start" not in {r["name"] for r in conn.execute("PRAGMA table_info(clip_files)")}:
+            conn.execute("ALTER TABLE clip_files ADD COLUMN start REAL")
         row = conn.execute("SELECT value FROM meta WHERE key = 'machine_id'").fetchone()
         if row is None:
             machine_id = uuid.uuid4().hex
@@ -218,10 +224,11 @@ class RatingsDB:
                 "UPDATE clips SET model_score = ?, model_version = ? WHERE clip_key = ?",
                 (record.model_score, record.model_version, key),
             )
-        for kind, path in record.files:
+        for kind, path, *start in record.files:
             self.conn.execute(
-                "INSERT OR IGNORE INTO clip_files(clip_key, machine_id, kind, path) VALUES (?, ?, ?, ?)",
-                (key, self.machine_id, kind, str(path)),
+                "INSERT INTO clip_files(clip_key, machine_id, kind, path, start) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(clip_key, machine_id, kind, path) DO UPDATE SET start = excluded.start",
+                (key, self.machine_id, kind, str(path), start[0] if start else None),
             )
         if self.latest_vote(key) is None:
             self._inherit(key, record)

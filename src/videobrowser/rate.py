@@ -64,12 +64,12 @@ def list_moments(
         ) v ON v.clip_key = c.clip_key AND v.n = 1
         """
     ).fetchall()
-    files: dict[str, list[tuple[str, str]]] = {}
+    files: dict[str, list[tuple[str, str, float | None]]] = {}
     for f in db.conn.execute(
-        "SELECT clip_key, kind, path FROM clip_files WHERE machine_id = ? ORDER BY path",
+        "SELECT clip_key, kind, path, start FROM clip_files WHERE machine_id = ? ORDER BY path",
         (db.machine_id,),
     ):
-        files.setdefault(f["clip_key"], []).append((f["kind"], f["path"]))
+        files.setdefault(f["clip_key"], []).append((f["kind"], f["path"], f["start"]))
     under = under.resolve() if under is not None else None
     out = []
     for row in rows:
@@ -100,7 +100,10 @@ def list_moments(
                 "vote": vote,
                 "tags": json.loads(row["tags"] or "[]"),
                 "explore": any(str(w).startswith("explore:") for w in json.loads(row["why"] or "[]")),
-                "files": [{"n": i, "kind": kind, "name": Path(path).name} for i, (kind, path) in shown],
+                "files": [
+                    {"n": i, "kind": kind, "name": Path(path).name, "start": start}
+                    for i, (kind, path, start) in shown
+                ],
             }
         )
     if order == "score":
@@ -165,7 +168,7 @@ def reweigh(db: RatingsDB) -> str:
     )
 
 
-def _shown_files(files: list[tuple[str, str]], under: Path | None) -> list[tuple[int, tuple[str, str]]]:
+def _shown_files(files: list[tuple], under: Path | None) -> list[tuple[int, tuple]]:
     """(index into *files*, (kind, path)) of the files to show: those of the
     best kind present that still exist (and lie under *under*)."""
     present = [
@@ -180,7 +183,7 @@ def _shown_files(files: list[tuple[str, str]], under: Path | None) -> list[tuple
     return _distinct(present)
 
 
-def _distinct(files: list[tuple[int, tuple[str, str]]]) -> list[tuple[int, tuple[str, str]]]:
+def _distinct(files: list[tuple[int, tuple]]) -> list[tuple[int, tuple]]:
     """*files* without copies of the same clip: a moment that lands in two
     shorts (an action short and a theme short) has the same scan clip copied
     into both, with the same size and, from ``copy2``, the same mtime."""
@@ -569,7 +572,49 @@ function showStats(s) {
   $('stats').textContent = `${s.moments} moments · ${s.up} up · ${s.down} down`;
 }
 
+// A moment's cameras filmed the same seconds from different sides (an
+// overtake: the rear camera sees the rider come, the front one sees them go).
+// With each file's start on the day clock they play in step on one clock that
+// loops over all of them; a camera shows its first or last frame while the
+// others run. Seeking one video moves the shared clock.
+let syncRaf = 0;
+function syncPlay(videos, starts) {
+  cancelAnimationFrame(syncRaf);
+  const base = Math.min(...starts);
+  const lag = starts.map(s => s - base);
+  let t0 = performance.now(), ours = 0;
+  const span = () => Math.max(...videos.map((v, k) => lag[k] + (v.duration || 0)));
+  videos.forEach((v, k) => {
+    v.loop = false;
+    v.addEventListener('seeking', () => {
+      if (ours > 0) { ours--; return; }
+      t0 = performance.now() - (v.currentTime + lag[k]) * 1000;  // the viewer scrubbed
+    });
+  });
+  const set = (v, t) => { ours++; v.currentTime = t; };
+  const tick = () => {
+    const total = span();
+    if (total > 0) {
+      const clock = ((performance.now() - t0) / 1000) % total;
+      videos.forEach((v, k) => {
+        const local = clock - lag[k], dur = v.duration || 0;
+        if (local >= 0 && local < dur) {
+          if (Math.abs(v.currentTime - local) > 0.3) set(v, local);
+          if (v.paused) v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
+        } else {
+          if (!v.paused) v.pause();
+          const edge = local < 0 ? 0 : Math.max(0, dur - 0.05);
+          if (Math.abs(v.currentTime - edge) > 0.1) set(v, edge);
+        }
+      });
+    }
+    syncRaf = requestAnimationFrame(tick);
+  };
+  syncRaf = requestAnimationFrame(tick);
+}
+
 function show() {
+  cancelAnimationFrame(syncRaf);
   const box = $('videos');
   box.innerHTML = '';
   $('empty').hidden = list.length > 0;
@@ -585,6 +630,9 @@ function show() {
     // Browsers may refuse to autoplay with sound before the first key press.
     v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
   }
+  const starts = m.files.map(f => f.start);
+  if (m.files.length > 1 && starts.every(s => s != null) && new Set(starts).size > 1)
+    syncPlay([...box.querySelectorAll('video')], starts);
   $('title').innerHTML = '';
   if (m.bucket) { const b = document.createElement('span'); b.className = 'bucket';
     b.textContent = `${m.bucket}`; $('title').append(b, ' '); }

@@ -634,3 +634,27 @@ def test_a_piece_cut_from_source_follows_the_rider_the_scan_boxed(monkeypatch):
     monkeypatch.setattr(vertical, "export_vertical", fake_export)
     shorts._from_source(day, Segment("F", 50.0, 58.0), Path("x.mp4"))
     assert seen["focus"] and all(s.cx == pytest.approx(250 / 1920) for s in seen["focus"])
+
+
+def test_collect_short_gives_each_piece_its_start_on_the_day_clock(tmp_path, monkeypatch):
+    """An overtaken: the rear camera's piece, then the front one's. The rating
+    page plays them in step, so it needs when each file starts."""
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+
+    rear_clip = tmp_path / "R_00040_approaching_rider.mp4"
+    rear_clip.write_bytes(b"rear")
+    day = shorts.DayData(
+        "2026-07-31",
+        {"R": CameraClock("R", 1000.0, 300.0, []), "F": CameraClock("F", 1003.0, 300.0, [])},
+        {"R": "rear", "F": "cockpit"}, {"R": 0, "F": 0}, [],
+        [shorts.ClipRow("R", 40.0, 52.0, "approaching_rider", rear_clip, None)],
+    )
+    monkeypatch.setattr(shorts, "_from_source", lambda d, seg, dest: dest.write_bytes(b"front") or dest)
+    moment = Moment("overtaken", 1044.0, 1053.0, 2.0, [Segment("R", 44.0, 50.0), Segment("F", 46.7, 50.0)])
+    names, starts = {}, {}
+    shorts.collect_short(shorts.ShortPlan("overhalet-01", "overtaken", [moment]), day, tmp_path / "s",
+                         names=names, starts=starts)
+    rear, front = names[0]
+    assert starts[rear] == 1040.0  # the copied scan clip starts at 40 s, not at the piece
+    assert starts[front] == pytest.approx(1003.0 + 46.7)
