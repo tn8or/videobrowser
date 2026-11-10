@@ -613,3 +613,24 @@ def test_build_shorts_registers_moments_for_rating(tmp_path):
     assert ratings.latest_vote(key)["vote"] == 1
     assert len(ratings.files(key)) == len(files)
     ratings.close()
+
+
+def test_a_piece_cut_from_source_follows_the_rider_the_scan_boxed(monkeypatch):
+    import videobrowser.shorts as shorts
+    import videobrowser.vertical as vertical
+    from videobrowser.sync import CameraClock
+    from videobrowser.themes import Segment
+
+    day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 200.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    day.gps["F"] = ([], [])
+    # A rider on the left of a 1920-wide frame, from 2 s into the piece.
+    day.tracks["F"] = [[7, 52.0 + i * 0.2, 150.0, 400.0, 350.0, 700.0, 1920, 1080] for i in range(20)]
+    seen = {}
+
+    def fake_export(recording, window, dest, rotation, focus, **kw):
+        seen["focus"] = focus
+        return dest
+
+    monkeypatch.setattr(vertical, "export_vertical", fake_export)
+    shorts._from_source(day, Segment("F", 50.0, 58.0), Path("x.mp4"))
+    assert seen["focus"] and all(s.cx == pytest.approx(250 / 1920) for s in seen["focus"])
