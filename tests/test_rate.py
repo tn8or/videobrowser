@@ -174,3 +174,26 @@ def test_server_rounds_and_reweigh(server):
     assert result["ok"] and result["done"]
     _post(base + "/api/vote", {"key": keys["moment"], "vote": -1, "tags": []})
     assert json.loads(_get(base + "/api/moments?order=rounds")[2]) == []
+
+
+@pytest.mark.parametrize("error", [ConnectionAbortedError, ConnectionResetError, BrokenPipeError])
+def test_a_dropped_video_stream_is_not_an_error(setup, error):
+    """The browser drops a stream when it moves to the next clip or seeks; on
+    Windows that is WinError 10053, which used to print a traceback per clip."""
+    db_path, out, keys = setup
+    srv = make_server(port=0, db_path=db_path)
+    try:
+        handler = srv.RequestHandlerClass.__new__(srv.RequestHandlerClass)
+        handler.headers = {}
+        handler.send_response = handler.send_header = handler.end_headers = lambda *a: None
+
+        class Dropped:
+            def write(self, data):
+                raise error
+
+        handler.wfile = Dropped()
+        handler.close_connection = False
+        handler._send_file(keys["front"])  # no exception
+        assert handler.close_connection
+    finally:
+        srv.server_close()
