@@ -600,7 +600,12 @@ function syncPlay(videos, starts) {
         const local = clock - lag[k], dur = v.duration || 0;
         if (local >= 0 && local < dur) {
           if (Math.abs(v.currentTime - local) > 0.3) set(v, local);
-          if (v.paused) v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
+          // A clip reaches its end up to the drift allowance (0.3 s) before
+          // the shared clock does. play() on an ended video seeks to 0, and
+          // that seek is not one of ours, so it is read as the viewer
+          // scrubbing: the clock jumps back and every camera restarts. Hold
+          // the last frame instead; cameras still inside their span keep going.
+          else if (!v.ended && v.paused) v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
         } else {
           if (!v.paused) v.pause();
           const edge = local < 0 ? 0 : Math.max(0, dur - 0.05);

@@ -241,3 +241,83 @@ def test_files_carry_their_start_for_playing_cameras_in_step(tmp_path):
     [m] = [m for m in list_moments(db) if m["key"] == key]
     assert {f["name"]: f["start"] for f in m["files"]} == {"01a_rear.mp4": 1040.0, "01b_front.mp4": 1049.7}
     db.close()
+
+
+def _sync_play_source() -> str:
+    """The page's syncPlay, plus the raf handle it closes over."""
+    from videobrowser.rate import PAGE
+
+    start = PAGE.index("let syncRaf = 0;")
+    end = PAGE.index("function show()")
+    return PAGE[start:end]
+
+
+def test_ended_clip_does_not_restart_the_shared_clock(tmp_path):
+    """The shorter camera of a moment ends while the shared clock is still
+    inside it (playback runs up to 0.3 s ahead of the clock). play() on an
+    ended video seeks to 0, and that seek used to be read as a scrub, so
+    every camera jumped back to the start of the moment."""
+    import shutil
+    import subprocess
+    import textwrap
+
+    node = os.environ.get("NODE_BIN") or shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    script = textwrap.dedent(
+        r"""
+        const source = require('fs').readFileSync(process.argv[1], 'utf8');
+        let now = 0;
+        globalThis.performance = { now: () => now };
+        let scheduled = null;
+        globalThis.cancelAnimationFrame = () => { scheduled = null; };
+        globalThis.requestAnimationFrame = (fn) => { scheduled = fn; return 1; };
+
+        function makeVideo(duration) {
+          return {
+            duration, _t: 0, paused: true, ended: false, loop: true,
+            listeners: [],
+            addEventListener(_ev, fn) { this.listeners.push(fn); },
+            get currentTime() { return this._t; },
+            set currentTime(t) {
+              this._t = t;
+              this.ended = false;
+              for (const fn of this.listeners) fn();
+            },
+            play() {
+              // HTML: play() after ended seeks to the earliest position.
+              if (this.ended) this.currentTime = 0;
+              this.paused = false;
+              return Promise.resolve();
+            },
+            pause() { this.paused = true; },
+          };
+        }
+        eval(source + "\nglobalThis.syncPlay = syncPlay;");
+        const rear = makeVideo(4);   // starts 1 s earlier, ends first
+        const front = makeVideo(6);
+        syncPlay([rear, front], [10, 11]);
+        now = 3800;                   // shared clock 3.8 s; rear has hit its end
+        rear._t = 4; rear.ended = true; rear.paused = true;
+        front._t = 2.8; front.paused = false;
+        scheduled();
+        if (rear.currentTime < 1) throw new Error('rear restarted at ' + rear.currentTime);
+        if (front.currentTime < 2) throw new Error('front jumped to ' + front.currentTime);
+        // The clock keeps running: a moment later the front is still in its span.
+        now = 4500;
+        front._t = 3.5;
+        scheduled();
+        if (rear.currentTime < 1) throw new Error('rear restarted later at ' + rear.currentTime);
+        if (Math.abs(front.currentTime - 3.5) > 0.3) throw new Error('front left its place at ' + front.currentTime);
+        // A real scrub still moves the shared clock.
+        now = 4500;
+        rear.currentTime = 1.2;       // ours is 0: the viewer
+        scheduled();
+        // rear at 1.2 s of itself; front starts 1 s later, so it is at 0.2 s.
+        if (Math.abs(front.currentTime - 0.2) > 0.3) throw new Error('scrub did not follow: front ' + front.currentTime);
+        """
+    )
+    source = tmp_path / "syncplay.js"
+    source.write_text(_sync_play_source(), encoding="utf-8")
+    proc = subprocess.run([node, "-e", script, str(source)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr or proc.stdout
