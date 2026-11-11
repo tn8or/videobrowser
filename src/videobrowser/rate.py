@@ -42,8 +42,10 @@ ORDERS = ("rounds", "time", "score", "uncertain")
 # (``reweigh``) and the next round drawn with it.
 ROUND_EACH = 5
 # Two moments on one recording show the same footage when they overlap by
-# more than this share of the shorter one (as ``themes.dedupe`` counts it).
-SAME_FOOTAGE_OVERLAP = 0.5
+# at least this share of the shorter one. Lower than ``themes.dedupe``'s
+# half: that keeps two 6 s action windows 3 s apart, and a kneepuck at the
+# file's start beside the next one, which are the same pictures to rate.
+SAME_FOOTAGE_OVERLAP = 0.3
 CHUNK = 1 << 20
 
 
@@ -140,8 +142,7 @@ def _identity(path: str) -> tuple[int, int]:
 def _same_footage(a: dict, b: dict) -> bool:
     """Whether *a* and *b* show the same footage: they share a file (the
     same scan clip copied into two shorts), or they lie on the same
-    recording and overlap by more than half the shorter one, as
-    ``themes.dedupe`` counts it."""
+    recording and overlap by ``SAME_FOOTAGE_OVERLAP`` of the shorter one."""
     if a["day"] != b["day"]:
         return False
     if a["_same"] & b["_same"]:
@@ -149,7 +150,7 @@ def _same_footage(a: dict, b: dict) -> bool:
     if a["recording"] != b["recording"]:
         return False
     inter = min(a["t_end"], b["t_end"]) - max(a["t_start"], b["t_start"])
-    return inter > SAME_FOOTAGE_OVERLAP * min(a["t_end"] - a["t_start"], b["t_end"] - b["t_start"])
+    return inter > 0 and inter >= SAME_FOOTAGE_OVERLAP * min(a["t_end"] - a["t_start"], b["t_end"] - b["t_start"])
 
 
 def group_same_footage(moments: list[dict]) -> list[dict]:

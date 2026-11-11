@@ -373,3 +373,20 @@ def test_moments_sharing_a_copied_scan_clip_show_once_and_share_a_vote(tmp_path)
         srv.shutdown()
         srv.server_close()
     assert sorted(result["keys"]) == sorted(keys)
+
+
+def test_moments_a_few_seconds_apart_on_one_recording_show_once(tmp_path):
+    """Cut from the source, so no shared file: two 6 s action windows 3 s
+    apart (121 and 124 s), and a kneepuck at 0-1.9 s beside one at 1-4.5 s."""
+    db = RatingsDB.open(Path(os.environ["VIDEOBROWSER_RATINGS"]))
+    for n, (t, end, theme) in enumerate(
+        ((121.0, 127.0, "action"), (124.0, 130.0, "action"), (0.0, 1.9, "kneepuck"), (1.0, 4.5, "kneepuck"),
+         (140.0, 146.0, "action"))
+    ):
+        f = tmp_path / f"cut-{n}.mp4"
+        f.write_bytes(b"cut %d" % n)
+        record = _record(tmp_path, t, theme, [("short", f)])
+        record.t_end = end
+        db.register(record)
+    assert [(m["t_start"], len(m["also"])) for m in list_moments(db)] == [(1.0, 1), (124.0, 1), (140.0, 0)]
+    db.close()
