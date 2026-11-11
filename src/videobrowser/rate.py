@@ -41,6 +41,11 @@ ORDERS = ("rounds", "time", "score", "uncertain")
 # low and as many in the middle. After each round the score is re-weighed
 # (``reweigh``) and the next round drawn with it.
 ROUND_EACH = 5
+# Two moments on one recording show the same footage when they overlap by
+# at least this share of the shorter one. Lower than ``themes.dedupe``'s
+# half: that keeps two 6 s action windows 3 s apart, and a kneepuck at the
+# file's start beside the next one, which are the same pictures to rate.
+SAME_FOOTAGE_OVERLAP = 0.3
 CHUNK = 1 << 20
 
 
@@ -75,16 +80,13 @@ def list_moments(
     for row in rows:
         if day and row["date_label"] != day:
             continue
-        if theme and row["theme"] != theme:
-            continue
         vote = row["vote"] or 0
-        if unrated and vote != 0:
-            continue
         shown = _shown_files(files.get(row["clip_key"], []), under)
         if not shown:
             continue
         out.append(
             {
+                "_same": {_identity(f[1]) for _, f in shown},
                 "key": row["clip_key"],
                 "day": row["date_label"],
                 "recording": row["recording_id"],
@@ -106,6 +108,13 @@ def list_moments(
                 ],
             }
         )
+    # Grouped before the theme and unrated filters: a group counts as rated
+    # once any of its moments is, whichever way that vote came in.
+    out = group_same_footage(out)
+    if theme:
+        out = [m for m in out if theme in m["themes"]]
+    if unrated:
+        out = [m for m in out if m["vote"] == 0]
     if order == "score":
         out.sort(key=lambda m: (-(m["score"] or 0.0), m["day"], m["utc_start"]))
     elif order == "uncertain":
@@ -121,6 +130,80 @@ def list_moments(
     else:
         out.sort(key=lambda m: (m["day"], m["utc_start"], m["theme"]))
     return out
+
+
+def _identity(path: str) -> tuple[int, int]:
+    """A file's size and mtime: the same for every copy ``copy2`` made of
+    one scan clip."""
+    st = Path(path).stat()
+    return (st.st_size, st.st_mtime_ns)
+
+
+def _same_footage(a: dict, b: dict) -> bool:
+    """Whether *a* and *b* show the same footage: they share a file (the
+    same scan clip copied into two shorts), or they lie on the same
+    recording and overlap by ``SAME_FOOTAGE_OVERLAP`` of the shorter one."""
+    if a["day"] != b["day"]:
+        return False
+    if a["_same"] & b["_same"]:
+        return True
+    if a["recording"] != b["recording"]:
+        return False
+    inter = min(a["t_end"], b["t_end"]) - max(a["t_start"], b["t_start"])
+    return inter > 0 and inter >= SAME_FOOTAGE_OVERLAP * min(a["t_end"] - a["t_start"], b["t_end"] - b["t_start"])
+
+
+def group_same_footage(moments: list[dict]) -> list[dict]:
+    """One entry per piece of footage. A moment can be cut under several
+    themes (a kneepuck inside a duel), as a short and as vertical and
+    landscape clips, and a short copies the whole scan clip for each moment
+    in it, so several moments a few seconds apart show the same file. The
+    page shows each such group once: the member with the most cameras, then
+    the best score, with the others' keys in ``also`` (a vote goes to all of
+    them) and every theme in ``themes``."""
+    parent = list(range(len(moments)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    by_day: dict[str, list[int]] = {}
+    for i, m in enumerate(moments):
+        by_day.setdefault(m["day"], []).append(i)
+    for idx in by_day.values():
+        for n, i in enumerate(idx):
+            for j in idx[n + 1 :]:
+                if find(i) != find(j) and _same_footage(moments[i], moments[j]):
+                    parent[find(j)] = find(i)
+    groups: dict[int, list[dict]] = {}
+    for i, m in enumerate(moments):
+        groups.setdefault(find(i), []).append(m)
+    out = []
+    for members in groups.values():
+        best = max(members, key=lambda m: (len(m["files"]), _score(m), -m["utc_start"]))
+        rest = sorted((m for m in members if m is not best), key=lambda m: m["utc_start"])
+        shown = {k: v for k, v in best.items() if k != "_same"}
+        shown["also"] = [m["key"] for m in rest]
+        shown["themes"] = list(dict.fromkeys([best["theme"], *(m["theme"] for m in rest)]))
+        shown["also_at"] = [f"{m['theme']} @ {m['t_start']:.0f} s" for m in rest]
+        if shown["vote"] == 0:  # a vote on any of them is a vote on the footage
+            voted = next((m for m in rest if m["vote"] != 0), None)
+            if voted is not None:
+                shown["vote"], shown["tags"] = voted["vote"], voted["tags"]
+        out.append(shown)
+    return out
+
+
+def same_footage_keys(db: RatingsDB, key: str, under: Path | None = None) -> list[str]:
+    """The other moments ``list_moments`` shows as the same footage as
+    *key* (with the same *under* as the page), worked out here and not
+    taken from the page."""
+    for m in list_moments(db, under=under):
+        if key == m["key"] or key in m["also"]:
+            return [k for k in (m["key"], *m["also"]) if k != key]
+    return []
 
 
 def _score(m: dict) -> float:
@@ -190,10 +273,10 @@ def _distinct(files: list[tuple[int, tuple]]) -> list[tuple[int, tuple]]:
     seen: set[tuple[int, int]] = set()
     out = []
     for i, f in files:
-        st = Path(f[1]).stat()
-        if (st.st_size, st.st_mtime_ns) in seen:
+        same = _identity(f[1])
+        if same in seen:
             continue
-        seen.add((st.st_size, st.st_mtime_ns))
+        seen.add(same)
         out.append((i, f))
     return out
 
@@ -337,7 +420,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         db = self._db()
         try:
-            keys = db.vote(key, vote, tags)
+            keys = db.vote(key, vote, tags, also=same_footage_keys(db, key, self.under))
             self._send_json({"ok": True, "keys": keys, "stats": db.stats()})
         except KeyError:
             self._send_json({"error": "no such moment"}, HTTPStatus.NOT_FOUND)
@@ -644,11 +727,12 @@ function show() {
   if (m.explore) { const b = document.createElement('span'); b.className = 'bucket';
     b.title = 'Kept although the learned score rates it low, so it can learn from your vote';
     b.textContent = 'explore'; $('title').append(b, ' '); }
-  $('title').append(`${m.theme} · ${m.camera || ''}`);
+  $('title').append(`${(m.themes || [m.theme]).join(' + ')} · ${m.camera || ''}`);
   $('pos').textContent = (rounds() ? `round ${round}: ` : '') + `${i + 1} of ${list.length}`;
   const score = m.model_score != null ? `model ${(m.model_score * 100).toFixed(0)}%` :
     (m.score != null ? `score ${m.score.toFixed(2)}` : '');
-  $('sub').textContent = `${m.day} · ${m.recording} @ ${m.t_start.toFixed(0)} s · ${score}`;
+  $('sub').textContent = `${m.day} · ${m.recording} @ ${m.t_start.toFixed(0)} s · ${score}` +
+    (m.also_at && m.also_at.length ? ` · same footage: ${m.also_at.join(', ')}` : '');
   $('why').innerHTML = '';
   for (const w of m.why) { const li = document.createElement('li'); li.textContent = w; $('why').appendChild(li); }
   if (!m.why.length) $('why').innerHTML = '<li class="dim">not recorded</li>';

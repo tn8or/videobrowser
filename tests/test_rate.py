@@ -33,32 +33,38 @@ def setup(tmp_path):
     rear.write_bytes(b"rear")
     vertical = vdir / "GX010001_00010_x.mp4"
     vertical.write_bytes(b"vertical")
+    later_file = vdir / "GX010001_00100_x.mp4"
+    later_file.write_bytes(b"later vertical")
     db = RatingsDB.open(db_path)
     moment = db.register(_record(tmp_path, 10.0, "overtake",
                                  [("short", front), ("short", rear), ("vertical", vertical)],
                                  why=["2 rider(s) in view", "GPS 92 km/h"]))
     clip = db.register(_record(tmp_path, 9.0, "clip", [("vertical", vertical)]))
     gone = db.register(_record(tmp_path, 200.0, "duel", [("short", short / "missing.mp4")]))
+    later = db.register(_record(tmp_path, 100.0, "clip", [("vertical", later_file)]))
     db.close()
-    return db_path, out, {"moment": moment, "clip": clip, "gone": gone, "front": front}
+    return db_path, out, {"moment": moment, "clip": clip, "gone": gone, "later": later, "front": front}
 
 
 def test_list_moments_shows_existing_files_best_kind_first(setup):
     db_path, out, keys = setup
     db = RatingsDB.open(db_path)
     moments = list_moments(db)
-    assert [m["key"] for m in moments] == [keys["clip"], keys["moment"]]  # time order; missing file left out
-    m = moments[1]
+    # Time order; missing file left out; the vertical clip of the same
+    # footage folds into the moment that shows more cameras.
+    assert [m["key"] for m in moments] == [keys["moment"], keys["later"]]
+    m = moments[0]
+    assert m["also"] == [keys["clip"]] and m["themes"] == ["overtake", "clip"]
     assert [f["kind"] for f in m["files"]] == ["short", "short"]  # the short's pieces beat the vertical
     assert m["why"] == ["2 rider(s) in view", "GPS 92 km/h"]
-    assert [x["key"] for x in list_moments(db, order="score")] == [keys["moment"], keys["clip"]]
+    assert [x["key"] for x in list_moments(db, order="score")] == [keys["later"], keys["moment"]]
     assert [x["key"] for x in list_moments(db, theme="overtake")] == [keys["moment"]]
     assert list_moments(db, day="2026-08-02") == []
     assert list_moments(db, under=out / "vertical") and all(
         f["kind"] == "vertical" for x in list_moments(db, under=out / "vertical") for f in x["files"]
     )
     db.vote(keys["moment"], 1)  # also reaches the overlapping vertical clip
-    assert list_moments(db, unrated=True) == []
+    assert [x["key"] for x in list_moments(db, unrated=True)] == [keys["later"]]
     db.close()
 
 
@@ -91,7 +97,7 @@ def test_server_page_moments_files_and_votes(server):
     assert status == 200 and b"Rate moments" in body and b"http" not in body.split(b"<script>")[1]  # offline
     facets = json.loads(_get(base + "/api/facets")[2])
     assert facets["days"] == ["2026-08-01"] and "wheelie" in facets["tags"] and "great" in facets["tags"]
-    moments = json.loads(_get(base + "/api/moments?unrated=1&order=score")[2])
+    moments = json.loads(_get(base + "/api/moments?unrated=1&order=time")[2])
     assert moments[0]["key"] == keys["moment"]
     # Files by number, with byte ranges for Safari and seeking.
     status, headers, body = _get(f"{base}/file/{keys['moment']}/0", {"Range": "bytes=10-19"})
@@ -107,7 +113,7 @@ def test_server_page_moments_files_and_votes(server):
     result = _post(base + "/api/vote", {"key": keys["moment"], "vote": 1, "tags": ["great", "wheelie"]})
     assert result["keys"][0] == keys["moment"] and keys["clip"] in result["keys"]
     assert result["stats"]["up"] == 2
-    assert json.loads(_get(base + "/api/moments?unrated=1")[2]) == []
+    assert [m["key"] for m in json.loads(_get(base + "/api/moments?unrated=1")[2])] == [keys["later"]]
     db = RatingsDB.open(Path(os.environ["VIDEOBROWSER_RATINGS"]))
     assert json.loads(db.latest_vote(keys["moment"])["tags"]) == ["great", "wheelie"]
     db.close()
@@ -138,7 +144,7 @@ def test_vote_and_stats_commands(setup, capsys):
     assert latest["vote"] == -1 and json.loads(latest["tags"]) == ["boring"]
     db.close()
     assert main(["ratings", "stats"]) == 0
-    assert "3 moments, 0 up, 2 down" in capsys.readouterr().out
+    assert "4 moments, 0 up, 2 down" in capsys.readouterr().out
     assert main(["vote", str(out / "nothing.mp4"), "up"]) == 1
 
 
@@ -169,10 +175,11 @@ def test_server_rounds_and_reweigh(server):
     base, keys = server
     drawn = json.loads(_get(base + "/api/moments")[2])  # rounds by default, unrated only
     assert [m["bucket"] for m in drawn] == ["high", "low"]
-    assert [m["key"] for m in drawn] == [keys["moment"], keys["clip"]]
+    assert [m["key"] for m in drawn] == [keys["later"], keys["moment"]]
     result = _post(base + "/api/reweigh", {})
     assert result["ok"] and result["done"]
-    _post(base + "/api/vote", {"key": keys["moment"], "vote": -1, "tags": []})
+    for m in drawn:
+        _post(base + "/api/vote", {"key": m["key"], "vote": -1, "tags": []})
     assert json.loads(_get(base + "/api/moments?order=rounds")[2]) == []
 
 
@@ -321,3 +328,65 @@ def test_ended_clip_does_not_restart_the_shared_clock(tmp_path):
     source.write_text(_sync_play_source(), encoding="utf-8")
     proc = subprocess.run([node, "-e", script, str(source)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr or proc.stdout
+
+
+def test_moments_sharing_a_copied_scan_clip_show_once_and_share_a_vote(tmp_path):
+    """A short copies the whole scan clip for each moment in it, so moments
+    a few seconds apart (384, 391, 394 s) show the same file: one entry, and
+    a vote on it reaches them all."""
+    import shutil
+
+    db_path = Path(os.environ["VIDEOBROWSER_RATINGS"])
+    scan_clip = tmp_path / "scan.mp4"
+    scan_clip.write_bytes(b"one long scan clip")
+    db = RatingsDB.open(db_path)
+    keys = []
+    for n, (t, theme) in enumerate(((384.0, "action"), (391.0, "kneepuck"), (394.0, "duel"))):
+        folder = tmp_path / f"short-{n}"
+        folder.mkdir()
+        copy = folder / f"0{n}_front.mp4"
+        shutil.copy2(scan_clip, copy)
+        record = _record(tmp_path, t, theme, [("short", copy)])
+        record.t_end = t + 3  # no overlap in time
+        keys.append(db.register(record))
+    other = tmp_path / "other.mp4"
+    other.write_bytes(b"different footage")
+    lone = db.register(_record(tmp_path, 395.0, "action", [("vertical", other)], rid="GH010002"))
+    [one, two] = list_moments(db)
+    assert one["key"] == keys[2] and sorted(one["also"]) == sorted(keys[:2])  # best score shown
+    assert set(one["themes"]) == {"action", "kneepuck", "duel"}
+    assert two["key"] == lone
+    assert [m["key"] for m in list_moments(db, theme="kneepuck")] == [keys[2]]  # any of its themes finds it
+    # A vote on one of them alone (the vote command) rates the footage.
+    db.vote(keys[0], 1)
+    assert [m["key"] for m in list_moments(db, unrated=True)] == [lone]
+    assert list_moments(db)[0]["vote"] == 1
+    db.close()
+    # The page's vote reaches the whole group, worked out by the server:
+    # keys the page sends along are not taken.
+    srv = make_server(port=0, db_path=db_path, tags=[])
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        result = _post(f"http://127.0.0.1:{srv.server_address[1]}/api/vote",
+                       {"key": keys[2], "vote": -1, "tags": [], "also": [lone]})
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert sorted(result["keys"]) == sorted(keys)
+
+
+def test_moments_a_few_seconds_apart_on_one_recording_show_once(tmp_path):
+    """Cut from the source, so no shared file: two 6 s action windows 3 s
+    apart (121 and 124 s), and a kneepuck at 0-1.9 s beside one at 1-4.5 s."""
+    db = RatingsDB.open(Path(os.environ["VIDEOBROWSER_RATINGS"]))
+    for n, (t, end, theme) in enumerate(
+        ((121.0, 127.0, "action"), (124.0, 130.0, "action"), (0.0, 1.9, "kneepuck"), (1.0, 4.5, "kneepuck"),
+         (140.0, 146.0, "action"))
+    ):
+        f = tmp_path / f"cut-{n}.mp4"
+        f.write_bytes(b"cut %d" % n)
+        record = _record(tmp_path, t, theme, [("short", f)])
+        record.t_end = end
+        db.register(record)
+    assert [(m["t_start"], len(m["also"])) for m in list_moments(db)] == [(1.0, 1), (124.0, 1), (140.0, 0)]
+    db.close()
