@@ -152,28 +152,36 @@ def _m(key, score, model=None):
     return {"key": key, "score": score, "model_score": model, "day": "2026-08-01", "utc_start": 0.0}
 
 
-def test_draw_round_takes_high_low_and_middle():
+def test_draw_round_spreads_at_random_across_the_score():
+    import random
+
     from videobrowser.rate import draw_round
 
-    moments = [_m(f"k{n:02d}", float(n)) for n in range(30)]
-    drawn = draw_round(moments, each=5)
-    assert [m["key"] for m in drawn] == (
-        ["k29", "k28", "k27", "k26", "k25"]
-        + ["k04", "k03", "k02", "k01", "k00"]
-        + ["k16", "k15", "k14", "k13", "k12"]
-    )
-    assert [m["bucket"] for m in drawn] == ["high"] * 5 + ["low"] * 5 + ["medium"] * 5
+    moments = [_m(f"k{n:02d}", float(n)) for n in range(150)]
+    drawn = draw_round(moments, size=15, rng=random.Random(1))
+    assert len(drawn) == 15 and len({m["key"] for m in drawn}) == 15
+    # One from each tenth-wide band of the score (150 / 15 = 10 per band).
+    assert sorted(int(m["score"]) // 10 for m in drawn) == list(range(15))
+    by_key = {m["key"]: m["bucket"] for m in drawn}
+    assert all(by_key[m["key"]] == ("high" if m["score"] >= 100 else "low" if m["score"] < 50 else "medium")
+               for m in drawn)
+    # Not always the same moments, nor best first.
+    other = draw_round(moments, size=15, rng=random.Random(2))
+    assert {m["key"] for m in other} != {m["key"] for m in drawn}
+    assert [m["score"] for m in drawn] != sorted((m["score"] for m in drawn), reverse=True)
     # The learned score wins over the hand-tuned one once there is one.
-    flipped = [_m("a", 9.0, model=0.1), _m("b", 1.0, model=0.9)]
-    assert [m["key"] for m in draw_round(flipped, each=1)] == ["b", "a"]
+    flipped = [_m("a", 9.0, model=0.1), _m("b", 1.0, model=0.9), _m("c", 5.0, model=0.5)]
+    buckets = {m["key"]: m["bucket"] for m in draw_round(flipped, size=3)}
+    assert buckets == {"b": "high", "c": "medium", "a": "low"}
     # Fewer than a round: each moment once.
-    few = draw_round([_m(f"k{n}", float(n)) for n in range(7)], each=5)
+    few = draw_round([_m(f"k{n}", float(n)) for n in range(7)], size=15)
     assert sorted(m["key"] for m in few) == [f"k{n}" for n in range(7)]
 
 
 def test_server_rounds_and_reweigh(server):
     base, keys = server
     drawn = json.loads(_get(base + "/api/moments")[2])  # rounds by default, unrated only
+    drawn.sort(key=lambda m: m["bucket"])  # a round comes in random order
     assert [m["bucket"] for m in drawn] == ["high", "low"]
     assert [m["key"] for m in drawn] == [keys["later"], keys["moment"]]
     result = _post(base + "/api/reweigh", {})
