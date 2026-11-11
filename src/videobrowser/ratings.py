@@ -286,11 +286,16 @@ class RatingsDB:
 
     # --- votes -----------------------------------------------------------
 
-    def vote(self, key: str, vote: int, tags: list[str] | None = None, spread: bool = True) -> list[str]:
+    def vote(
+        self, key: str, vote: int, tags: list[str] | None = None, spread: bool = True,
+        also: list[str] = (),
+    ) -> list[str]:
         """Vote on *key*. With *spread*, the same footage in the other
         outputs (moments on the same recording overlapping it by
         ``INHERIT_IOU`` or more, e.g. its vertical and landscape clips) gets
-        the vote too. Returns every key that got the vote, *key* first."""
+        the vote too, as do the moments in *also* (those the rating page
+        showed as the same footage). Returns every key that got the vote,
+        *key* first."""
         if vote not in VOTES:
             raise ValueError(f"vote must be one of {VOTES}, not {vote!r}")
         clip = self.clip(key)
@@ -305,6 +310,11 @@ class RatingsDB:
                 for other in self._overlapping(clip["date_label"], clip["recording_id"],
                                                (clip["t_start"], clip["t_end"]), key)
             ]
+        done = {r[0] for r in rows}
+        for other in dict.fromkeys(also):
+            if other not in done and self.clip(other) is not None:
+                rows.append((other, vote, tag_json, self.machine_id, now, key))
+                done.add(other)
         self.conn.executemany(
             "INSERT INTO votes(clip_key, vote, tags, machine_id, voted_at, inherited_from) VALUES (?, ?, ?, ?, ?, ?)",
             rows,

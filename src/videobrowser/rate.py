@@ -41,6 +41,9 @@ ORDERS = ("rounds", "time", "score", "uncertain")
 # low and as many in the middle. After each round the score is re-weighed
 # (``reweigh``) and the next round drawn with it.
 ROUND_EACH = 5
+# Two moments on one recording show the same footage when they overlap by
+# more than this share of the shorter one (as ``themes.dedupe`` counts it).
+SAME_FOOTAGE_OVERLAP = 0.5
 CHUNK = 1 << 20
 
 
@@ -85,6 +88,7 @@ def list_moments(
             continue
         out.append(
             {
+                "_same": {_identity(f[1]) for _, f in shown},
                 "key": row["clip_key"],
                 "day": row["date_label"],
                 "recording": row["recording_id"],
@@ -106,6 +110,7 @@ def list_moments(
                 ],
             }
         )
+    out = group_same_footage(out)
     if order == "score":
         out.sort(key=lambda m: (-(m["score"] or 0.0), m["day"], m["utc_start"]))
     elif order == "uncertain":
@@ -120,6 +125,67 @@ def list_moments(
         )
     else:
         out.sort(key=lambda m: (m["day"], m["utc_start"], m["theme"]))
+    return out
+
+
+def _identity(path: str) -> tuple[int, int]:
+    """A file's size and mtime: the same for every copy ``copy2`` made of
+    one scan clip."""
+    st = Path(path).stat()
+    return (st.st_size, st.st_mtime_ns)
+
+
+def _same_footage(a: dict, b: dict) -> bool:
+    """Whether *a* and *b* show the same footage: they share a file (the
+    same scan clip copied into two shorts), or they lie on the same
+    recording and overlap by more than half the shorter one, as
+    ``themes.dedupe`` counts it."""
+    if a["day"] != b["day"]:
+        return False
+    if a["_same"] & b["_same"]:
+        return True
+    if a["recording"] != b["recording"]:
+        return False
+    inter = min(a["t_end"], b["t_end"]) - max(a["t_start"], b["t_start"])
+    return inter > SAME_FOOTAGE_OVERLAP * min(a["t_end"] - a["t_start"], b["t_end"] - b["t_start"])
+
+
+def group_same_footage(moments: list[dict]) -> list[dict]:
+    """One entry per piece of footage. A moment can be cut under several
+    themes (a kneepuck inside a duel), as a short and as vertical and
+    landscape clips, and a short copies the whole scan clip for each moment
+    in it, so several moments a few seconds apart show the same file. The
+    page shows each such group once: the member with the most cameras, then
+    the best score, with the others' keys in ``also`` (a vote goes to all of
+    them) and every theme in ``themes``."""
+    parent = list(range(len(moments)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    by_day: dict[str, list[int]] = {}
+    for i, m in enumerate(moments):
+        by_day.setdefault(m["day"], []).append(i)
+    for idx in by_day.values():
+        for n, i in enumerate(idx):
+            for j in idx[n + 1 :]:
+                if find(i) != find(j) and _same_footage(moments[i], moments[j]):
+                    parent[find(j)] = find(i)
+    groups: dict[int, list[dict]] = {}
+    for i, m in enumerate(moments):
+        groups.setdefault(find(i), []).append(m)
+    out = []
+    for members in groups.values():
+        best = max(members, key=lambda m: (len(m["files"]), _score(m), -m["utc_start"]))
+        rest = sorted((m for m in members if m is not best), key=lambda m: m["utc_start"])
+        shown = {k: v for k, v in best.items() if k != "_same"}
+        shown["also"] = [m["key"] for m in rest]
+        shown["themes"] = list(dict.fromkeys([best["theme"], *(m["theme"] for m in rest)]))
+        shown["also_at"] = [f"{m['theme']} @ {m['t_start']:.0f} s" for m in rest]
+        out.append(shown)
     return out
 
 
@@ -190,10 +256,10 @@ def _distinct(files: list[tuple[int, tuple]]) -> list[tuple[int, tuple]]:
     seen: set[tuple[int, int]] = set()
     out = []
     for i, f in files:
-        st = Path(f[1]).stat()
-        if (st.st_size, st.st_mtime_ns) in seen:
+        same = _identity(f[1])
+        if same in seen:
             continue
-        seen.add((st.st_size, st.st_mtime_ns))
+        seen.add(same)
         out.append((i, f))
     return out
 
@@ -332,12 +398,13 @@ class _Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length) or b"{}")
             key, vote = str(data["key"]), int(data["vote"])
             tags = [str(t)[:40] for t in data.get("tags", [])][:20]
+            also = [str(k) for k in data.get("also", [])][:200]
         except (ValueError, KeyError, TypeError):
             self._send_json({"error": "need key, vote and tags"}, HTTPStatus.BAD_REQUEST)
             return
         db = self._db()
         try:
-            keys = db.vote(key, vote, tags)
+            keys = db.vote(key, vote, tags, also=also)
             self._send_json({"ok": True, "keys": keys, "stats": db.stats()})
         except KeyError:
             self._send_json({"error": "no such moment"}, HTTPStatus.NOT_FOUND)
@@ -644,11 +711,12 @@ function show() {
   if (m.explore) { const b = document.createElement('span'); b.className = 'bucket';
     b.title = 'Kept although the learned score rates it low, so it can learn from your vote';
     b.textContent = 'explore'; $('title').append(b, ' '); }
-  $('title').append(`${m.theme} · ${m.camera || ''}`);
+  $('title').append(`${(m.themes || [m.theme]).join(' + ')} · ${m.camera || ''}`);
   $('pos').textContent = (rounds() ? `round ${round}: ` : '') + `${i + 1} of ${list.length}`;
   const score = m.model_score != null ? `model ${(m.model_score * 100).toFixed(0)}%` :
     (m.score != null ? `score ${m.score.toFixed(2)}` : '');
-  $('sub').textContent = `${m.day} · ${m.recording} @ ${m.t_start.toFixed(0)} s · ${score}`;
+  $('sub').textContent = `${m.day} · ${m.recording} @ ${m.t_start.toFixed(0)} s · ${score}` +
+    (m.also_at && m.also_at.length ? ` · same footage: ${m.also_at.join(', ')}` : '');
   $('why').innerHTML = '';
   for (const w of m.why) { const li = document.createElement('li'); li.textContent = w; $('why').appendChild(li); }
   if (!m.why.length) $('why').innerHTML = '<li class="dim">not recorded</li>';
@@ -666,7 +734,7 @@ function show() {
 
 async function save(m) {
   const r = await fetch('/api/vote', {method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({key: m.key, vote: m.vote, tags: m.tags})});
+    body: JSON.stringify({key: m.key, vote: m.vote, tags: m.tags, also: m.also || []})});
   const data = await r.json();
   if (data.stats) showStats(data.stats);
   // The same footage in the other outputs got the vote too: with "unrated
