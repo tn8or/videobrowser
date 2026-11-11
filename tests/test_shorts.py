@@ -658,3 +658,24 @@ def test_collect_short_gives_each_piece_its_start_on_the_day_clock(tmp_path, mon
     rear, front = names[0]
     assert starts[rear] == 1040.0  # the copied scan clip starts at 40 s, not at the piece
     assert starts[front] == pytest.approx(1003.0 + 46.7)
+
+
+def test_cameras_rated_not_together_are_left_apart_all_day():
+    from videobrowser import shorts
+    from videobrowser.sync import CameraClock
+
+    day = shorts.DayData(
+        "2026-08-02",
+        {"R": CameraClock("R", 1000.0, 600.0, []), "F": CameraClock("F", 1000.0, 600.0, []),
+         "H": CameraClock("H", 1000.0, 600.0, [])},
+        {"R": "rear", "F": "cockpit", "H": "cockpit"}, {"R": 0, "F": 0, "H": 0}, [], [],
+    )
+    tagged = Moment("overtaken", 1310.0, 1328.0, 1.0, [Segment("R", 310, 318), Segment("F", 318, 328)])
+    later = Moment("overtaken", 1400.0, 1418.0, 1.0, [Segment("F", 400, 408), Segment("R", 408, 418)])
+    other = Moment("overtaken", 1500.0, 1518.0, 1.0, [Segment("R", 500, 508), Segment("H", 508, 518)])
+    spans = [("2026-08-02", "R", 309.0, 318.0), ("2026-08-01", "F", 0.0, 600.0)]
+    out = shorts.not_together([tagged, later, other], day, spans)
+    assert [s.recording_id for s in out[0].segments] == ["R"] and out[0].utc_end == 1318.0
+    assert [s.recording_id for s in out[1].segments] == ["F"]  # the same pair, F first
+    assert [s.recording_id for s in out[2].segments] == ["R", "H"]  # another pair: kept
+    assert "not together" in out[0].why[-1]
