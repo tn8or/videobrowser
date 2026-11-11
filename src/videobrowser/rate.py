@@ -6,7 +6,9 @@ browser. It needs no network and loads nothing from the internet. Votes and
 tags go to the ratings database (``ratings.py``).
 
 On the page: ↑/K up, ↓/J down, 0 clears, →/space next, ← back, 1-9 toggle
-the quick tags, which can also be clicked with the mouse. By default it
+the quick tags, which can also be clicked with the mouse. The tag "not
+together" says a moment's cameras do not belong together (wrong sync), and
+the next ``shorts`` run leaves the other camera out. By default it
 goes in rounds: 5 unrated moments the score puts high, 5 it puts low, 5 in
 the middle; then the score is re-weighed from the votes (``learn.py``) and
 the next round drawn. Stopping the server re-weighs once more.
@@ -30,10 +32,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from videobrowser.ratings import RatingsDB
+from videobrowser.ratings import NOT_TOGETHER, RatingsDB
 
 DEFAULT_PORT = 8765
-DEFAULT_TAGS = ("great", "boring", "paddock", "wrong camera", "bad picture")
+# ``NOT_TOGETHER``: the moment's cameras do not show the same seconds (wrong
+# sync); the next ``shorts`` run leaves the other camera out. "wrong theme":
+# the detector named it wrong (e.g. catching up while the others pull away),
+# which the up/down vote on the clip itself says nothing about.
+DEFAULT_TAGS = ("great", "boring", "paddock", "wrong camera", "bad picture", NOT_TOGETHER, "wrong theme")
 # Which files show a moment, best first: a short's pieces show every camera.
 KIND_ORDER = ("short", "vertical", "horizontal")
 ORDERS = ("rounds", "time", "score", "uncertain")
@@ -743,6 +749,7 @@ function show() {
     const b = document.createElement('button');
     b.textContent = (n < 9 ? `${n + 1} ` : '') + t;
     b.classList.toggle('on', m.tags.includes(t));
+    if (t === 'not together') b.title = "The cameras don't show the same seconds: the next shorts run leaves the other camera out";
     b.onclick = () => toggleTag(t);
     $('tags').appendChild(b);
   });

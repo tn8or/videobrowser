@@ -164,3 +164,18 @@ def test_opening_a_file_from_before_the_rating_page_adds_why(tmp_path):
     key = db.register(record)
     assert json.loads(db.clip(key)["why"]) == ["2 rider(s) in view"]
     db.close()
+
+
+def test_tagged_lists_moments_whose_latest_vote_carries_the_tag(tmp_path):
+    from videobrowser.ratings import NOT_TOGETHER, tagged_spans
+
+    db = RatingsDB.open(tmp_path / "r.sqlite")
+    a = db.register(_record(10, 18))
+    b = db.register(_record(100, 108))
+    db.vote(a, 0, [NOT_TOGETHER], spread=False)
+    db.vote(b, 0, [NOT_TOGETHER], spread=False)
+    db.vote(b, 1, ["great"], spread=False)  # untagged again
+    assert db.tagged(NOT_TOGETHER) == [("2026-08-01", "GX010001", 10.0, 18.0)]
+    db.close()
+    assert tagged_spans(NOT_TOGETHER, tmp_path / "r.sqlite") == [("2026-08-01", "GX010001", 10.0, 18.0)]
+    assert tagged_spans(NOT_TOGETHER, tmp_path / "missing.sqlite") == []

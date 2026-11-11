@@ -806,6 +806,50 @@ def _at_least(moments: list[Moment], day: DayData, left_out: list[Moment]) -> li
     return kept
 
 
+def not_together(
+    moments: list[Moment], day: DayData, spans: list[tuple[str, str, float, float]]
+) -> list[Moment]:
+    """Leave the other cameras out where the rating page says a moment's
+    cameras do not belong together (``ratings.NOT_TOGETHER``).
+
+    *spans*: (day, first piece's recording, start, end) of the tagged
+    moments. Each one marks its recording and every other recording in the
+    moment found there as a bad pair: their clocks disagree, and one
+    recording keeps one clock error all through, so the pair is left apart
+    in every moment of the day. A moment keeps its first piece's camera.
+    """
+    flagged = [(rid, lo, hi) for label, rid, lo, hi in spans if label == day.date_label]
+    if not flagged:
+        return moments
+    bad: set[frozenset[str]] = set()
+    for m in moments:
+        first = m.segments[0]
+        if any(
+            rid == first.recording_id and min(hi, first.t_end) > max(lo, first.t_start)
+            for rid, lo, hi in flagged
+        ):
+            bad.update(
+                frozenset((first.recording_id, s.recording_id))
+                for s in m.segments
+                if s.recording_id != first.recording_id
+            )
+    split = 0
+    for m in moments:
+        first = m.segments[0].recording_id
+        keep = [s for s in m.segments if frozenset((first, s.recording_id)) not in bad]
+        if len(keep) == len(m.segments):
+            continue
+        dropped = sorted({s.recording_id for s in m.segments} - {s.recording_id for s in keep})
+        if keep[-1] is not m.segments[-1]:
+            m.utc_end = day.offset(keep[-1].recording_id) + keep[-1].t_end
+        m.segments = keep
+        m.why.append(f"left out camera {', '.join(dropped)}: not together (rated)")
+        split += 1
+    if split:
+        print(f"  {split} moment(s) without a camera rated as not together with it")
+    return moments
+
+
 def _moment_action(m: Moment, day: DayData) -> tuple[int, float] | None:
     """(most other riders in one frame, longest kerb share of a second) over
     the moment's pieces, None if the scan stored neither."""
@@ -1462,6 +1506,11 @@ def build_shorts(
         from videobrowser.learn import load_scorer
 
         scorer = load_scorer()
+    not_together_spans = []
+    if ratings:
+        from videobrowser.ratings import NOT_TOGETHER, tagged_spans
+
+        not_together_spans = tagged_spans(NOT_TOGETHER)
     from videobrowser.racebox_align import load_track
 
     track = load_track(sessions_dir)
@@ -1479,6 +1528,8 @@ def build_shorts(
             day, crashes=crashes, min_speed=min_speed, max_vehicle_share=max_vehicle_share,
             left_out=left_out,
         )
+        if not_together_spans:
+            moments = not_together(moments, day, not_together_spans)
         known = learned_scores(moments, day, scorer, min_speed)
         moments = skip_low_scores(moments, day, known, left_out, min_score, top, explore, min_speed)
         plans = plan_shorts(moments, max_seconds, max_action_shorts)

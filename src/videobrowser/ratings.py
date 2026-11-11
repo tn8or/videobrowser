@@ -38,6 +38,9 @@ SCHEMA_VERSION = 1
 # (intersection over union of their recording time).
 INHERIT_IOU = 0.5
 VOTES = (-1, 0, 1)
+# The quick tag for a moment whose cameras do not show the same seconds
+# (wrong sync between them): ``shorts`` then leaves the other camera out.
+NOT_TOGETHER = "not together"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -343,6 +346,25 @@ class RatingsDB:
             (key,),
         ).fetchone()
 
+    def tagged(self, tag: str) -> list[tuple[str, str, float, float]]:
+        """(day, first piece's recording, its start, its end) of every moment
+        whose latest vote row carries *tag*."""
+        rows = self.conn.execute(
+            """
+            SELECT c.date_label, c.recording_id, c.t_start, c.t_end, v.tags FROM clips c
+            JOIN (
+                SELECT clip_key, tags, ROW_NUMBER() OVER (
+                    PARTITION BY clip_key ORDER BY voted_at DESC, id DESC
+                ) AS n FROM votes
+            ) v ON v.clip_key = c.clip_key AND v.n = 1
+            """
+        ).fetchall()
+        return [
+            (r["date_label"], r["recording_id"], r["t_start"], r["t_end"])
+            for r in rows
+            if tag in json.loads(r["tags"] or "[]")
+        ]
+
     def stats(self) -> dict[str, int]:
         latest = self.conn.execute(
             """
@@ -358,6 +380,26 @@ class RatingsDB:
             "up": sum(1 for r in latest if r["vote"] > 0),
             "down": sum(1 for r in latest if r["vote"] < 0),
         }
+
+
+def tagged_spans(tag: str, path: Path | None = None) -> list[tuple[str, str, float, float]]:
+    """``RatingsDB.tagged`` without a ratings file at hand: a missing or
+    broken one gives no spans (it must never stop clips from being cut)."""
+    path = path or default_path()
+    if not path.exists():
+        return []
+    try:
+        db = RatingsDB.open(path)
+    except (sqlite3.Error, OSError) as exc:
+        print(f"  ratings: not read ({exc})")
+        return []
+    try:
+        return db.tagged(tag)
+    except sqlite3.Error as exc:
+        print(f"  ratings: not read ({exc})")
+        return []
+    finally:
+        db.close()
 
 
 def register_all(
