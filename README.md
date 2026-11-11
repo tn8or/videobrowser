@@ -522,8 +522,8 @@ short's moment shows all its cameras side by side). Keys: `↑`/`K` up,
 `↓`/`J` down, `0` clear, `→`/space next, `←` back, `1`-`9` toggle the quick
 tags, which can also be clicked (add your own with `--tag`).
 
-By default it goes in rounds: 5 unrated moments the score puts high, 5 it
-puts low and 5 from the middle. At the end of a round the score is
+By default it goes in rounds of 15 unrated moments drawn at random across
+the score (one from each fifteenth of it), in random order. At the end of a round the score is
 re-weighed from the votes and the next round drawn (until the learned score
 exists, the hand-tuned score draws the rounds). The order menu also offers
 time order, best score first and most uncertain first. `--host 0.0.0.0`

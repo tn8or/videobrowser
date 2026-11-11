@@ -9,9 +9,9 @@ On the page: ↑/K up, ↓/J down, 0 clears, →/space next, ← back, 1-9 toggl
 the quick tags, which can also be clicked with the mouse. The tag "not
 together" says a moment's cameras do not belong together (wrong sync), and
 the next ``shorts`` run leaves the other camera out. By default it
-goes in rounds: 5 unrated moments the score puts high, 5 it puts low, 5 in
-the middle; then the score is re-weighed from the votes (``learn.py``) and
-the next round drawn. Stopping the server re-weighs once more.
+goes in rounds of 15 unrated moments drawn at random across the score, one
+from each fifteenth of it, in random order; then the score is re-weighed
+from the votes (``learn.py``) and the next round drawn. Stopping the server re-weighs once more.
 
 Only files the ratings database lists for this machine are served, and only
 by their place in a moment's file list, so the page cannot be used to read
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import random
 import re
 import sqlite3
 import threading
@@ -43,10 +44,10 @@ DEFAULT_TAGS = ("great", "boring", "paddock", "wrong camera", "bad picture", NOT
 # Which files show a moment, best first: a short's pieces show every camera.
 KIND_ORDER = ("short", "vertical", "horizontal")
 ORDERS = ("rounds", "time", "score", "uncertain")
-# A round: this many unrated moments the score puts high, as many it puts
-# low and as many in the middle. After each round the score is re-weighed
-# (``reweigh``) and the next round drawn with it.
-ROUND_EACH = 5
+# A round: this many unrated moments, drawn at random across the score
+# (one from each equal band of it) and shown in random order. After each
+# round the score is re-weighed (``reweigh``) and the next round drawn with it.
+ROUND_SIZE = 15
 # Two moments on one recording show the same footage when they overlap by
 # at least this share of the shorter one. Lower than ``themes.dedupe``'s
 # half: that keeps two 6 s action windows 3 s apart, and a kneepuck at the
@@ -220,25 +221,28 @@ def _score(m: dict) -> float:
     return float(m["score"] or 0.0)
 
 
-def draw_round(moments: list[dict], each: int = ROUND_EACH) -> list[dict]:
-    """The next round from *moments* (the unrated ones): *each* the score
-    puts highest, *each* lowest and *each* from the middle, in that order,
-    each marked with its ``bucket``."""
+def draw_round(
+    moments: list[dict], size: int = ROUND_SIZE, rng: random.Random | None = None
+) -> list[dict]:
+    """The next round from *moments* (the unrated ones): the score's order
+    cut into *size* equal bands, one moment at random from each, shuffled.
+    So a round spans the whole score without picking the same kind of
+    moments each time. Each is marked with its ``bucket``: high, medium or
+    low, the third of the score it came from."""
+    rng = rng or random.Random()
     ranked = sorted(moments, key=lambda m: (-_score(m), m["day"], m["utc_start"], m["key"]))
-    if len(ranked) <= 3 * each:  # the last round: split what is left
-        high_n = -(-len(ranked) // 3)
-        high, rest = ranked[:high_n], ranked[high_n:]
-        low = rest[-high_n:] if rest else []
-        medium = rest[: len(rest) - len(low)]
-    else:
-        high, rest = ranked[:each], ranked[each:]
-        low, rest = rest[-each:], rest[:-each]
-        mid_at = max(0, len(rest) // 2 - each // 2)
-        medium = rest[mid_at : mid_at + each]
-    out = []
-    for bucket, group in (("high", high), ("low", low), ("medium", medium)):
-        for m in group:
-            out.append({**m, "bucket": bucket})
+    n = len(ranked)
+    if not n:
+        return []
+    picks = range(n) if n <= size else (
+        rng.randrange(b * n // size, (b + 1) * n // size) for b in range(size)
+    )
+    def bucket(i: int) -> str:
+        at = i / (n - 1) if n > 1 else 0.0
+        return "high" if at < 1 / 3 else "low" if at > 2 / 3 else "medium"
+
+    out = [{**ranked[i], "bucket": bucket(i)} for i in picks]
+    rng.shuffle(out)
     return out
 
 
@@ -578,7 +582,7 @@ kbd{background:#000;border:1px solid var(--line);border-radius:4px;padding:0 4px
   <select id="day"><option value="">All days</option></select>
   <select id="theme"><option value="">All themes</option></select>
   <select id="order">
-    <option value="rounds">Rounds: 5 high, 5 low, 5 medium</option>
+    <option value="rounds">Rounds: 15 at random across the score</option>
     <option value="time">Time order</option>
     <option value="score">Best score first</option>
     <option value="uncertain">Most uncertain first</option>
