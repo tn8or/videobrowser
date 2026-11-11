@@ -78,11 +78,7 @@ def list_moments(
     for row in rows:
         if day and row["date_label"] != day:
             continue
-        if theme and row["theme"] != theme:
-            continue
         vote = row["vote"] or 0
-        if unrated and vote != 0:
-            continue
         shown = _shown_files(files.get(row["clip_key"], []), under)
         if not shown:
             continue
@@ -110,7 +106,13 @@ def list_moments(
                 ],
             }
         )
+    # Grouped before the theme and unrated filters: a group counts as rated
+    # once any of its moments is, whichever way that vote came in.
     out = group_same_footage(out)
+    if theme:
+        out = [m for m in out if theme in m["themes"]]
+    if unrated:
+        out = [m for m in out if m["vote"] == 0]
     if order == "score":
         out.sort(key=lambda m: (-(m["score"] or 0.0), m["day"], m["utc_start"]))
     elif order == "uncertain":
@@ -185,8 +187,21 @@ def group_same_footage(moments: list[dict]) -> list[dict]:
         shown["also"] = [m["key"] for m in rest]
         shown["themes"] = list(dict.fromkeys([best["theme"], *(m["theme"] for m in rest)]))
         shown["also_at"] = [f"{m['theme']} @ {m['t_start']:.0f} s" for m in rest]
+        if shown["vote"] == 0:  # a vote on any of them is a vote on the footage
+            voted = next((m for m in rest if m["vote"] != 0), None)
+            if voted is not None:
+                shown["vote"], shown["tags"] = voted["vote"], voted["tags"]
         out.append(shown)
     return out
+
+
+def same_footage_keys(db: RatingsDB, key: str) -> list[str]:
+    """The other moments ``list_moments`` shows as the same footage as
+    *key*, worked out here and not taken from the page."""
+    for m in list_moments(db):
+        if key == m["key"] or key in m["also"]:
+            return [k for k in (m["key"], *m["also"]) if k != key]
+    return []
 
 
 def _score(m: dict) -> float:
@@ -398,13 +413,12 @@ class _Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length) or b"{}")
             key, vote = str(data["key"]), int(data["vote"])
             tags = [str(t)[:40] for t in data.get("tags", [])][:20]
-            also = [str(k) for k in data.get("also", [])][:200]
         except (ValueError, KeyError, TypeError):
             self._send_json({"error": "need key, vote and tags"}, HTTPStatus.BAD_REQUEST)
             return
         db = self._db()
         try:
-            keys = db.vote(key, vote, tags, also=also)
+            keys = db.vote(key, vote, tags, also=same_footage_keys(db, key))
             self._send_json({"ok": True, "keys": keys, "stats": db.stats()})
         except KeyError:
             self._send_json({"error": "no such moment"}, HTTPStatus.NOT_FOUND)
@@ -734,7 +748,7 @@ function show() {
 
 async function save(m) {
   const r = await fetch('/api/vote', {method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({key: m.key, vote: m.vote, tags: m.tags, also: m.also || []})});
+    body: JSON.stringify({key: m.key, vote: m.vote, tags: m.tags})});
   const data = await r.json();
   if (data.stats) showStats(data.stats);
   // The same footage in the other outputs got the vote too: with "unrated

@@ -179,7 +179,7 @@ def test_server_rounds_and_reweigh(server):
     result = _post(base + "/api/reweigh", {})
     assert result["ok"] and result["done"]
     for m in drawn:
-        _post(base + "/api/vote", {"key": m["key"], "vote": -1, "tags": [], "also": m["also"]})
+        _post(base + "/api/vote", {"key": m["key"], "vote": -1, "tags": []})
     assert json.loads(_get(base + "/api/moments?order=rounds")[2]) == []
 
 
@@ -356,6 +356,20 @@ def test_moments_sharing_a_copied_scan_clip_show_once_and_share_a_vote(tmp_path)
     assert one["key"] == keys[2] and sorted(one["also"]) == sorted(keys[:2])  # best score shown
     assert set(one["themes"]) == {"action", "kneepuck", "duel"}
     assert two["key"] == lone
-    db.vote(one["key"], 1, also=one["also"])
+    assert [m["key"] for m in list_moments(db, theme="kneepuck")] == [keys[2]]  # any of its themes finds it
+    # A vote on one of them alone (the vote command) rates the footage.
+    db.vote(keys[0], 1)
     assert [m["key"] for m in list_moments(db, unrated=True)] == [lone]
+    assert list_moments(db)[0]["vote"] == 1
     db.close()
+    # The page's vote reaches the whole group, worked out by the server:
+    # keys the page sends along are not taken.
+    srv = make_server(port=0, db_path=db_path, tags=[])
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        result = _post(f"http://127.0.0.1:{srv.server_address[1]}/api/vote",
+                       {"key": keys[2], "vote": -1, "tags": [], "also": [lone]})
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert sorted(result["keys"]) == sorted(keys)
