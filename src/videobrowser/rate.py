@@ -196,10 +196,11 @@ def group_same_footage(moments: list[dict]) -> list[dict]:
     return out
 
 
-def same_footage_keys(db: RatingsDB, key: str) -> list[str]:
+def same_footage_keys(db: RatingsDB, key: str, under: Path | None = None) -> list[str]:
     """The other moments ``list_moments`` shows as the same footage as
-    *key*, worked out here and not taken from the page."""
-    for m in list_moments(db):
+    *key* (with the same *under* as the page), worked out here and not
+    taken from the page."""
+    for m in list_moments(db, under=under):
         if key == m["key"] or key in m["also"]:
             return [k for k in (m["key"], *m["also"]) if k != key]
     return []
@@ -419,7 +420,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         db = self._db()
         try:
-            keys = db.vote(key, vote, tags, also=same_footage_keys(db, key))
+            keys = db.vote(key, vote, tags, also=same_footage_keys(db, key, self.under))
             self._send_json({"ok": True, "keys": keys, "stats": db.stats()})
         except KeyError:
             self._send_json({"error": "no such moment"}, HTTPStatus.NOT_FOUND)
