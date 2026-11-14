@@ -704,7 +704,7 @@ def train_cmd(args: argparse.Namespace) -> int:
                 m = json.loads(row["metrics"])
                 mark = "*" if found and found[0] == row["version"] else " "
                 print(f"{mark} v{row['version']}  {row['trained_at']}  {m.get('n')} votes  "
-                      f"accuracy {m.get('cv_accuracy')}  AUC {m.get('cv_auc')}")
+                      f"accuracy {m.get('cv_accuracy')}  AUC {m.get('cv_auc')} ({m.get('cv_by', 'random')})")
             return 0
         if args.use is not None:
             try:
