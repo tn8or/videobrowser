@@ -292,6 +292,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Share of the left-out moments kept anyway, so the model sees its low picks too (default 0.1)",
     )
     shorts.add_argument(
+        "--corners",
+        action="store_true",
+        help="Experiment: also cut the front cameras' sharpest corners (from GPS turn rate) as their own shorts",
+    )
+    shorts.add_argument(
         "--no-ratings",
         action="store_true",
         help="Don't register the moments in the ratings database (~/.videobrowser/ratings.sqlite)",
@@ -403,6 +408,7 @@ def shorts_cmd(args: argparse.Namespace) -> int:
         min_score=args.min_score,
         top=args.top,
         explore=args.explore,
+        corners=args.corners,
     )
     return 0
 

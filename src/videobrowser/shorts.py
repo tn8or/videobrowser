@@ -73,6 +73,7 @@ FILE_NAMES = {
     "crash_other": "mulige-styrt",
     "off_track": "grus",
     "own_off_track": "afkoersler",
+    "corner": "kurver",
 }
 # Themes need this many moments for a short of their own (a crash or an
 # off-track excursion needs one).
@@ -884,6 +885,79 @@ def turn_upside_down(day: DayData, spans: list[tuple[str, str, float, float]]) -
         day.rotations[rid] = (day.rotations[rid] + 180) % 360
 
 
+# Corner moments (``corner_moments``): a front camera sees few riders but a lot
+# of the bike's riding, so its moments come from the telemetry instead.
+CORNER_MIN_G = 0.5  # sideways acceleration (speed x turn rate) a corner must reach
+CORNER_MAX_G = 2.0  # more is a jump in the GPS heading, not a corner
+CORNER_PERCENTILE = 90.0  # ... and be among this share of the riding at track speed
+CORNER_APART_S = 20.0  # corners this close are one
+CORNER_PER_S = 1 / 120.0  # at most this many per second of recording
+CORNER_HALF_S = MIN_PIECE_S / 2  # the piece runs this far either side of the peak
+CORNER_OVERLAP = 0.3  # a corner that shares this much with a rider moment is left out
+
+
+def corner_moments(
+    day: DayData, existing: list[Moment], min_speed: float = DEFAULT_MIN_TRACK_KMH
+) -> list[Moment]:
+    """Moments around the sharpest corners of the front cameras, from the GPS
+    turn rate: where the bike turns hard at track speed. Those that overlap
+    a moment of other riders are left out (the rider moment is the better
+    story), and a recording without a speed trace gives none."""
+    out: list[Moment] = []
+    for rid, clock in day.clocks.items():
+        if day.facing(rid) != "front":
+            continue
+        speeds, turns = _day_gps(day, rid)
+        if len(turns) < 50 or len(speeds) < 50:
+            continue
+        ts = np.array([s.t for s in turns], dtype=float)
+        yaw = np.abs(np.array([s.yaw_rate for s in turns], dtype=float))
+        sp_t = np.array([s.t for s in speeds], dtype=float)
+        sp_v = np.array([s.speed_kmh for s in speeds], dtype=float)
+        kmh = np.interp(ts, sp_t, sp_v)
+        on_track = kmh >= max(min_speed, 1.0)
+        if on_track.sum() < 20:
+            continue
+        # One second of smoothing, so one noisy sample is not a corner.
+        step = float(np.median(np.diff(ts))) if len(ts) > 1 else 0.0
+        width = max(1, int(round(1.0 / step))) if step > 0 else 1
+        smooth = np.convolve(yaw, np.ones(width) / width, mode="same")
+        # Sideways acceleration, not turn rate: a slow hairpin turns fast but a
+        # fast sweeper is the harder corner.
+        smooth = smooth * np.radians(1.0) * kmh / 3.6 / 9.81
+        bar = max(CORNER_MIN_G, float(np.percentile(smooth[on_track], CORNER_PERCENTILE)))
+        taken: list[float] = []
+        limit = max(1, int(clock.duration * CORNER_PER_S))
+        for i in np.argsort(-smooth):
+            if smooth[i] < bar or len(taken) >= limit:
+                break
+            t = float(ts[i])
+            if smooth[i] > CORNER_MAX_G or not on_track[i] or any(abs(t - u) < CORNER_APART_S for u in taken):
+                continue
+            lo, hi = max(0.0, t - CORNER_HALF_S), min(clock.duration, t + CORNER_HALF_S)
+            if hi - lo < MIN_PIECE_S * 0.75:
+                continue
+            taken.append(t)
+            start = day.offset(rid)
+            m = Moment("corner", start + lo, start + hi, float(smooth[i]), [Segment(rid, lo, hi)])
+            m.why.append(f"corner: {smooth[i]:.2f} g sideways at {kmh[i]:.0f} km/h")
+            out.append(m)
+    kept: list[Moment] = []
+    for m in sorted(out, key=lambda m: -m.score):
+        dur = m.utc_end - m.utc_start
+        # Rider moments, and the same corner from another recording of the
+        # same footage, come first.
+        clash = any(
+            min(m.utc_end, o.utc_end) - max(m.utc_start, o.utc_start) > CORNER_OVERLAP * dur
+            for o in [*existing, *kept]
+        )
+        if not clash:
+            kept.append(m)
+    if kept:
+        print(f"  {len(kept)} corner moment(s) from the front cameras")
+    return kept
+
+
 def _tagged_moments(moments: list[Moment], day: DayData, spans) -> list[Moment]:
     """The moments whose first piece overlaps a tagged span of its recording."""
     flagged = [(rid, lo, hi) for label, rid, lo, hi in spans if label == day.date_label]
@@ -1619,8 +1693,10 @@ def build_shorts(
     min_score: float = 0.0,
     top: float = 0.0,
     explore: float = 0.1,
+    corners: bool = False,
 ) -> dict[str, list[Path]]:
-    """*ratings*: register the day's moments and their files in the local
+    """*corners*: add moments around the sharpest corners of the front
+    cameras (``corner_moments``). *ratings*: register the day's moments and their files in the local
     ratings database (``ratings.py``). *min_score* / *top* / *explore*:
     skip moments the learned score rates low (``learn.gate``)."""
     db = ScanDB.open(out_dir / "scan.sqlite")
@@ -1676,6 +1752,8 @@ def build_shorts(
             day, crashes=crashes, min_speed=min_speed, max_vehicle_share=max_vehicle_share,
             left_out=left_out,
         )
+        if corners:
+            moments = moments + corner_moments(day, moments, min_speed)
         if not_together_spans:
             moments = not_together(moments, day, not_together_spans)
         if any(tag_spans.values()):

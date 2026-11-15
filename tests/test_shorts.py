@@ -757,3 +757,26 @@ def test_crash_seen_makes_a_crash_other_moment_that_is_never_skipped():
     m = Moment("action", 10.0, 18.0, 1.0, [Segment("A", 10.0, 18.0)])
     (out,) = apply_tags([m], day, {"crash seen": [("d", "A", 9.0, 19.0)]})
     assert out.theme == "crash_other" and out.keep and out.score > 1.0
+
+
+def test_corner_moments_come_from_the_front_cameras_hardest_turns(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+    from videobrowser.telemetry import SpeedSample, TurnSample
+
+    clocks = {"F": CameraClock("F", 1000.0, 600.0, []), "R": CameraClock("R", 1000.0, 600.0, [])}
+    day = shorts.DayData("d", clocks, {"F": "x", "R": "x"}, {"F": 0, "R": 0}, [], [])
+    day.facings = {"F": "front", "R": "rear"}
+    speeds = [SpeedSample(t / 10, 100.0) for t in range(6000)]
+    # Two sharp corners (at 100 s and 300 s: 100 km/h at 30 deg/s is ~1.5 g sideways);
+    # gentle turning otherwise.
+    turns = [
+        TurnSample(t / 10, 30.0 if 99 <= t / 10 <= 101 or 299 <= t / 10 <= 301 else 5.0) for t in range(6000)
+    ]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: (speeds, turns))
+    found = shorts.corner_moments(day, [])
+    assert sorted(round(m.segments[0].t_start + 4) for m in found) == [100, 300]  # front camera only
+    assert all(m.theme == "corner" and m.segments[0].recording_id == "F" for m in found)
+    # A moment of other riders over the same seconds wins.
+    rider = shorts.Moment("overtake", 1096.0, 1104.0, 1.0, [shorts.Segment("F", 96.0, 104.0)])
+    assert len(shorts.corner_moments(day, [rider])) == 1

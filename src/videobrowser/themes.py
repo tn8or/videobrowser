@@ -40,11 +40,12 @@ LABELS = {
     "off_track": "UDE I GRUSET",
     "own_off_track": "AFKØRSEL",
     "action": "ACTION",
+    "corner": "KURVE",
 }
 # Order themed shorts are written in.
 THEME_ORDER = (
     "overtake", "overtaken", "catching_up", "duel", "kneepuck", "crash", "crash_other", "off_track",
-    "own_off_track",
+    "own_off_track", "corner",
 )
 
 # Rear camera must pick the rider up within this window around the front
