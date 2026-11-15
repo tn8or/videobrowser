@@ -9,8 +9,9 @@ On the page: ↑/K up, ↓/J down, 0 clears, →/space next, ← back, 1-9 toggl
 the quick tags, which can also be clicked with the mouse. The tag "not
 together" says a moment's cameras do not belong together (wrong sync), and
 the next ``shorts`` run leaves the other camera out. By default it
-goes in rounds of 15 unrated moments drawn at random across the score, one
-from each fifteenth of it, in random order; then the score is re-weighed
+goes in rounds of 15 unrated moments, mostly from the days with the fewest
+up/down votes so far (the score is learned within days), spread across each
+day's score and shown in random order; then the score is re-weighed
 from the votes (``learn.py``) and the next round drawn. Stopping the server re-weighs once more.
 
 Only files the ratings database lists for this machine are served, and only
@@ -33,14 +34,26 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from videobrowser.ratings import NOT_TOGETHER, RatingsDB
+from videobrowser.ratings import (
+    BAD_PICTURE,
+    CRASH_SEEN,
+    NOT_TOGETHER,
+    PADDOCK,
+    UPSIDE_DOWN,
+    WRONG_CAMERA,
+    WRONG_THEME,
+    RatingsDB,
+)
 
 DEFAULT_PORT = 8765
 # ``NOT_TOGETHER``: the moment's cameras do not show the same seconds (wrong
 # sync); the next ``shorts`` run leaves the other camera out. "wrong theme":
 # the detector named it wrong (e.g. catching up while the others pull away),
 # which the up/down vote on the clip itself says nothing about.
-DEFAULT_TAGS = ("great", "boring", "paddock", "wrong camera", "bad picture", NOT_TOGETHER, "wrong theme")
+# ``UPSIDE_DOWN``: the next ``shorts`` run turns that recording round.
+DEFAULT_TAGS = (
+    "great", "boring", PADDOCK, WRONG_CAMERA, BAD_PICTURE, NOT_TOGETHER, WRONG_THEME, UPSIDE_DOWN, CRASH_SEEN
+)
 # Which files show a moment, best first: a short's pieces show every camera.
 KIND_ORDER = ("short", "vertical", "horizontal")
 ORDERS = ("rounds", "time", "score", "uncertain")
@@ -48,6 +61,7 @@ ORDERS = ("rounds", "time", "score", "uncertain")
 # (one from each equal band of it) and shown in random order. After each
 # round the score is re-weighed (``reweigh``) and the next round drawn with it.
 ROUND_SIZE = 15
+SMALL_DAY = 8  # moments (rated or not) a day needs to count in full when drawing a round
 # Two moments on one recording show the same footage when they overlap by
 # at least this share of the shorter one. Lower than ``themes.dedupe``'s
 # half: that keeps two 6 s action windows 3 s apart, and a kneepuck at the
@@ -221,27 +235,83 @@ def _score(m: dict) -> float:
     return float(m["score"] or 0.0)
 
 
+def day_votes(moments: list[dict]) -> dict[str, tuple[int, int]]:
+    """{day: (ups, downs)} among the rated *moments* (grouped, so the same
+    footage counts once)."""
+    out: dict[str, list[int]] = {}
+    for m in moments:
+        counts = out.setdefault(m["day"], [0, 0])
+        if m["vote"] > 0:
+            counts[0] += 1
+        elif m["vote"] < 0:
+            counts[1] += 1
+    return {d: (u, n) for d, (u, n) in out.items()}
+
+
+def _allocate(by_day: dict[str, list[int]], votes: dict[str, tuple[int, int]], size: int,
+              rng: random.Random) -> dict[str, int]:
+    """How many of a round's *size* slots each day gets. What teaches the
+    score most is an up and a down vote on the same day (it is ranked
+    within days), so a day's need is 1 / (1 + the smaller of its ups and
+    downs so far + half what it already got this round): unrated days first,
+    then the ones with the fewest pairs, no day taking the whole round."""
+    left = {d: len(idx) for d, idx in by_day.items()}
+    got = {d: 0 for d in by_day}
+    for _ in range(min(size, sum(left.values()))):
+        def need(d: str) -> float:
+            u, n = votes.get(d, (0, 0))
+            # A day too small to make up/down pairs from counts for less.
+            size_ = min(1.0, (len(by_day[d]) + u + n) / SMALL_DAY)
+            return size_ * rng.uniform(0.85, 1.15) / (1 + min(u, n) + 0.5 * got[d])
+        day = max((d for d in left if left[d] > got[d]), key=need)
+        got[day] += 1
+    return {d: k for d, k in got.items() if k}
+
+
 def draw_round(
-    moments: list[dict], size: int = ROUND_SIZE, rng: random.Random | None = None
+    moments: list[dict],
+    size: int = ROUND_SIZE,
+    rng: random.Random | None = None,
+    votes: dict[str, tuple[int, int]] | None = None,
 ) -> list[dict]:
-    """The next round from *moments* (the unrated ones): the score's order
-    cut into *size* equal bands, one moment at random from each, shuffled.
-    So a round spans the whole score without picking the same kind of
-    moments each time. Each is marked with its ``bucket``: high, medium or
-    low, the third of the score it came from."""
+    """The next round from *moments* (the unrated ones). *votes*: {day: (ups,
+    downs)} so far (``day_votes``). The round goes to the days where a vote
+    teaches the score most (``_allocate``); within a day it spans that day's
+    score, one moment at random from each equal band of it, so it does not
+    pick the same kind each time. A day with far more downs than ups draws
+    from its better-scoring part, and the other way round, since the rarer
+    kind is what it lacks. Shuffled. Each is marked with its ``bucket``
+    (high, medium or low: the third of the whole score it came from) and a
+    ``why`` of its day."""
     rng = rng or random.Random()
     ranked = sorted(moments, key=lambda m: (-_score(m), m["day"], m["utc_start"], m["key"]))
     n = len(ranked)
     if not n:
         return []
-    picks = range(n) if n <= size else (
-        rng.randrange(b * n // size, (b + 1) * n // size) for b in range(size)
-    )
+    votes = votes or {}
+    by_day: dict[str, list[int]] = {}
+    for i, m in enumerate(ranked):
+        by_day.setdefault(m["day"], []).append(i)
+
     def bucket(i: int) -> str:
         at = i / (n - 1) if n > 1 else 0.0
         return "high" if at < 1 / 3 else "low" if at > 2 / 3 else "medium"
 
-    out = [{**ranked[i], "bucket": bucket(i)} for i in picks]
+    out = []
+    for day, k in _allocate(by_day, votes, size, rng).items():
+        idx = by_day[day]  # best score first
+        u, d = votes.get(day, (0, 0))
+        part = max(k, -(-len(idx) * 3 // 5))  # three fifths, at least k
+        if d > 3 * u and len(idx) > k:
+            idx, lack = idx[:part], "needs ups"
+        elif u > 3 * d and len(idx) > k:
+            idx, lack = idx[-part:], "needs downs"
+        else:
+            lack = ""
+        m_ = len(idx)
+        picks = [idx[rng.randrange(b * m_ // k, (b + 1) * m_ // k)] for b in range(k)] if m_ > k else idx
+        label = f"{day}: {u} up, {d} down" + (f" ({lack})" if lack else "")
+        out += [{**ranked[i], "bucket": bucket(i), "day_note": label} for i in picks]
     rng.shuffle(out)
     return out
 
@@ -254,10 +324,11 @@ def reweigh(db: RatingsDB) -> str:
     result = train(db)
     if result is None:
         return f"not enough votes to learn from yet (needs {MIN_VOTES}, some up and some down)"
-    auc = f", held-out AUC {result['cv_auc']:.2f}" if result.get("cv_auc") is not None else ""
+    kind = "unseen days" if result.get("cv_by") == "day" else "random votes, too few days to tell"
+    auc = f", AUC {result['cv_auc']:.2f} on {kind}" if result.get("cv_auc") is not None else ""
     return (
         f"model v{result['version']} from {result['n']} votes ({result['up']} up, {result['down']} down{auc}); "
-        f"counts {blend_weight(result['n']):.0%} against the hand-tuned score"
+        f"counts {blend_weight(result['n'], result):.0%} against the hand-tuned score"
     )
 
 
@@ -372,6 +443,7 @@ class _Handler(BaseHTTPRequestHandler):
                     order = q.get("order", "rounds")
                     if order not in ORDERS:
                         order = "rounds"
+                    everything = list_moments(db, under=self.under) if order == "rounds" else []
                     found = list_moments(
                         db,
                         day=q.get("day") or None,
@@ -380,7 +452,9 @@ class _Handler(BaseHTTPRequestHandler):
                         order="time" if order == "rounds" else order,
                         under=self.under,
                     )
-                    self._send_json(draw_round(found) if order == "rounds" else found)
+                    self._send_json(
+                        draw_round(found, votes=day_votes(everything)) if order == "rounds" else found
+                    )
                 finally:
                     db.close()
             elif m := re.fullmatch(r"/file/([0-9a-f]{1,64})/(\d+)", url.path):
@@ -582,7 +656,7 @@ kbd{background:#000;border:1px solid var(--line);border-radius:4px;padding:0 4px
   <select id="day"><option value="">All days</option></select>
   <select id="theme"><option value="">All themes</option></select>
   <select id="order">
-    <option value="rounds">Rounds: 15 at random across the score</option>
+    <option value="rounds">Rounds: 15 where a vote teaches most</option>
     <option value="time">Time order</option>
     <option value="score">Best score first</option>
     <option value="uncertain">Most uncertain first</option>
@@ -734,6 +808,8 @@ function show() {
   $('title').innerHTML = '';
   if (m.bucket) { const b = document.createElement('span'); b.className = 'bucket';
     b.textContent = `${m.bucket}`; $('title').append(b, ' '); }
+  if (m.day_note) { const b = document.createElement('span'); b.className = 'bucket';
+    b.textContent = m.day_note; $('title').append(b, ' '); }
   if (m.explore) { const b = document.createElement('span'); b.className = 'bucket';
     b.title = 'Kept although the learned score rates it low, so it can learn from your vote';
     b.textContent = 'explore'; $('title').append(b, ' '); }
@@ -746,6 +822,16 @@ function show() {
   $('why').innerHTML = '';
   for (const w of m.why) { const li = document.createElement('li'); li.textContent = w; $('why').appendChild(li); }
   if (!m.why.length) $('why').innerHTML = '<li class="dim">not recorded</li>';
+  // The speed the pace check went by, and where it came from (camera GPS,
+  // RaceBox, or none), so a wrong RaceBox placement shows against the video.
+  const fe = m.features || {};
+  if (fe.pace_from || fe.speed_kmh != null) {
+    const li = document.createElement('li');
+    const range = fe.speed_min != null && fe.speed_max != null
+      ? ` (${fe.speed_min.toFixed(0)}-${fe.speed_max.toFixed(0)} km/h in the moment)` : '';
+    li.textContent = `pace: ${fe.pace || '?'} · ${fe.pace_from || `${fe.speed_kmh.toFixed(0)} km/h`}${range}`;
+    $('why').appendChild(li);
+  }
   $('up').classList.toggle('on', m.vote > 0);
   $('down').classList.toggle('on', m.vote < 0);
   $('tags').innerHTML = '';

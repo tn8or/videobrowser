@@ -38,7 +38,10 @@ def test_rider_features_share_group_and_closing():
     assert _rider_features(_m(), Day()) == {}
 
 
-def test_new_features_reach_the_model_with_plain_names():
+def test_new_features_reach_the_model_with_plain_names(monkeypatch):
+    # Held back from the model for now (too few votes carry them), but named for when they return.
+    monkeypatch.setattr(learn, "NUMERIC", (*learn.NUMERIC, "brake_g", "lean_max"))
+    monkeypatch.setattr(learn, "USE_MISSING_FLAGS", True)
     vec = learn.vectorize({"brake_g": 0.9, "lean_max": 50.0, "closing": 0.01})
     assert vec["brake_g"] == 0.9 and vec["lean_max"] == 50.0 and vec["missing:group_share"] == 1
     assert learn._plain("lean_max") == "deepest lean" and learn._plain("missing:brake_g") == "no hard braking stored"

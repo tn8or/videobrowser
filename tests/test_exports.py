@@ -14,8 +14,8 @@ def _scan(out: Path, source: str) -> None:
                            [{"path": "R.mp4", "offset": 0.0, "duration": 60.0}], source)
     db.replace_events("R", [("R", "approaching_rider", 12.0, 14.0, 0.9, "7", None, "{}")])
     db.replace_clips("R", [(5.0, 20.0, "approaching_rider", 0.9, None, None)])
-    db.save_tracks("R", [TrackPoint(13.0, 10, 20, 110, 220, 0.9, 0, 7, 640, 360),
-                         TrackPoint(40.0, 10, 20, 110, 220, 0.9, 0, 7, 640, 360)])
+    db.save_tracks("R", [TrackPoint(13.0, 100, 20, 200, 220, 0.9, 0, 7, 640, 360),
+                         TrackPoint(40.0, 100, 20, 200, 220, 0.9, 0, 7, 640, 360)])
     db.close()
 
 
@@ -237,3 +237,25 @@ def test_learned_score_never_leaves_out_own_off_track_windows(tmp_path, monkeypa
     [(row, _)] = exports.windows_for(db, "R")
     assert verdicts[("R", row["id"])] is None
     db.close()
+
+
+def test_corner_pairs_for_one_recording_skip_clip_windows_and_other_recordings(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.clips import ClipWindow
+    from videobrowser.exports import _corner_pairs
+    from videobrowser.sync import CameraClock
+    from videobrowser.telemetry import SpeedSample, TurnSample
+
+    clocks = {"F": CameraClock("F", 1000.0, 600.0, []), "G": CameraClock("G", 5000.0, 600.0, [])}
+    day = shorts.DayData("d", clocks, {"F": "x", "G": "x"}, {"F": 0, "G": 0}, [], [])
+    day.facings = {"F": "front", "G": "front"}
+    speeds = [SpeedSample(t / 10, 100.0) for t in range(6000)]
+    turns = [TurnSample(t / 10, 30.0 if 99 <= t / 10 <= 101 or 299 <= t / 10 <= 301 else 5.0) for t in range(6000)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: (speeds, turns))
+    meta = {"date_label": "d", "recording_id": "F"}
+    found = _corner_pairs({"d": day}, meta, [], 40.0)
+    assert [w.types for _, w in found] == [["corner"], ["corner"]]
+    assert all(row["id"] == -1 for row, _ in found)
+    clip = ({"id": 7}, ClipWindow(95.0, 105.0, "F", ["nearby_rider"], 1.0, []))
+    assert len(_corner_pairs({"d": day}, meta, [clip], 40.0)) == 1  # the corner at 100 s is already a clip
+    assert _corner_pairs(None, meta, [], 40.0) == []

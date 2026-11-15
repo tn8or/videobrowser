@@ -178,6 +178,43 @@ def test_draw_round_spreads_at_random_across_the_score():
     assert sorted(m["key"] for m in few) == [f"k{n}" for n in range(7)]
 
 
+def _d(key, day, score):
+    return {"key": key, "score": score, "model_score": None, "day": day, "utc_start": 0.0, "vote": 0}
+
+
+def test_rounds_go_to_the_days_where_a_vote_teaches_most():
+    import random
+
+    from videobrowser.rate import draw_round
+
+    days = {"fresh": 40, "thin": 40, "done": 40, "downs": 40}
+    moments = [_d(f"{d}{n}", d, float(n)) for d in days for n in range(40)]
+    votes = {"thin": (2, 2), "done": (30, 30), "downs": (1, 25)}
+    totals = {d: 0 for d in days}
+    for seed in range(20):
+        drawn = draw_round(moments, size=15, rng=random.Random(seed), votes=votes)
+        assert len(drawn) == 15 and len({m["key"] for m in drawn}) == 15
+        for m in drawn:
+            totals[m["day"]] += 1
+        per_day = {d: sum(m["day"] == d for m in drawn) for d in days}
+        assert max(per_day.values()) < 15  # no day takes the whole round
+        # The day with only downs draws from its better-scoring part, to find the ups.
+        assert all(m["score"] >= 40 * 2 // 5 for m in drawn if m["day"] == "downs")
+        assert all(m["day_note"].startswith(m["day"]) for m in drawn)
+    assert totals["fresh"] > totals["thin"] > totals["done"]
+    assert totals["downs"] > totals["done"]
+    # Without vote counts every day is new: a spread, and every moment at most once.
+    assert len(draw_round(moments, size=15, rng=random.Random(1))) == 15
+
+
+def test_day_votes_counts_ups_and_downs_per_day():
+    from videobrowser.rate import day_votes
+
+    rows = [{"day": "a", "vote": 1}, {"day": "a", "vote": -1}, {"day": "a", "vote": -1},
+            {"day": "b", "vote": 0}, {"day": "c", "vote": 1}]
+    assert day_votes(rows) == {"a": (1, 2), "b": (0, 0), "c": (1, 0)}
+
+
 def test_server_rounds_and_reweigh(server):
     base, keys = server
     drawn = json.loads(_get(base + "/api/moments")[2])  # rounds by default, unrated only

@@ -22,14 +22,20 @@ def _voted_db(tmp_path, n=40):
     rng = np.random.default_rng(1)
     for i in range(n):
         riders = int(rng.integers(0, 6))
-        key = db.register(_rec(i, riders))
+        key = db.register(_rec(i, riders, day=f"2026-08-{1 + i % 4:02d}"))
         db.vote(key, 1 if riders >= 3 else -1, ["great"] if riders == 5 else [])
     return db
 
 
-def test_vectorize():
-    vec = learn.vectorize({"theme": "duel", "riders": 2, "kneepuck": True, "pace": "track",
-                           "cameras": ["front", "rear"], "event_types": ["rider_pass"], "speed_kmh": None})
+def test_vectorize(monkeypatch):
+    feats = {"theme": "duel", "riders": 2, "kneepuck": True, "pace": "track", "hour": 10,
+             "cameras": ["front", "rear"], "event_types": ["rider_pass"], "speed_kmh": None}
+    # By default only the numbers the model is meant to see.
+    assert learn.vectorize(feats) == {"riders": 2.0}
+    monkeypatch.setattr(learn, "FLAGS", ("kneepuck", "red_lamp"))
+    monkeypatch.setattr(learn, "USE_MISSING_FLAGS", True)
+    monkeypatch.setattr(learn, "USE_CATEGORIES", True)
+    vec = learn.vectorize(feats)
     assert vec["riders"] == 2 and vec["kneepuck"] == 1 and vec["theme=duel"] == 1
     assert vec["camera=rear"] == 1 and vec["event=rider_pass"] == 1 and vec["pace=track"] == 1
     assert vec["missing:speed_kmh"] == 1 and "speed_kmh" not in vec and "red_lamp" not in vec
@@ -38,6 +44,33 @@ def test_vectorize():
 def test_blend_weight():
     assert learn.blend_weight(10) == 0.0 and learn.blend_weight(30) == 0.0
     assert learn.blend_weight(115) == 0.5 and learn.blend_weight(500) == 1.0
+
+
+def test_blend_weight_follows_the_unseen_day_auc():
+    day = lambda auc: {"cv_by": "day", "cv_auc": auc}  # noqa: E731
+    assert learn.blend_weight(500, day(0.5)) == 0.0 and learn.blend_weight(500, day(0.4)) == 0.0
+    assert learn.blend_weight(500, day(0.65)) == 0.5 and learn.blend_weight(500, day(0.9)) == 1.0
+    assert learn.blend_weight(115, day(0.65)) == 0.25
+    # No honest estimate (random folds, an older model, no AUC): the hand-tuned score leads.
+    assert learn.blend_weight(500, {"cv_by": "random", "cv_auc": 0.99}) == 0.0
+    assert learn.blend_weight(500, {"cv_auc": 0.99}) == 0.0
+    assert learn.blend_weight(500, {"cv_by": "day", "cv_auc": None}) == 0.0
+
+
+def test_cross_validate_holds_whole_days_out():
+    rng = np.random.default_rng(0)
+    days = [f"d{i % 5}" for i in range(60)]
+    # Each day's own level decides the vote, so random folds look good and unseen days do not.
+    level = {d: rng.normal(0, 3) for d in set(days)}
+    feats = [{"riders": level[d] + rng.normal(0, 0.1)} for d in days]
+    y = np.array([1.0 if level[d] > 0 else 0.0 for d in days])
+    w = np.ones(60)
+    assert learn.cross_validate(feats, y, w)["cv_by"] == "random"
+    assert learn.cross_validate(feats, y, w, ["d0", "d1"] * 30)["cv_by"] == "random"  # fewer than MIN_DAYS
+    folds = learn._day_folds(days, 5)
+    assert sorted(i for f in folds for i in f) == list(range(60))
+    assert all(len({days[i] for i in f}) == 1 for f in folds)
+    assert learn.cross_validate(feats, y, w, days)["cv_by"] == "day"
 
 
 def test_train_learns_from_votes_scores_everything_and_explains(tmp_path):
@@ -70,7 +103,7 @@ def test_train_needs_enough_votes_both_ways_and_skips_spread_votes(tmp_path):
     # The same footage in another output got the vote too, but counts once.
     other = db.register(ClipRecord("2026-08-01", "GX000000", 600.0, "clip", 9.0, 19.0, 0.0, features={}))
     assert db.latest_vote(other) is not None  # inherited from keys[0]
-    feats, y, w = learn.training_set(db)
+    feats, y, w, days = learn.training_set(db)
     assert len(y) == 6
     db.close()
 
@@ -85,7 +118,7 @@ def test_new_moments_get_the_model_score_and_the_scorer_blends(tmp_path):
     assert row["model_score"] > 0.8 and row["model_version"] == 1
     db.close()
     scorer = learn.load_scorer(tmp_path / "r.sqlite")
-    assert scorer.version == 1 and scorer.weight == learn.blend_weight(40)
+    assert scorer.version == 1 and scorer.weight == learn.blend_weight(40, learn.current(RatingsDB.open(tmp_path / "r.sqlite"))[2])
     assert scorer.blend(1.0, 0.0) == scorer.weight
     assert learn.load_scorer(tmp_path / "none.sqlite") is None
 
@@ -177,3 +210,30 @@ def test_shorts_skip_low_scores_into_left_out(tmp_path):
     # Without a learned score nothing is skipped.
     plain = {k: (f, h, None) for k, (f, h, _) in known.items()}
     assert skip_low_scores([low, high], Day(), plain, [], 0.5, 0, 0.0) == [low, high]
+
+
+def test_day_auc_ignores_a_days_own_mix_and_finds_within_day_signal():
+    rng = np.random.default_rng(0)
+    days = [f"d{i % 6}" for i in range(120)]
+    base = {d: (1.0 if int(d[1:]) % 2 else 0.0) for d in set(days)}  # odd days mostly up
+    y = np.array([1.0 if rng.random() < (0.85 if base[d] else 0.15) else 0.0 for d in days])
+    w = np.ones(len(y))
+    # Only the day tells: unseen days can't be predicted from it, and the metric must not read it as signal.
+    day_only = [{"riders": rng.normal(10 * base[d], 0.1)} for d in days]
+    assert abs(learn.cross_validate(day_only, y, w, days)["cv_auc"] - 0.5) < 0.15
+    # A real within-day effect is found.
+    real = [{"riders": float(v) + rng.normal(0, 0.3)} for v in y]
+    assert learn.cross_validate(real, y, w, days)["cv_auc"] > 0.85
+    # A constant score is exactly a coin toss.
+    assert learn._within_day_auc(y, np.full(len(y), 0.3), np.array(days)) == 0.5
+
+
+def test_a_missing_number_counts_as_average_not_zero():
+    feats = [{"speed_min": s} for s in (100.0, 120.0, 140.0, 100.0, 140.0)] + [{}, {}]
+    y = np.array([0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0])
+    model = learn.fit(feats, y)
+    i = model.names.index("speed_min")
+    assert model.mean[i] == 120.0  # of the moments that have one
+    assert model.predict({"speed_min": 120.0}) != model.predict({"speed_min": 0.0})
+    x_missing = model.predict({})
+    assert np.isfinite(x_missing)

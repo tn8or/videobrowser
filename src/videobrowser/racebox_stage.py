@@ -59,6 +59,11 @@ from videobrowser.telemetry import (
     speed_series,
 )
 
+# Seconds the overlay's data runs ahead of the picture (``--overlay-shift``):
+# positive shows what the bike did later than the frame, which is what a
+# display that lags the picture needs; negative the opposite. An experiment
+# for judging by eye; 0 changes nothing.
+OVERLAY_SHIFT_S = 0.0
 _DEFAULT_FONT = "/System/Library/Fonts/Supplemental/Arial.ttf"
 _FASTEST_LAP_PAD = 10.0  # seconds of lead-in / lead-out around the fastest lap
 
@@ -447,6 +452,9 @@ def _pick_highlight_source(
     clip_end_utc: Optional[float],
     variant: str = "compact",
 ):
+    if clip_start_utc is not None and OVERLAY_SHIFT_S:
+        clip_start_utc += OVERLAY_SHIFT_S
+        clip_end_utc = clip_end_utc + OVERLAY_SHIFT_S if clip_end_utc is not None else None
     # 1. Overlapping RaceBox session -> compact overlay with track map.
     if clip_start_utc is not None and clip_end_utc is not None:
         matches = _sessions_overlapping(ctx.sessions, clip_start_utc, clip_end_utc)
@@ -469,7 +477,7 @@ def _pick_highlight_source(
             lean, speed = [], []
         if lean or speed:
             config = _render_config(ctx, width, height, fps, variant)
-            local_start = window.t_start - chapter.offset
+            local_start = window.t_start - chapter.offset + OVERLAY_SHIFT_S
             return _GpmdFrameSource(ctx, config, lean, speed, local_start, fps, clip_start_utc)
 
     # 3. Date/time only (requires a wall-clock timestamp).
