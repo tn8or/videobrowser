@@ -40,7 +40,8 @@ FOLDS = 5
 MIN_DAYS = 3
 AUC_FLOOR = 0.5
 AUC_FULL = 0.8
-TAG_WEIGHT = {"great": 2.0}
+# A reason given with a down vote counts for more than a bare thumb.
+TAG_WEIGHT = {"great": 2.0, "paddock": 2.0, "boring": 1.5, "bad picture": 1.5}
 # What the model sees. Chosen by a rule fixed beforehand, not by trying
 # features against the held-out score: a number must be there for at least
 # half the voted moments (``HELD_BACK`` are below that for now, mostly the

@@ -395,3 +395,17 @@ def test_dead_ffmpeg_pipe_on_windows_is_an_encode_failure(monkeypatch):
     monkeypatch.setattr(vertical.subprocess, "Popen", _Proc)
     with pytest.raises(RuntimeError, match="videotoolbox"):
         vertical._run_with_overlay(["ffmpeg"], lambda: _Source(), 3)
+
+
+def test_a_tall_sliver_at_the_frame_edge_is_the_own_bike_not_a_rider():
+    from videobrowser.events import ClipWindow
+    from videobrowser.riders import TrackPoint
+    from videobrowser.vertical import focus_samples
+
+    def box(t, tid, x1, y1, x2, y2):
+        return TrackPoint(t, x1, y1, x2, y2, 1.0, 3, tid, 640, 360)
+
+    rider = [box(10 + i * 0.2, 1, 380, 100, 400, 165) for i in range(10)]  # right of centre, small
+    exhaust = [box(10.4 + i * 0.2, 2, 0, 60, 38, 233) for i in range(6)]  # left edge, tall, 1.2 s
+    out = focus_samples(ClipWindow(10.0, 12.0, "R", [], 0.0, []), {1: rider, 2: exhaust})
+    assert out and all(s.cx > 0.5 for s in out)  # never swings to the left edge

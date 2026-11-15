@@ -110,7 +110,7 @@ def test_action_rows_keep_rider_height_and_read_old_rows(tmp_path):
     db.save_action("A", per_second({0: 1}, [(0.2, 0.0)], {0: 0.123}, {1}))
     db.save_action("B", [(0.5, 2, 0.0)])
     assert db.action() == {
-        "A": [(0.5, 1, 0.0, 0.123, 0), (1.5, 0, 0.0, 0.0, 1)],
-        "B": [(0.5, 2, 0.0, 0.0, 0)],
+        "A": [(0.5, 1, 0.0, 0.123, 0, 0), (1.5, 0, 0.0, 0.0, 1, 0)],
+        "B": [(0.5, 2, 0.0, 0.0, 0, 0)],
     }
     db.close()

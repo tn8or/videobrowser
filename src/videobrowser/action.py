@@ -25,6 +25,13 @@ MIN_RIDER_HEIGHT_FRAC = 0.03
 # person box overlapping it or above it.
 MIN_MOUNTED_SHARE = 0.3
 MIN_PERSON_OVERLAP = 0.2
+# Two boxes overlapping this much (intersection over union) are one bike.
+SAME_BIKE_IOU = 0.5
+# A bike box this share of the frame, in this many frames of a second, means
+# the camera looks at its own cockpit.
+OWN_VIEW_AREA_FRAC = 0.5
+OWN_VIEW_FRAMES = 1
+OWN_VIEW_CLASSES = frozenset({2, 3, 5, 7})  # car, motorcycle, bus, truck
 
 # Kerb pixels are red or white next to the other colour, in the lower part
 # of the frame (the ground near the bike), compared at this width (px).
@@ -65,20 +72,73 @@ def mounted_tracks(tracks: dict[int, list[TrackPoint]]) -> set[int]:
     return mounted
 
 
-def riders_per_second(tracks: dict[int, list[TrackPoint]]) -> dict[int, int]:
-    """Most other riders (bikes with a person on) seen in one frame, per whole second."""
+def _counts(p: TrackPoint) -> bool:
+    return p.cls == MOTORCYCLE and p.height_frac >= MIN_RIDER_HEIGHT_FRAC
+
+
+def _iou(a: TrackPoint, b: TrackPoint) -> float:
+    w = min(a.x2, b.x2) - max(a.x1, b.x1)
+    h = min(a.y2, b.y2) - max(a.y1, b.y1)
+    if w <= 0 or h <= 0:
+        return 0.0
+    inter = w * h
+    return inter / max(a.area + b.area - inter, 1e-9)
+
+
+def rider_points(tracks: dict[int, list[TrackPoint]]) -> list[TrackPoint]:
+    """The boxes ``riders_per_second`` counts: other riders' bikes big enough
+    to matter. Stored beside the event windows' tracks, so a short cut from
+    the source can follow a rider outside any window."""
     mounted = mounted_tracks(tracks)
-    per_frame: dict[float, set[int]] = {}
+    return [
+        p
+        for track_id, points in tracks.items()
+        if track_id in mounted and not is_ego_track(points)
+        for p in points
+        if _counts(p)
+    ]
+
+
+def riders_per_second(tracks: dict[int, list[TrackPoint]]) -> dict[int, int]:
+    """Most other riders (bikes with a person on) seen in one frame, per whole second.
+
+    The tracker sometimes puts two tracks on one bike (two boxes in nearly the
+    same place); boxes overlapping by ``SAME_BIKE_IOU`` count once."""
+    mounted = mounted_tracks(tracks)
+    per_frame: dict[float, list[TrackPoint]] = {}
     for track_id, points in tracks.items():
         if track_id not in mounted or is_ego_track(points):
             continue
         for p in points:
-            if p.cls == MOTORCYCLE and p.height_frac >= MIN_RIDER_HEIGHT_FRAC:
-                per_frame.setdefault(p.t, set()).add(track_id)
+            if _counts(p):
+                per_frame.setdefault(p.t, []).append(p)
     out: dict[int, int] = {}
-    for t, ids in per_frame.items():
-        out[int(t)] = max(out.get(int(t), 0), len(ids))
+    for t, boxes in per_frame.items():
+        distinct: list[TrackPoint] = []
+        for box in sorted(boxes, key=lambda b: -b.area):
+            if not any(_iou(box, d) >= SAME_BIKE_IOU for d in distinct):
+                distinct.append(box)
+        out[int(t)] = max(out.get(int(t), 0), len(distinct))
     return out
+
+
+def own_view_frame(points: list[TrackPoint]) -> bool:
+    """True when one frame has a box of a bike or vehicle class filling
+    ``OWN_VIEW_AREA_FRAC`` of the picture. Seen from right up against the
+    cockpit, the tracker calls the bike a motorcycle one moment and a car the
+    next, so every vehicle class counts (the rider boxes drop cars later)."""
+    return any(p.cls in OWN_VIEW_CLASSES and p.area_frac >= OWN_VIEW_AREA_FRAC for p in points)
+
+
+def own_view_per_second(samples: list[tuple[float, bool]]) -> set[int]:
+    """Whole seconds where the camera looks at its own bike: ``own_view_frame``
+    held in ``OWN_VIEW_FRAMES`` frames or more (the camera was knocked or
+    turned down at the cockpit)."""
+    seen: dict[int, int] = {}
+    for t, flag in samples:
+        if flag:
+            seen[int(t)] = seen.get(int(t), 0) + 1
+    return {k for k, n in seen.items() if n >= OWN_VIEW_FRAMES}
 
 
 def nearest_rider_per_second(tracks: dict[int, list[TrackPoint]]) -> dict[int, float]:
@@ -89,7 +149,7 @@ def nearest_rider_per_second(tracks: dict[int, list[TrackPoint]]) -> dict[int, f
         if track_id not in mounted or is_ego_track(points):
             continue
         for p in points:
-            if p.cls == MOTORCYCLE and p.height_frac >= MIN_RIDER_HEIGHT_FRAC:
+            if _counts(p):
                 out[int(p.t)] = max(out.get(int(p.t), 0.0), p.height_frac)
     return out
 
@@ -138,15 +198,18 @@ def per_second(
     kerbs: list[tuple[float, float]],
     nearest: dict[int, float] | None = None,
     red_lamp: set[int] | None = None,
-) -> list[tuple[float, int, float, float, int]]:
+    own_view: set[int] | None = None,
+) -> list[tuple[float, int, float, float, int, int]]:
     """(t, most riders in one frame, share of frames with a kerb close,
-    height of the nearest rider, 1 with a red signal lamp blinking) per second."""
+    height of the nearest rider, 1 with a red signal lamp blinking, 1 with the
+    camera looking at its own cockpit) per second."""
     close: dict[int, list[float]] = {}
     for t, share in kerbs:
         close.setdefault(int(t), []).append(1.0 if share >= KERB_CLOSE_SHARE else 0.0)
     nearest = nearest or {}
     red_lamp = red_lamp or set()
-    seconds = sorted(set(riders) | set(close) | red_lamp)
+    own_view = own_view or set()
+    seconds = sorted(set(riders) | set(close) | red_lamp | own_view)
     return [
         (
             k + 0.5,
@@ -154,6 +217,7 @@ def per_second(
             float(np.mean(close[k])) if k in close else 0.0,
             nearest.get(k, 0.0),
             1 if k in red_lamp else 0,
+            1 if k in own_view else 0,
         )
         for k in seconds
     ]
@@ -193,6 +257,11 @@ def action_density(samples: list[tuple], t0: float, t1: float) -> float | None:
             near = UNKNOWN_NEAR
         vals.append(min(riders, MAX_RIDERS) * near + KERB_WEIGHT * kerb)
     return float(np.mean(vals)) if vals else None
+
+
+def own_view_seconds(samples: list[tuple]) -> set[int]:
+    """Whole seconds in which the camera looks at its own cockpit."""
+    return {int(row[0]) for row in samples if len(row) > 5 and row[5]}
 
 
 def red_lamp_in(samples: list[tuple], t0: float, t1: float) -> bool:

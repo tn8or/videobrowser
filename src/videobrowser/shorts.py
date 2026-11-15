@@ -107,6 +107,9 @@ KNEE_BONUS = 1.0
 # Every piece of a short is at least this long (s): shorter ones are too
 # short to use. A moment on a recording shorter than this is left out.
 MIN_PIECE_S = 8.0
+# A piece cut short where the camera looks at its own cockpit stays if at
+# least this long (s), even under ``MIN_PIECE_S``.
+OWN_VIEW_MIN_KEEP_S = 3.0
 # Leave out moments with a red signal lamp blinking (session over). Off: on
 # real footage (2026-07-31) it fired all through the sessions on the rear
 # cameras, at 60-170 km/h, likely on our own brake light, and left out most
@@ -734,7 +737,7 @@ def day_moments(
         print(f"  {len(moments) - len(kept_r)} moment(s) with a red signal lamp left out (session over)")
     moments = _with_action(kept_r, day, dropped)
     if min_speed <= 0:
-        return _at_least(moments, day, dropped)
+        return _trim_own_view(_at_least(moments, day, dropped), day, dropped)
     kept: list[Moment] = []
     stopped = slow = gated = 0
     for m in moments:
@@ -763,7 +766,62 @@ def day_moments(
             f"  left out: {stopped} moment(s) standing still, {slow} not shown on track (paddock or unknown"
             + (f"; {gated} of them off track by the bridges)" if gated else ")")
         )
-    return _at_least(kept, day, dropped)
+    return _trim_own_view(_at_least(kept, day, dropped), day, dropped)
+
+
+def _trim_own_view(moments: list[Moment], day: DayData, left_out: list[Moment]) -> list[Moment]:
+    """Cut the seconds off each piece's ends where the camera looks at its own
+    cockpit (knocked or turned down), which the scan flags per second. A piece
+    left with under ``OWN_VIEW_MIN_KEEP_S`` goes; a moment with no piece left
+    is left out. Runs after ``_at_least``, which would widen them again."""
+    from videobrowser.action import own_view_seconds
+
+    kept: list[Moment] = []
+    trimmed = 0
+    for m in moments:
+        pieces: list[Segment] = []
+        changed = False
+        for seg in m.segments:
+            flagged = own_view_seconds(day.action.get(seg.recording_id, []))
+            lo, hi = seg.t_start, seg.t_end
+            cut_end = False
+            while hi > lo and int(hi - 1e-6) in flagged:
+                hi = float(int(hi - 1e-6))
+                cut_end = True
+            if cut_end:
+                # The camera turns down at the cockpit just as the rider
+                # drops out of the picture: end on the rider, not on the
+                # empty seconds between.
+                riders = {int(r[0]): r[1] for r in day.action.get(seg.recording_id, [])}
+                end = hi
+                while end - lo > OWN_VIEW_MIN_KEEP_S and riders.get(int(end - 1e-6), 1) == 0:
+                    end = float(int(end - 1e-6))
+                if riders.get(int(end - 1e-6), 0):
+                    hi = end
+            while lo < hi and int(lo) in flagged:
+                lo = float(int(lo) + 1)
+            if (lo, hi) == (seg.t_start, seg.t_end):
+                pieces.append(seg)
+                continue
+            changed = True
+            if hi - lo >= OWN_VIEW_MIN_KEEP_S:
+                pieces.append(Segment(seg.recording_id, lo, hi))
+        if not changed:
+            kept.append(m)
+            continue
+        if not pieces:
+            m.why.append("left out: the camera looks at its own cockpit")
+            left_out.append(m)
+            continue
+        m.segments = pieces
+        m.utc_start = day.offset(pieces[0].recording_id) + pieces[0].t_start
+        m.utc_end = day.offset(pieces[-1].recording_id) + pieces[-1].t_end
+        m.why.append("cut where the camera looks at its own cockpit")
+        kept.append(m)
+        trimmed += 1
+    if trimmed:
+        print(f"  {trimmed} moment(s) cut where the camera looks at its own cockpit")
+    return kept
 
 
 def _red_lamp(m: Moment, day: DayData) -> bool:
@@ -804,6 +862,62 @@ def _at_least(moments: list[Moment], day: DayData, left_out: list[Moment]) -> li
         m.segments = pieces
         kept.append(m)
     return kept
+
+
+def turn_upside_down(day: DayData, spans: list[tuple[str, str, float, float]]) -> None:
+    """Turn a recording half a turn where the rating page says one of its
+    moments is shown upside down (``ratings.UPSIDE_DOWN``). The scan's
+    rotation stays as it is; this is applied afresh on every run."""
+    # Once per recording, however many of its moments are tagged.
+    turned = {rid for label, rid, _lo, _hi in spans if label == day.date_label}
+    for rid in turned & day.rotations.keys():
+        day.rotations[rid] = (day.rotations[rid] + 180) % 360
+
+
+def _tagged_moments(moments: list[Moment], day: DayData, spans) -> list[Moment]:
+    """The moments whose first piece overlaps a tagged span of its recording."""
+    flagged = [(rid, lo, hi) for label, rid, lo, hi in spans if label == day.date_label]
+    return [
+        m for m in moments
+        if any(
+            m.segments[0].recording_id == rid and min(hi, m.segments[0].t_end) > max(lo, m.segments[0].t_start)
+            for rid, lo, hi in flagged
+        )
+    ]
+
+
+def apply_tags(moments: list[Moment], day: DayData, tagged: dict[str, list]) -> list[Moment]:
+    """Act on the quick tags from the rating page (``ratings.PADDOCK`` etc.).
+
+    *tagged*: tag -> its spans (``ratings.tagged_spans``). "paddock" leaves
+    the moment out; "wrong camera" and "bad picture" leave out the shown
+    camera's pieces (the moment too when no other camera is left); "wrong
+    theme" moves the moment to the mixed action shorts."""
+    from videobrowser.ratings import BAD_PICTURE, PADDOCK, WRONG_CAMERA, WRONG_THEME
+
+    drop: dict[int, str] = {}
+    for m in _tagged_moments(moments, day, tagged.get(PADDOCK, [])):
+        drop[id(m)] = "paddock (rated)"
+    for tag in (WRONG_CAMERA, BAD_PICTURE):
+        for m in _tagged_moments(moments, day, tagged.get(tag, [])):
+            if id(m) in drop:
+                continue
+            rid = m.segments[0].recording_id
+            keep = [s for s in m.segments if s.recording_id != rid]
+            if not keep:
+                drop[id(m)] = f"{tag} (rated)"
+                continue
+            m.segments = keep
+            m.utc_start = day.offset(keep[0].recording_id) + keep[0].t_start
+            m.utc_end = day.offset(keep[-1].recording_id) + keep[-1].t_end
+            m.why.append(f"left out camera {rid}: {tag} (rated)")
+    for m in _tagged_moments(moments, day, tagged.get(WRONG_THEME, [])):
+        if m.theme != "action" and id(m) not in drop:
+            m.why.append(f"was {m.theme}: wrong theme (rated)")
+            m.theme = "action"
+    if drop:
+        print(f"  {len(drop)} moment(s) left out by their rating tags")
+    return [m for m in moments if id(m) not in drop]
 
 
 def not_together(
@@ -1506,11 +1620,22 @@ def build_shorts(
         from videobrowser.learn import load_scorer
 
         scorer = load_scorer()
+        if scorer is not None and scorer.weight <= 0 and (min_score > 0 or top > 0):
+            # A model that does not predict unseen days (too few votes or
+            # days) must not decide what is left out: take everything.
+            print("shorts: the learned score is not reliable yet, so nothing is left out by it")
+            min_score = top = 0.0
     not_together_spans = []
+    upside_down_spans = []
+    tag_spans: dict = {}
     if ratings:
-        from videobrowser.ratings import NOT_TOGETHER, tagged_spans
+        from videobrowser.ratings import NOT_TOGETHER, UPSIDE_DOWN, tagged_spans
 
         not_together_spans = tagged_spans(NOT_TOGETHER)
+        upside_down_spans = tagged_spans(UPSIDE_DOWN)
+        from videobrowser.ratings import BAD_PICTURE, PADDOCK, WRONG_CAMERA, WRONG_THEME
+
+        tag_spans = {t: tagged_spans(t) for t in (PADDOCK, WRONG_CAMERA, BAD_PICTURE, WRONG_THEME)}
     from videobrowser.racebox_align import load_track
 
     track = load_track(sessions_dir)
@@ -1521,6 +1646,8 @@ def build_shorts(
             f"[day {d} of {len(picked)}] shorts {label}: "
             f"{len(day.clocks)} camera recording(s), {len(day.events)} events"
         )
+        if upside_down_spans:
+            turn_upside_down(day, upside_down_spans)
         place_without_gps(day, track)
         align(list(day.clocks.values()), racebox_offset=rb_offset, use_audio=audio_sync)
         left_out: list[Moment] = []
@@ -1530,6 +1657,8 @@ def build_shorts(
         )
         if not_together_spans:
             moments = not_together(moments, day, not_together_spans)
+        if any(tag_spans.values()):
+            moments = apply_tags(moments, day, tag_spans)
         known = learned_scores(moments, day, scorer, min_speed)
         moments = skip_low_scores(moments, day, known, left_out, min_score, top, explore, min_speed)
         plans = plan_shorts(moments, max_seconds, max_action_shorts)

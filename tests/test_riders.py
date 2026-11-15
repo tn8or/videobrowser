@@ -41,6 +41,22 @@ def test_own_exhaust_on_the_frame_edge_is_not_a_rider():
     assert not is_ego_track(closing)
 
 
+def test_cockpit_part_away_from_the_edge_is_not_a_rider():
+    fh, fw = 360, 640
+    part = [
+        TrackPoint(t=i * 0.2, x1=200, y1=60, x2=330, y2=60 + 0.55 * fh, conf=0.7, cls=3,
+                   track_id=1, frame_w=fw, frame_h=fh)
+        for i in range(20)
+    ]
+    assert is_ego_track(part)
+    small = [
+        TrackPoint(t=i * 0.2, x1=200, y1=100, x2=230, y2=150, conf=0.7, cls=3,
+                   track_id=1, frame_w=fw, frame_h=fh)
+        for i in range(20)
+    ]
+    assert not is_ego_track(small)  # a rider holding the gap, mid-frame
+
+
 def test_fp16_uses_quantize_when_ultralytics_has_it(monkeypatch):
     import sys
     import types
@@ -210,3 +226,52 @@ def test_person_boxes_do_not_pair_with_their_bike():
     for p in tracks[2]:
         p.cls = 0
     assert score_passes(tracks, "GX-0020") == []
+
+
+def _box(t, track_id, x1, y1, x2, y2, fw=640, fh=360):
+    return TrackPoint(t, x1, y1, x2, y2, 0.6, 3, track_id, fw, fh)
+
+
+def _man(t, track_id, x1, y1, x2, y2, fw=640, fh=360):
+    return TrackPoint(t, x1, y1, x2, y2, 0.6, 0, track_id, fw, fh)
+
+
+def test_two_tracks_on_one_bike_count_as_one_rider():
+    from videobrowser.action import riders_per_second
+
+    tracks = {
+        1: [_box(i * 0.2, 1, 400, 110, 440, 165) for i in range(10)],
+        2: [_box(i * 0.2, 2, 402, 112, 436, 165) for i in range(10)],
+        3: [_man(i * 0.2, 3, 405, 80, 435, 140) for i in range(10)],
+    }
+    assert riders_per_second(tracks) == {0: 1, 1: 1}
+    tracks[4] = [_box(i * 0.2, 4, 100, 110, 140, 165) for i in range(10)]
+    tracks[5] = [_man(i * 0.2, 5, 105, 80, 135, 140) for i in range(10)]
+    assert riders_per_second(tracks) == {0: 2, 1: 2}  # a second rider elsewhere still counts
+
+
+def test_a_box_filling_the_frame_is_the_cockpit_in_view():
+    from videobrowser.action import own_view_frame, own_view_per_second
+
+    def frame(cls):
+        return [TrackPoint(318.0, 0, 3, 630, 355, 0.6, cls, 1, 640, 360)]
+
+    # The tracker flips between car and motorcycle for the cockpit: both count.
+    assert own_view_frame(frame(2)) and own_view_frame(frame(3))
+    assert not own_view_frame(frame(0))  # a person does not
+    assert not own_view_frame([_box(318.0, 1, 400, 110, 440, 165)])  # a rider ahead
+    flagged = [(318.0 + i * 0.2, True) for i in range(5)]
+    assert own_view_per_second(flagged) == {318}
+    assert own_view_per_second([(318.0, True), (319.0, False)]) == {318}
+    assert own_view_per_second([(318.0, False)]) == set()
+
+
+def test_rider_points_are_the_boxes_counted_as_riders():
+    from videobrowser.action import rider_points
+
+    tracks = {
+        1: [_box(i * 0.2, 1, 400, 110, 440, 165) for i in range(10)],  # a bike with a person on
+        2: [_man(i * 0.2, 2, 405, 80, 435, 140) for i in range(10)],
+        3: [_box(i * 0.2, 3, 100, 110, 140, 165) for i in range(10)],  # a parked bike: nobody on it
+    }
+    assert {p.track_id for p in rider_points(tracks)} == {1}

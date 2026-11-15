@@ -41,6 +41,17 @@ VOTES = (-1, 0, 1)
 # The quick tag for a moment whose cameras do not show the same seconds
 # (wrong sync between them): ``shorts`` then leaves the other camera out.
 NOT_TOGETHER = "not together"
+# A moment shown upside down: ``shorts`` turns its first camera's recording
+# round (the sky was too hard to see when the scan picked the rotation).
+UPSIDE_DOWN = "upside down"
+# Quick tags ``shorts`` acts on when it cuts again (``shorts.apply_tags``):
+# the whole moment is left out ("paddock"), only the shown camera's pieces
+# ("wrong camera", "bad picture"), or the moment moves to the mixed action
+# shorts ("wrong theme").
+PADDOCK = "paddock"
+WRONG_CAMERA = "wrong camera"
+BAD_PICTURE = "bad picture"
+WRONG_THEME = "wrong theme"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (

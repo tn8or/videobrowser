@@ -679,3 +679,66 @@ def test_cameras_rated_not_together_are_left_apart_all_day():
     assert [s.recording_id for s in out[1].segments] == ["F"]  # the same pair, F first
     assert [s.recording_id for s in out[2].segments] == ["R", "H"]  # another pair: kept
     assert "not together" in out[0].why[-1]
+
+
+def test_a_piece_is_cut_where_the_camera_looks_at_its_own_cockpit():
+    from videobrowser import shorts
+    from videobrowser.sync import CameraClock
+
+    day = shorts.DayData("2026-08-02", {"F": CameraClock("F", 1000.0, 600.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    day.action["F"] = [(t + 0.5, 1, 0.0, 0.1, 0, 1 if t >= 317 else 0) for t in range(300, 330)]
+    moment = Moment("overtaken", 1311.0, 1319.0, 1.0, [Segment("F", 311, 319)])
+    gone = Moment("overtaken", 1320.0, 1328.0, 1.0, [Segment("F", 320, 328)])
+    left_out: list = []
+    out = shorts._trim_own_view([moment, gone], day, left_out)
+    assert [(s.t_start, s.t_end) for s in out[0].segments] == [(311.0, 317.0)]
+    assert out[0].utc_end == 1317.0
+    assert left_out == [gone] and "cockpit" in gone.why[-1]
+
+
+def test_a_cut_at_the_cockpit_also_drops_the_empty_seconds_before_it():
+    from videobrowser import shorts
+    from videobrowser.sync import CameraClock
+
+    day = shorts.DayData("2026-08-02", {"F": CameraClock("F", 1000.0, 600.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
+    # A rider in view 314-315, gone from 316; the camera turns down from 317.
+    day.action["F"] = [
+        (t + 0.5, 1 if 314 <= t <= 315 else 0, 0.0, 0.1, 0, 1 if t >= 317 else 0) for t in range(300, 330)
+    ]
+    moment = Moment("overtaken", 1311.0, 1319.0, 1.0, [Segment("F", 311, 319)])
+    out = shorts._trim_own_view([moment], day, [])
+    assert [(s.t_start, s.t_end) for s in out[0].segments] == [(311.0, 316.0)]  # ends on the rider
+
+
+def test_upside_down_turns_a_recording_once():
+    from videobrowser.shorts import DayData, turn_upside_down
+
+    day = DayData("2026-08-01", {}, {}, {"A": 0, "B": 90}, [], [])
+    spans = [("2026-08-01", "A", 1.0, 5.0), ("2026-08-01", "A", 9.0, 12.0), ("2026-07-01", "B", 0.0, 3.0)]
+    turn_upside_down(day, spans)
+    assert day.rotations == {"A": 180, "B": 90}
+
+
+def test_rating_tags_change_moments():
+    from videobrowser.shorts import DayData, apply_tags
+    from videobrowser.themes import Moment, Segment
+
+    class Day(DayData):
+        def offset(self, rid):
+            return 0.0
+
+    day = Day("d", {}, {}, {}, [], [])
+
+    def moment(theme="overtake"):
+        return Moment(theme, 10.0, 20.0, 1.0, [Segment("A", 10.0, 15.0), Segment("B", 15.0, 20.0)])
+
+    span = [("d", "A", 9.0, 16.0)]
+    other_day = [("x", "A", 9.0, 16.0)]
+    assert apply_tags([moment()], day, {"paddock": span}) == []
+    assert len(apply_tags([moment()], day, {"paddock": other_day})) == 1
+    (m,) = apply_tags([moment()], day, {"wrong camera": span})
+    assert [s.recording_id for s in m.segments] == ["B"] and m.utc_start == 15.0
+    (m,) = apply_tags([moment()], day, {"bad picture": span})
+    assert [s.recording_id for s in m.segments] == ["B"]
+    (m,) = apply_tags([moment()], day, {"wrong theme": span})
+    assert m.theme == "action"

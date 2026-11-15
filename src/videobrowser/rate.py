@@ -34,14 +34,25 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from videobrowser.ratings import NOT_TOGETHER, RatingsDB
+from videobrowser.ratings import (
+    BAD_PICTURE,
+    NOT_TOGETHER,
+    PADDOCK,
+    UPSIDE_DOWN,
+    WRONG_CAMERA,
+    WRONG_THEME,
+    RatingsDB,
+)
 
 DEFAULT_PORT = 8765
 # ``NOT_TOGETHER``: the moment's cameras do not show the same seconds (wrong
 # sync); the next ``shorts`` run leaves the other camera out. "wrong theme":
 # the detector named it wrong (e.g. catching up while the others pull away),
 # which the up/down vote on the clip itself says nothing about.
-DEFAULT_TAGS = ("great", "boring", "paddock", "wrong camera", "bad picture", NOT_TOGETHER, "wrong theme")
+# ``UPSIDE_DOWN``: the next ``shorts`` run turns that recording round.
+DEFAULT_TAGS = (
+    "great", "boring", PADDOCK, WRONG_CAMERA, BAD_PICTURE, NOT_TOGETHER, WRONG_THEME, UPSIDE_DOWN
+)
 # Which files show a moment, best first: a short's pieces show every camera.
 KIND_ORDER = ("short", "vertical", "horizontal")
 ORDERS = ("rounds", "time", "score", "uncertain")
