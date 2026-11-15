@@ -79,6 +79,34 @@ def windows_for(db: ScanDB, rid: str) -> list[tuple[Any, ClipWindow]]:
     return out
 
 
+def _corner_pairs(days, meta, pairs: list, min_speed: float) -> list:
+    """(row, window) pairs for the front camera's sharpest corners on
+    *meta*'s recording (``shorts.corner_moments``), left out where a clip
+    window already covers them. The row is a stand-in: these windows are
+    not in the scan's clips table, so no file path is stored for them."""
+    from videobrowser.shorts import corner_moments
+
+    day = days.get(meta["date_label"]) if days else None
+    rid = meta["recording_id"]
+    if day is None or rid not in day.clocks:
+        return []
+    if "_corner_moments" not in day.__dict__:
+        day.__dict__["_corner_moments"] = corner_moments(day, [], min_speed)
+    out = []
+    for m in day.__dict__["_corner_moments"]:
+        seg = m.segments[0]
+        if seg.recording_id != rid:
+            continue
+        dur = seg.t_end - seg.t_start
+        if any(
+            min(seg.t_end, w.t_end) - max(seg.t_start, w.t_start) > 0.3 * dur for _, w in pairs
+        ):
+            continue
+        window = ClipWindow(seg.t_start, seg.t_end, rid, ["corner"], m.score, [])
+        out.append(({"id": -1, "t_start": seg.t_start, "t_end": seg.t_end}, window))
+    return out
+
+
 def tracks_for(db: ScanDB, rid: str) -> dict[int, list[TrackPoint]]:
     tracks: dict[int, list[TrackPoint]] = {}
     for track_id, t, x1, y1, x2, y2, w, h in db.tracks(rid):
@@ -193,7 +221,7 @@ def _rating_records(days, meta, done: list, kind: str, min_speed: float) -> list
 
             start = day.offset(rid)
             m = Moment(
-                "clip", start + window.t_start, start + window.t_end, window.score,
+                "corner" if "corner" in window.types else "clip", start + window.t_start, start + window.t_end, window.score,
                 [Segment(rid, window.t_start, window.t_end)],
             )
             record = moment_record(m, day, [(kind, path)], min_speed)
@@ -427,8 +455,10 @@ def export_verticals(
     min_score: float = 0.0,
     top: float = 0.0,
     explore: float = 0.1,
+    corners: bool = True,
 ) -> int:
     """Cut 1080x1920 follow-cam clips; returns how many were cut.
+    *corners*: also the front cameras' sharpest corners (``shorts.corner_moments``).
     *ratings*: register them in the local ratings database."""
     from videobrowser.racebox_align import load_track
     from videobrowser.themes import facing
@@ -451,7 +481,7 @@ def export_verticals(
             rid = meta["recording_id"]
             at = f"[file {i} of {len(metas)}]"
             pairs = windows_for(db, rid)
-            if not pairs:
+            if not pairs and not corners:
                 continue
             try:
                 recording = recording_from_meta(meta)
@@ -460,6 +490,10 @@ def export_verticals(
                 continue
             pairs = _on_track(db, days, meta, pairs, "vertical_path", min_speed, max_vehicle_share)
             pairs = _skip_low(db, verdicts, meta, pairs, "vertical_path")
+            if corners:
+                pairs = pairs + _corner_pairs(days, meta, pairs, min_speed)
+            if not pairs:
+                continue
             vdir = out_dir / "vertical" / meta["date_label"]
             _clear_others(vdir, rid, {_clip_name(w) for _, w in pairs})
             todo = []

@@ -157,6 +157,12 @@ def build_parser() -> argparse.ArgumentParser:
             default=None,
             help="Clips cut at once (default: CPU threads / 4, at most 4)",
         )
+        if name == "verticals":
+            cmd.add_argument(
+                "--no-corners",
+                action="store_true",
+                help="Leave out the front cameras' sharpest corners (cut from GPS turn rate)",
+            )
         cmd.add_argument(
             "--overlay-shift",
             type=float,
@@ -292,9 +298,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Share of the left-out moments kept anyway, so the model sees its low picks too (default 0.1)",
     )
     shorts.add_argument(
-        "--corners",
+        "--no-corners",
         action="store_true",
-        help="Experiment: also cut the front cameras' sharpest corners (from GPS turn rate) as their own shorts",
+        help="Leave out the front cameras' sharpest corners (cut from GPS turn rate as their own shorts)",
     )
     shorts.add_argument(
         "--no-ratings",
@@ -408,7 +414,7 @@ def shorts_cmd(args: argparse.Namespace) -> int:
         min_score=args.min_score,
         top=args.top,
         explore=args.explore,
-        corners=args.corners,
+        corners=not args.no_corners,
     )
     return 0
 
@@ -487,7 +493,7 @@ def exports_cmd(args: argparse.Namespace) -> int:
     if args.cmd == "horizontals":
         export_horizontals(out, stats_path=args.stats, **common)
     else:
-        export_verticals(out, **common)
+        export_verticals(out, corners=not args.no_corners, **common)
     return 0
 
 

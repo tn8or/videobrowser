@@ -1693,7 +1693,7 @@ def build_shorts(
     min_score: float = 0.0,
     top: float = 0.0,
     explore: float = 0.1,
-    corners: bool = False,
+    corners: bool = True,
 ) -> dict[str, list[Path]]:
     """*corners*: add moments around the sharpest corners of the front
     cameras (``corner_moments``). *ratings*: register the day's moments and their files in the local
