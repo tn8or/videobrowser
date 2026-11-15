@@ -14,8 +14,8 @@ def _scan(out: Path, source: str) -> None:
                            [{"path": "R.mp4", "offset": 0.0, "duration": 60.0}], source)
     db.replace_events("R", [("R", "approaching_rider", 12.0, 14.0, 0.9, "7", None, "{}")])
     db.replace_clips("R", [(5.0, 20.0, "approaching_rider", 0.9, None, None)])
-    db.save_tracks("R", [TrackPoint(13.0, 10, 20, 110, 220, 0.9, 0, 7, 640, 360),
-                         TrackPoint(40.0, 10, 20, 110, 220, 0.9, 0, 7, 640, 360)])
+    db.save_tracks("R", [TrackPoint(13.0, 100, 20, 200, 220, 0.9, 0, 7, 640, 360),
+                         TrackPoint(40.0, 100, 20, 200, 220, 0.9, 0, 7, 640, 360)])
     db.close()
 
 
