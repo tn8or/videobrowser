@@ -36,6 +36,7 @@ from urllib.parse import parse_qs, urlparse
 
 from videobrowser.ratings import (
     BAD_PICTURE,
+    CRASH_SEEN,
     NOT_TOGETHER,
     PADDOCK,
     UPSIDE_DOWN,
@@ -51,7 +52,7 @@ DEFAULT_PORT = 8765
 # which the up/down vote on the clip itself says nothing about.
 # ``UPSIDE_DOWN``: the next ``shorts`` run turns that recording round.
 DEFAULT_TAGS = (
-    "great", "boring", PADDOCK, WRONG_CAMERA, BAD_PICTURE, NOT_TOGETHER, WRONG_THEME, UPSIDE_DOWN
+    "great", "boring", PADDOCK, WRONG_CAMERA, BAD_PICTURE, NOT_TOGETHER, WRONG_THEME, UPSIDE_DOWN, CRASH_SEEN
 )
 # Which files show a moment, best first: a short's pieces show every camera.
 KIND_ORDER = ("short", "vertical", "horizontal")
@@ -821,6 +822,16 @@ function show() {
   $('why').innerHTML = '';
   for (const w of m.why) { const li = document.createElement('li'); li.textContent = w; $('why').appendChild(li); }
   if (!m.why.length) $('why').innerHTML = '<li class="dim">not recorded</li>';
+  // The speed the pace check went by, and where it came from (camera GPS,
+  // RaceBox, or none), so a wrong RaceBox placement shows against the video.
+  const fe = m.features || {};
+  if (fe.pace_from || fe.speed_kmh != null) {
+    const li = document.createElement('li');
+    const range = fe.speed_min != null && fe.speed_max != null
+      ? ` (${fe.speed_min.toFixed(0)}-${fe.speed_max.toFixed(0)} km/h in the moment)` : '';
+    li.textContent = `pace: ${fe.pace || '?'} · ${fe.pace_from || `${fe.speed_kmh.toFixed(0)} km/h`}${range}`;
+    $('why').appendChild(li);
+  }
   $('up').classList.toggle('on', m.vote > 0);
   $('down').classList.toggle('on', m.vote < 0);
   $('tags').innerHTML = '';

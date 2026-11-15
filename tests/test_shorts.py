@@ -164,12 +164,13 @@ def test_clip_drop_reason_matches_the_shorts(monkeypatch):
 
     day = shorts.DayData("2026-08-01", {"F": CameraClock("F", 1000.0, 300.0, [])}, {"F": "cockpit"}, {"F": 0}, [], [])
     # Parked until 30 s, paddock until 100 s, then on track; a van at 250 s.
-    speeds = [SpeedSample(t, 2.0 if t < 30 else 25.0 if t < 100 else 110.0) for t in range(300)]
+    speeds = [SpeedSample(t, 2.0 if t < 30 else 25.0 if t < 100 else 110.0 if t < 200 else 25.0) for t in range(300)]
     monkeypatch.setattr(shorts, "_recording_gps", lambda clock: (speeds, []))
-    day.vehicles["F"] = [(t + 0.5, 1.0 if t >= 250 else 0.0) for t in range(300)]
+    day.vehicles["F"] = [(t + 0.5, 1.0 if t >= 150 else 0.0) for t in range(300)]
     assert shorts.clip_drop_reason(day, "F", 5.0, 20.0) == "standing still"
     assert shorts.clip_drop_reason(day, "F", 50.0, 70.0) == "below 40 km/h"
-    assert shorts.clip_drop_reason(day, "F", 150.0, 170.0) is None
+    # A "car" in view at track speed is a bike seen up close, not the paddock.
+    assert shorts.clip_drop_reason(day, "F", 160.0, 180.0) is None
     assert shorts.clip_drop_reason(day, "F", 255.0, 270.0) == "car in view"
     assert shorts.clip_drop_reason(day, "F", 50.0, 70.0, min_speed=0, max_vehicle_share=0) is None
 
@@ -742,3 +743,17 @@ def test_rating_tags_change_moments():
     assert [s.recording_id for s in m.segments] == ["B"]
     (m,) = apply_tags([moment()], day, {"wrong theme": span})
     assert m.theme == "action"
+
+
+def test_crash_seen_makes_a_crash_other_moment_that_is_never_skipped():
+    from videobrowser.shorts import DayData, apply_tags
+    from videobrowser.themes import Moment, Segment
+
+    class Day(DayData):
+        def offset(self, rid):
+            return 0.0
+
+    day = Day("d", {}, {}, {}, [], [])
+    m = Moment("action", 10.0, 18.0, 1.0, [Segment("A", 10.0, 18.0)])
+    (out,) = apply_tags([m], day, {"crash seen": [("d", "A", 9.0, 19.0)]})
+    assert out.theme == "crash_other" and out.keep and out.score > 1.0

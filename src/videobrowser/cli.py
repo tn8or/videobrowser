@@ -749,6 +749,13 @@ def ratings_cmd(args: argparse.Namespace) -> int:
         print(f"{db.path}: {s['moments']} moments, {s['up']} up, {s['down']} down")
         from videobrowser.ratings import PADDOCK, WRONG_THEME
 
+        from videobrowser.ratings import CRASH_SEEN
+
+        missed = {t: c for t, c in db.tag_by_theme(CRASH_SEEN).items() if c[0]}
+        if missed:
+            print(f'tagged "{CRASH_SEEN}" (a crash the scan did not call one), by the theme it got:')
+            for theme, (hit, rated) in sorted(missed.items(), key=lambda kv: -kv[1][0]):
+                print(f"  {theme}: {hit} of {rated}")
         wrong = {t: c for t, c in db.tag_by_theme(WRONG_THEME, without=PADDOCK).items() if c[0]}
         if wrong:
             print(f'tagged "{WRONG_THEME}" (not also "{PADDOCK}"), by the theme the detector gave (of the rated moments):')

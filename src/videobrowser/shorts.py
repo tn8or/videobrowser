@@ -458,6 +458,16 @@ def _moment_speed(m: Moment, day: DayData) -> float | None:
     return float(np.median(vals)) if vals else None
 
 
+def _car_in_view(m: Moment, day: DayData, max_vehicle_share: float, min_speed: float) -> bool:
+    """A vehicle in view this share of the time says the paddock, unless the
+    bike goes at track speed: up close the tracker calls a bike a car, and
+    nothing in the paddock rides that fast."""
+    if max_vehicle_share <= 0 or (_moment_vehicles(m, day) or 0.0) < max_vehicle_share:
+        return False
+    speed = _moment_speed(m, day)
+    return not (speed is not None and min_speed > 0 and speed >= min_speed)
+
+
 def _moment_motion(m: Moment, day: DayData) -> float | None:
     """Median scene motion over the moment's pieces, None if not stored."""
     vals: list[float] = []
@@ -718,7 +728,7 @@ def day_moments(
         before = len(moments)
         kept_v: list[Moment] = []
         for m in moments:
-            if m.theme in SPEED_EXEMPT_THEMES or (_moment_vehicles(m, day) or 0.0) < max_vehicle_share:
+            if m.theme in SPEED_EXEMPT_THEMES or not _car_in_view(m, day, max_vehicle_share, min_speed):
                 kept_v.append(m)
             else:
                 m.why.append("left out: car in view (paddock)")
@@ -893,7 +903,7 @@ def apply_tags(moments: list[Moment], day: DayData, tagged: dict[str, list]) -> 
     the moment out; "wrong camera" and "bad picture" leave out the shown
     camera's pieces (the moment too when no other camera is left); "wrong
     theme" moves the moment to the mixed action shorts."""
-    from videobrowser.ratings import BAD_PICTURE, PADDOCK, WRONG_CAMERA, WRONG_THEME
+    from videobrowser.ratings import BAD_PICTURE, CRASH_SEEN, PADDOCK, WRONG_CAMERA, WRONG_THEME
 
     drop: dict[int, str] = {}
     for m in _tagged_moments(moments, day, tagged.get(PADDOCK, [])):
@@ -911,8 +921,16 @@ def apply_tags(moments: list[Moment], day: DayData, tagged: dict[str, list]) -> 
             m.utc_start = day.offset(keep[0].recording_id) + keep[0].t_start
             m.utc_end = day.offset(keep[-1].recording_id) + keep[-1].t_end
             m.why.append(f"left out camera {rid}: {tag} (rated)")
+    crash = {id(m) for m in _tagged_moments(moments, day, tagged.get(CRASH_SEEN, []))}
+    for m in moments:
+        if id(m) in crash and id(m) not in drop and m.theme != "crash_other":
+            m.score *= THEME_WEIGHT.get("crash_other", 1.0) / THEME_WEIGHT.get(m.theme, 1.0)
+            m.why.append(f"was {m.theme}: crash seen (rated)")
+            m.theme = "crash_other"
+        if id(m) in crash:
+            m.keep = True
     for m in _tagged_moments(moments, day, tagged.get(WRONG_THEME, [])):
-        if m.theme != "action" and id(m) not in drop:
+        if m.theme != "action" and id(m) not in drop and id(m) not in crash:
             m.why.append(f"was {m.theme}: wrong theme (rated)")
             m.theme = "action"
     if drop:
@@ -1261,7 +1279,8 @@ def skip_low_scores(
         id(m): moment_record(m, day, (), min_speed, known[id(m)][0], known[id(m)][1]).key for m in moments
     }
     verdict = gate(
-        [(keys[id(m)], known[id(m)][2], m.theme) for m in moments], min_score, top, explore
+        [(keys[id(m)], known[id(m)][2], "crash" if m.keep else m.theme) for m in moments],
+        min_score, top, explore
     )
     kept: list[Moment] = []
     for m in moments:
@@ -1312,7 +1331,7 @@ def clip_drop_reason(
     """
     start = day.offset(rid)
     m = Moment("action", start + t_start, start + t_end, 0.0, [Segment(rid, t_start, t_end)])
-    if max_vehicle_share > 0 and (_moment_vehicles(m, day) or 0.0) >= max_vehicle_share:
+    if _car_in_view(m, day, max_vehicle_share, min_speed):
         return "car in view"
     if _nothing_in_view(m, day):
         return "no rider or kerb in view"
@@ -1633,9 +1652,11 @@ def build_shorts(
 
         not_together_spans = tagged_spans(NOT_TOGETHER)
         upside_down_spans = tagged_spans(UPSIDE_DOWN)
-        from videobrowser.ratings import BAD_PICTURE, PADDOCK, WRONG_CAMERA, WRONG_THEME
+        from videobrowser.ratings import BAD_PICTURE, CRASH_SEEN, PADDOCK, WRONG_CAMERA, WRONG_THEME
 
-        tag_spans = {t: tagged_spans(t) for t in (PADDOCK, WRONG_CAMERA, BAD_PICTURE, WRONG_THEME)}
+        tag_spans = {
+            t: tagged_spans(t) for t in (PADDOCK, WRONG_CAMERA, BAD_PICTURE, WRONG_THEME, CRASH_SEEN)
+        }
     from videobrowser.racebox_align import load_track
 
     track = load_track(sessions_dir)

@@ -52,6 +52,9 @@ PADDOCK = "paddock"
 WRONG_CAMERA = "wrong camera"
 BAD_PICTURE = "bad picture"
 WRONG_THEME = "wrong theme"
+# A rider falling in front of the camera that the scan did not call a crash:
+# ``shorts`` makes it a "crash_other" moment and never leaves it out by score.
+CRASH_SEEN = "crash seen"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
