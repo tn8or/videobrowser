@@ -747,6 +747,13 @@ def ratings_cmd(args: argparse.Namespace) -> int:
     try:
         s = db.stats()
         print(f"{db.path}: {s['moments']} moments, {s['up']} up, {s['down']} down")
+        from videobrowser.ratings import PADDOCK, WRONG_THEME
+
+        wrong = {t: c for t, c in db.tag_by_theme(WRONG_THEME, without=PADDOCK).items() if c[0]}
+        if wrong:
+            print(f'tagged "{WRONG_THEME}" (not also "{PADDOCK}"), by the theme the detector gave (of the rated moments):')
+            for theme, (hit, rated) in sorted(wrong.items(), key=lambda kv: -kv[1][0] / kv[1][1]):
+                print(f"  {theme}: {hit} of {rated} ({hit / rated:.0%})")
     finally:
         db.close()
     return 0
