@@ -262,7 +262,10 @@ def test_a_box_filling_the_frame_is_the_cockpit_in_view():
     assert not own_view_frame([_box(318.0, 1, 400, 110, 440, 165)])  # a rider ahead
     flagged = [(318.0 + i * 0.2, True) for i in range(5)]
     assert own_view_per_second(flagged) == {318}
-    assert own_view_per_second([(318.0, True), (319.0, False)]) == {318}
+    # One or two flagged frames is a close pass, not the cockpit.
+    assert own_view_per_second([(318.0, True), (319.0, False)]) == set()
+    assert own_view_per_second([(318.0, True), (318.2, True), (318.4, False)]) == set()
+    assert own_view_per_second([(318.0, True), (318.2, True), (318.4, True)]) == {318}
     assert own_view_per_second([(318.0, False)]) == set()
 
 

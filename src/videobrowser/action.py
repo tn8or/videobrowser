@@ -30,7 +30,7 @@ SAME_BIKE_IOU = 0.5
 # A bike box this share of the frame, in this many frames of a second, means
 # the camera looks at its own cockpit.
 OWN_VIEW_AREA_FRAC = 0.5
-OWN_VIEW_FRAMES = 1
+OWN_VIEW_FRAMES = 3  # frames are ~0.2 s apart: a pass lasting under ~0.6 s is not the cockpit
 OWN_VIEW_CLASSES = frozenset({2, 3, 5, 7})  # car, motorcycle, bus, truck
 
 # Kerb pixels are red or white next to the other colour, in the lower part
