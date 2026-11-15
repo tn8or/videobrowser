@@ -61,6 +61,10 @@ OWN_BIKE_HEIGHT_FRAC = 0.6
 OWN_PART_EDGE_FRAC = 0.02
 OWN_PART_MAX_WIDTH_FRAC = 0.12
 OWN_PART_MIN_HEIGHT_FRAC = 0.3
+# The same sliver, boxed for a single frame only and wider than that: a flicker
+# of the camera's own exhaust or tail, which the crop must not jump to. Only
+# the tracks seen in more than one frame of the clip can be a rider.
+OWN_FLICKER_MIN_HEIGHT_FRAC = 0.3
 # Zero-phase smoothing time constant, seconds.
 SMOOTH_TAU = 0.35
 # Fastest pan, in source-frame widths per second.
@@ -127,6 +131,18 @@ def _own_part(point: TrackPoint) -> bool:
     )
 
 
+def _edge_flicker(points: list[TrackPoint], window: ClipWindow) -> bool:
+    """A track seen in one frame of the clip only, tall and against the left or
+    right frame edge: the camera's own exhaust or tail boxed for a moment."""
+    inside = [p for p in points if window.t_start <= p.t <= window.t_end]
+    if len(inside) != 1:
+        return False
+    p = inside[0]
+    w = max(1, p.frame_w)
+    at_edge = p.x1 <= OWN_PART_EDGE_FRAC * w or p.x2 >= (1.0 - OWN_PART_EDGE_FRAC) * w
+    return at_edge and p.height_frac >= OWN_FLICKER_MIN_HEIGHT_FRAC
+
+
 def focus_samples(
     window: ClipWindow,
     tracks: dict[int, list[TrackPoint]],
@@ -155,6 +171,8 @@ def focus_samples(
     for points in tracks.values():
         if is_ego_track(points):
             continue  # the camera's own exhaust or fairing
+        if _edge_flicker(points, window):
+            continue  # one frame of the own exhaust or tail at the frame edge
         for point in points:
             if not window.t_start <= point.t <= window.t_end:
                 continue

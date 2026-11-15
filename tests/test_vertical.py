@@ -409,3 +409,16 @@ def test_a_tall_sliver_at_the_frame_edge_is_the_own_bike_not_a_rider():
     exhaust = [box(10.4 + i * 0.2, 2, 0, 60, 38, 233) for i in range(6)]  # left edge, tall, 1.2 s
     out = focus_samples(ClipWindow(10.0, 12.0, "R", [], 0.0, []), {1: rider, 2: exhaust})
     assert out and all(s.cx > 0.5 for s in out)  # never swings to the left edge
+
+
+def test_one_frame_of_own_exhaust_at_the_edge_does_not_pull_the_crop():
+    from videobrowser.clips import ClipWindow
+    from videobrowser.riders import TrackPoint
+    from videobrowser.vertical import focus_samples
+
+    win = ClipWindow(0.0, 4.0, "r", [], 0.0, [])
+    rider = [TrackPoint(t, 420, 80, 450, 130, 1.0, 0, 1, 640, 360) for t in (0.0, 1.0, 2.0, 3.0, 4.0)]
+    # Tall, 14% wide, against the left edge, for a single frame.
+    exhaust = [TrackPoint(2.0, 0.1, 112, 90.7, 292, 1.0, 0, 2, 640, 360)]
+    samples = focus_samples(win, {1: rider, 2: exhaust}, [], "rear")
+    assert samples and all(s.cx > 0.6 for s in samples)
