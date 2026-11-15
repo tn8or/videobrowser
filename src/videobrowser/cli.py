@@ -158,6 +158,14 @@ def build_parser() -> argparse.ArgumentParser:
             help="Clips cut at once (default: CPU threads / 4, at most 4)",
         )
         cmd.add_argument(
+            "--overlay-shift",
+            type=float,
+            default=0.0,
+            metavar="SECONDS",
+            help="Experiment: let the overlay's speed and lean run this many seconds ahead of the picture "
+            "(negative: behind). Use with --force to render again. Default 0.",
+        )
+        cmd.add_argument(
             "--no-overlay",
             "--no-racebox",
             dest="no_overlay",
@@ -448,8 +456,10 @@ def facing_cmd(args: argparse.Namespace) -> int:
 
 
 def exports_cmd(args: argparse.Namespace) -> int:
+    from videobrowser import racebox_stage
     from videobrowser.exports import default_jobs, export_horizontals, export_verticals
 
+    racebox_stage.OVERLAY_SHIFT_S = args.overlay_shift
     out = args.out.expanduser().resolve()
     if not (out / "scan.sqlite").exists():
         print(f"no scan.sqlite in {out}", file=sys.stderr)
