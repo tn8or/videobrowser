@@ -958,6 +958,43 @@ def corner_moments(
     return kept
 
 
+# Moments seen only by a rear camera get the front camera's view of the same
+# seconds as a second piece, when one was on track there.
+ANGLE_THEMES = frozenset({"overtaken", "action", "duel"})
+
+
+def add_angles(moments: list[Moment], day: DayData, min_speed: float = DEFAULT_MIN_TRACK_KMH) -> list[Moment]:
+    """Add a front camera's piece of the same seconds (an "extra angle") to
+    each rider moment that only a rear camera saw: the rider coming up from
+    behind, then the front camera's view of the pass. The camera must cover
+    the whole moment, and be on track there (``_pace``)."""
+    fronts = [rid for rid in day.clocks if day.facing(rid) == "front"]
+    if not fronts:
+        return moments
+    added = 0
+    for m in moments:
+        if m.theme not in ANGLE_THEMES or any(day.facing(s.recording_id) != "rear" for s in m.segments):
+            continue
+        seen = {s.recording_id for s in m.segments}
+        for rid in fronts:
+            if rid in seen:
+                continue
+            offset = day.offset(rid)
+            lo, hi = m.utc_start - offset, m.utc_end - offset
+            if lo < 0 or hi > day.clocks[rid].duration or hi - lo < MIN_PIECE_S * 0.75:
+                continue
+            probe = Moment("angle", m.utc_start, m.utc_end, m.score, [Segment(rid, lo, hi)])
+            if _pace(probe, day, min_speed)[0] != "track":
+                continue
+            m.segments.append(Segment(rid, lo, hi))
+            m.why.append(f"extra angle: front camera {rid}")
+            added += 1
+            break
+    if added:
+        print(f"  {added} moment(s) with a front camera's view added")
+    return moments
+
+
 def _tagged_moments(moments: list[Moment], day: DayData, spans) -> list[Moment]:
     """The moments whose first piece overlaps a tagged span of its recording."""
     flagged = [(rid, lo, hi) for label, rid, lo, hi in spans if label == day.date_label]
@@ -1694,6 +1731,7 @@ def build_shorts(
     top: float = 0.0,
     explore: float = 0.1,
     corners: bool = True,
+    extra_angle: bool = True,
 ) -> dict[str, list[Path]]:
     """*corners*: add moments around the sharpest corners of the front
     cameras (``corner_moments``). *ratings*: register the day's moments and their files in the local
@@ -1754,6 +1792,8 @@ def build_shorts(
         )
         if corners:
             moments = moments + corner_moments(day, moments, min_speed)
+        if extra_angle:
+            moments = add_angles(moments, day, min_speed)
         if not_together_spans:
             moments = not_together(moments, day, not_together_spans)
         if any(tag_spans.values()):

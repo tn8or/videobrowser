@@ -780,3 +780,29 @@ def test_corner_moments_come_from_the_front_cameras_hardest_turns(monkeypatch):
     # A moment of other riders over the same seconds wins.
     rider = shorts.Moment("overtake", 1096.0, 1104.0, 1.0, [shorts.Segment("F", 96.0, 104.0)])
     assert len(shorts.corner_moments(day, [rider])) == 1
+
+
+def test_add_angles_puts_the_front_cameras_view_after_a_rear_only_moment(monkeypatch):
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+    from videobrowser.telemetry import SpeedSample
+
+    clocks = {"R": CameraClock("R", 1000.0, 600.0, []), "F": CameraClock("F", 1000.0, 600.0, [])}
+    day = shorts.DayData("d", clocks, {"R": "x", "F": "x"}, {"R": 0, "F": 0}, [], [])
+    day.facings = {"R": "rear", "F": "front"}
+    speeds = [SpeedSample(t, 100.0) for t in range(600)]
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: (speeds, []))
+
+    def moment(theme="action", rid="R", lo=100.0, hi=108.0):
+        return shorts.Moment(theme, 1000.0 + lo, 1000.0 + hi, 1.0, [shorts.Segment(rid, lo, hi)])
+
+    (m,) = shorts.add_angles([moment()], day)
+    assert [(s.recording_id, s.t_start, s.t_end) for s in m.segments] == [("R", 100.0, 108.0), ("F", 100.0, 108.0)]
+    # Not for a theme that has its own cameras, nor for a front camera's own moment.
+    (m,) = shorts.add_angles([moment("overtake")], day)
+    assert len(m.segments) == 1
+    (m,) = shorts.add_angles([moment(rid="F")], day)
+    assert len(m.segments) == 1
+    # Not when the front camera does not cover the seconds.
+    (m,) = shorts.add_angles([moment(lo=595.0, hi=603.0)], day)
+    assert len(m.segments) == 1

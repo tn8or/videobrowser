@@ -298,6 +298,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Share of the left-out moments kept anyway, so the model sees its low picks too (default 0.1)",
     )
     shorts.add_argument(
+        "--no-extra-angle",
+        action="store_true",
+        help="Don't add a front camera's view of the same seconds to moments only a rear camera saw",
+    )
+    shorts.add_argument(
         "--no-corners",
         action="store_true",
         help="Leave out the front cameras' sharpest corners (cut from GPS turn rate as their own shorts)",
@@ -415,6 +420,7 @@ def shorts_cmd(args: argparse.Namespace) -> int:
         top=args.top,
         explore=args.explore,
         corners=not args.no_corners,
+        extra_angle=not args.no_extra_angle,
     )
     return 0
 
