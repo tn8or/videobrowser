@@ -383,6 +383,28 @@ def test_moments_sharing_a_copied_scan_clip_show_once_and_share_a_vote(tmp_path)
     assert sorted(result["keys"]) == sorted(keys)
 
 
+def test_same_size_and_mtime_do_not_merge_different_clips(tmp_path):
+    """Two cuts written on one timestamp tick (or copied off a camera card,
+    whose clock steps in 2 s) share a size and an mtime without being the
+    same pictures. A vote must not land on both."""
+    db = RatingsDB.open(Path(os.environ["VIDEOBROWSER_RATINGS"]))
+    paths = []
+    for n, t in enumerate((10.0, 80.0)):
+        f = tmp_path / f"cut-{n}.mp4"
+        f.write_bytes(b"different-clip-%d" % n)
+        paths.append(f)
+        record = _record(tmp_path, t, "action", [("short", f)])
+        record.t_end = t + 6
+        db.register(record)
+    ns = paths[0].stat().st_mtime_ns
+    os.utime(paths[1], ns=(ns, ns))
+    assert paths[0].stat().st_size == paths[1].stat().st_size
+    assert paths[0].stat().st_mtime_ns == paths[1].stat().st_mtime_ns
+    moments = list_moments(db)
+    assert len(moments) == 2 and all(m["also"] == [] for m in moments)
+    db.close()
+
+
 def test_moments_a_few_seconds_apart_on_one_recording_show_once(tmp_path):
     """Cut from the source, so no shared file: two 6 s action windows 3 s
     apart (121 and 124 s), and a kneepuck at 0-1.9 s beside one at 1-4.5 s."""
