@@ -522,8 +522,14 @@ short's moment shows all its cameras side by side). Keys: `↑`/`K` up,
 `↓`/`J` down, `0` clear, `→`/space next, `←` back, `1`-`9` toggle the quick
 tags, which can also be clicked (add your own with `--tag`).
 
-By default it goes in rounds of 15 unrated moments drawn at random across
-the score (one from each fifteenth of it), in random order. At the end of a round the score is
+By default it goes in rounds of 15 unrated moments, in random order. The
+score is learned from how moments rank *within a day*, so a round goes
+mostly to the days where a vote teaches it most: days with no votes, or few
+of the rarer kind (an up and a down on the same day make a pair). No day
+takes the whole round; within a day the picks are spread across its score,
+and a day with far more downs than ups draws from its better-scoring part
+(and the other way round). Each moment shows its day's count, like
+"2026-07-31: 5 up, 27 down (needs ups)". At the end of a round the score is
 re-weighed from the votes and the next round drawn (until the learned score
 exists, the hand-tuned score draws the rounds). The order menu also offers
 time order, best score first and most uncertain first. `--host 0.0.0.0`
@@ -538,19 +544,35 @@ videobrowser train --list      # trained models; * is the one in use
 videobrowser train --use 3     # go back to model v3
 ```
 
-A logistic regression (plain numpy) on each voted moment's features: riders,
-kerb, speed, pace, theme, camera, event types; the bike's own riding (top and
-lowest speed, speeding up or slowing, hardest braking and acceleration in g,
-sharpest turn, time in corners, deepest lean from the GoPro IMU); and the
-other riders (time with one or a group in view, how fast the nearest one
-grows in the frame). Moments registered before a feature existed simply lack
-it; running `shorts` again refreshes their snapshot. It needs at least 6
-votes, some up and some down. The rating page re-trains between rounds and
-when it stops. A vote a moment only got from the same footage elsewhere
-counts once; a "great" tag counts twice.
+A logistic regression (plain numpy, L2 10) on each voted moment's features:
+riders in view and the nearest one's size, action per second, scene motion,
+length, cars in view; the bike's own riding (speed, top and lowest speed,
+speeding up or slowing, sharpest turn, time in corners); and the other riders
+(time with one or a group in view, how fast the nearest one grows in the
+frame). A number a moment lacks (no GPS, say) counts as an average one.
+
+Which features: a rule fixed beforehand, not tuned on the held-out score. A
+number must be there for at least half the voted moments, and nothing that
+mostly tells the day or camera setup apart is used (time of day, cameras,
+GoPro GPS, theme, event types, "no X stored" flags). The rest (kerb, braking
+and acceleration in g, deepest lean, ...) are in `learn.HELD_BACK` until
+enough votes carry them. On the first 148 votes this gave an AUC of ~0.74 on
+unseen days, against ~0.55-0.63 with everything in; it is the best of a small
+search, so read it as hopeful, not proven. It needs at least 6 votes, some up
+and some down. The rating page re-trains between rounds and when it stops. A
+vote a moment only got from the same footage elsewhere counts once; a
+"great" tag counts twice.
+
+The held-out AUC is measured with whole days held out and each day's
+moments compared only with each other (clips from one day look alike and get
+the same vote, so random folds flatter the model, and a day's own mix of ups
+and downs would look like signal).
 
 `shorts` then ranks moments by a blend: the learned score counts 0% below 30
-votes, rising to 100% at 200, against the hand-tuned score's rank. Your own
+votes, rising to 100% at 200, against the hand-tuned score's rank, and scaled
+by how well it predicts unseen days: 0% at AUC 0.5 (a coin toss), full at 0.8.
+With votes from fewer than 3 days there is no honest estimate and it counts
+0%. Your own
 crash and off-track moments always come first. Each moment's `why` says what
 the model gave it.
 

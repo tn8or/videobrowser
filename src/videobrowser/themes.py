@@ -40,11 +40,12 @@ LABELS = {
     "off_track": "UDE I GRUSET",
     "own_off_track": "AFKØRSEL",
     "action": "ACTION",
+    "corner": "KURVE",
 }
 # Order themed shorts are written in.
 THEME_ORDER = (
     "overtake", "overtaken", "catching_up", "duel", "kneepuck", "crash", "crash_other", "off_track",
-    "own_off_track",
+    "own_off_track", "corner",
 )
 
 # Rear camera must pick the rider up within this window around the front
@@ -107,6 +108,8 @@ class Moment:
     # Why the moment was kept (or left out): what was in view, the pace and
     # where it came from. Written to klip.txt and moments.json.
     why: list[str] = field(default_factory=list)
+    # Rated as a crash by hand: never left out by the learned score.
+    keep: bool = False
 
     @property
     def duration(self) -> float:

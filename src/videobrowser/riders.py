@@ -268,6 +268,7 @@ EGO_MIN_SECONDS = 2.0
 EGO_EDGE_SHARE = 0.6
 EGO_MAX_DRIFT = 0.04
 EGO_MAX_SIZE_CHANGE = 0.1
+EGO_HUGE_HEIGHT_FRAC = 0.45
 
 
 def is_ego_track(points: list[TrackPoint]) -> bool:
@@ -281,9 +282,12 @@ def is_ego_track(points: list[TrackPoint]) -> bool:
         w, h = max(1, p.frame_w), max(1, p.frame_h)
         return p.x1 <= _EDGE_FRAC * w or p.x2 >= (1 - _EDGE_FRAC) * w or p.y2 >= (1 - _EDGE_FRAC) * h
 
-    if sum(on_edge(p) for p in points) < EGO_EDGE_SHARE * len(points):
+    # A cockpit close-up (reservoir, fork cap) fills much of the frame without
+    # touching an edge, so a huge box needs no edge contact to count as ours.
+    huge = float(np.mean([p.height_frac for p in points])) >= EGO_HUGE_HEIGHT_FRAC
+    if not huge and sum(on_edge(p) for p in points) < EGO_EDGE_SHARE * len(points):
         return False
-    cx = [0.5 * (p.x1 + p.x2) / max(1, p.frame_w) for p in points]
+    cx =[0.5 * (p.x1 + p.x2) / max(1, p.frame_w) for p in points]
     cy = [0.5 * (p.y1 + p.y2) / max(1, p.frame_h) for p in points]
     heights = np.array([p.height for p in points], dtype=np.float64)
     # A rider closing in or dropping back changes size; the bike's own parts do not.

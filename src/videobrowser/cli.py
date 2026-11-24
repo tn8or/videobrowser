@@ -157,6 +157,20 @@ def build_parser() -> argparse.ArgumentParser:
             default=None,
             help="Clips cut at once (default: CPU threads / 4, at most 4)",
         )
+        if name == "verticals":
+            cmd.add_argument(
+                "--no-corners",
+                action="store_true",
+                help="Leave out the front cameras' sharpest corners (cut from GPS turn rate)",
+            )
+        cmd.add_argument(
+            "--overlay-shift",
+            type=float,
+            default=0.0,
+            metavar="SECONDS",
+            help="Experiment: let the overlay's speed and lean run this many seconds ahead of the picture "
+            "(negative: behind). Use with --force to render again. Default 0.",
+        )
         cmd.add_argument(
             "--no-overlay",
             "--no-racebox",
@@ -284,6 +298,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Share of the left-out moments kept anyway, so the model sees its low picks too (default 0.1)",
     )
     shorts.add_argument(
+        "--no-extra-angle",
+        action="store_true",
+        help="Don't add a front camera's view of the same seconds to moments only a rear camera saw",
+    )
+    shorts.add_argument(
+        "--no-corners",
+        action="store_true",
+        help="Leave out the front cameras' sharpest corners (cut from GPS turn rate as their own shorts)",
+    )
+    shorts.add_argument(
         "--no-ratings",
         action="store_true",
         help="Don't register the moments in the ratings database (~/.videobrowser/ratings.sqlite)",
@@ -395,6 +419,8 @@ def shorts_cmd(args: argparse.Namespace) -> int:
         min_score=args.min_score,
         top=args.top,
         explore=args.explore,
+        corners=not args.no_corners,
+        extra_angle=not args.no_extra_angle,
     )
     return 0
 
@@ -448,8 +474,10 @@ def facing_cmd(args: argparse.Namespace) -> int:
 
 
 def exports_cmd(args: argparse.Namespace) -> int:
+    from videobrowser import racebox_stage
     from videobrowser.exports import default_jobs, export_horizontals, export_verticals
 
+    racebox_stage.OVERLAY_SHIFT_S = args.overlay_shift
     out = args.out.expanduser().resolve()
     if not (out / "scan.sqlite").exists():
         print(f"no scan.sqlite in {out}", file=sys.stderr)
@@ -471,7 +499,7 @@ def exports_cmd(args: argparse.Namespace) -> int:
     if args.cmd == "horizontals":
         export_horizontals(out, stats_path=args.stats, **common)
     else:
-        export_verticals(out, **common)
+        export_verticals(out, corners=not args.no_corners, **common)
     return 0
 
 
@@ -704,7 +732,7 @@ def train_cmd(args: argparse.Namespace) -> int:
                 m = json.loads(row["metrics"])
                 mark = "*" if found and found[0] == row["version"] else " "
                 print(f"{mark} v{row['version']}  {row['trained_at']}  {m.get('n')} votes  "
-                      f"accuracy {m.get('cv_accuracy')}  AUC {m.get('cv_auc')}")
+                      f"accuracy {m.get('cv_accuracy')}  AUC {m.get('cv_auc')} ({m.get('cv_by', 'random')})")
             return 0
         if args.use is not None:
             try:
@@ -747,6 +775,20 @@ def ratings_cmd(args: argparse.Namespace) -> int:
     try:
         s = db.stats()
         print(f"{db.path}: {s['moments']} moments, {s['up']} up, {s['down']} down")
+        from videobrowser.ratings import PADDOCK, WRONG_THEME
+
+        from videobrowser.ratings import CRASH_SEEN
+
+        missed = {t: c for t, c in db.tag_by_theme(CRASH_SEEN).items() if c[0]}
+        if missed:
+            print(f'tagged "{CRASH_SEEN}" (a crash the scan did not call one), by the theme it got:')
+            for theme, (hit, rated) in sorted(missed.items(), key=lambda kv: -kv[1][0]):
+                print(f"  {theme}: {hit} of {rated}")
+        wrong = {t: c for t, c in db.tag_by_theme(WRONG_THEME, without=PADDOCK).items() if c[0]}
+        if wrong:
+            print(f'tagged "{WRONG_THEME}" (not also "{PADDOCK}"), by the theme the detector gave (of the rated moments):')
+            for theme, (hit, rated) in sorted(wrong.items(), key=lambda kv: -kv[1][0] / kv[1][1]):
+                print(f"  {theme}: {hit} of {rated} ({hit / rated:.0%})")
     finally:
         db.close()
     return 0
