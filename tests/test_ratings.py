@@ -202,3 +202,19 @@ def test_a_tag_copied_onto_other_footage_does_not_mark_that_window(tmp_path):
     assert json.loads(db.latest_vote(other)["tags"]) == [NOT_TOGETHER]
     assert db.tagged(NOT_TOGETHER) == [("2026-08-01", "GX010001", 10.0, 18.0)]
     db.close()
+
+
+def test_tag_by_theme_counts_tagged_against_rated(tmp_path):
+    from videobrowser.ratings import WRONG_THEME
+
+    db = RatingsDB.open(tmp_path / "r.sqlite")
+    a = db.register(_record(10, 18, theme="overtake"))
+    b = db.register(_record(100, 108, theme="overtake"))
+    c = db.register(_record(200, 208, theme="duel"))
+    db.vote(a, 1, [WRONG_THEME], spread=False)
+    db.vote(b, 1, [], spread=False)
+    db.vote(c, 1, [], spread=False)
+    assert db.tag_by_theme(WRONG_THEME) == {"overtake": (1, 2), "duel": (0, 1)}
+    db.vote(a, 1, [WRONG_THEME, "paddock"], spread=False)
+    assert db.tag_by_theme(WRONG_THEME, without="paddock")["overtake"] == (0, 2)
+    db.close()

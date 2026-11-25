@@ -13,6 +13,9 @@ from videobrowser.action import (
     kerb_events,
     kerb_share,
     nearest_rider_per_second,
+    own_view_frame,
+    own_view_per_second,
+    rider_points,
     riders_per_second,
 )
 from videobrowser.action import per_second as action_per_second
@@ -488,6 +491,7 @@ def scan_recording(
     motion_samples: list[tuple[float, float]] = []
     # (t, vehicle in view) per frame the detector saw.
     vehicle_samples: list[tuple[float, bool]] = []
+    own_view_samples: list[tuple[float, bool]] = []
     # The ground the bike rides onto, for running off the track ourselves.
     looks_ahead = (camera_facing or facing(profile.name)) == "front"
     ground = GroundAhead() if looks_ahead else None
@@ -582,6 +586,7 @@ def scan_recording(
                     ground.update(global_t, frame.image)
                 if use_riders:
                     vehicle_samples.append((global_t, vehicle_in_view(points)))
+                    own_view_samples.append((global_t, own_view_frame(points)))
                     points = [p for p in points if not is_vehicle(p)]
                     road = road_colour(frame.image) if points else None
                     for point in points:
@@ -735,15 +740,19 @@ def scan_recording(
         recording.recording_id,
         [(w.t_start, w.t_end, "+".join(w.types), w.score, None, None) for w in windows],
     )
-    # The rider boxes the vertical crop follows, inside the windows only.
+    # The rider boxes the vertical crop follows: inside the windows, plus every
+    # box counted as a rider (a short cut from the source follows those even
+    # outside a window, instead of only turning into the corner).
+    in_windows = [
+        point
+        for points in _merge_tracks(tracks, focus_tracks).values()
+        for point in points
+        if any(w.t_start <= point.t <= w.t_end for w in windows)
+    ]
+    seen = {id(point) for point in in_windows}
     db.save_tracks(
         recording.recording_id,
-        [
-            point
-            for points in _merge_tracks(tracks, focus_tracks).values()
-            for point in points
-            if any(w.t_start <= point.t <= w.t_end for w in windows)
-        ],
+        in_windows + [p for p in rider_points(tracks) if id(p) not in seen],
     )
     db.save_recording_meta(
         recording.recording_id,
@@ -772,6 +781,7 @@ def scan_recording(
             kerb_samples,
             nearest_rider_per_second(tracks),
             blinking_seconds(lamp_samples),
+            own_view_per_second(own_view_samples),
         ),
     )
     db.mark_recording(recording.recording_id, profile.name, recording.duration, processed=True)

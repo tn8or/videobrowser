@@ -41,6 +41,20 @@ VOTES = (-1, 0, 1)
 # The quick tag for a moment whose cameras do not show the same seconds
 # (wrong sync between them): ``shorts`` then leaves the other camera out.
 NOT_TOGETHER = "not together"
+# A moment shown upside down: ``shorts`` turns its first camera's recording
+# round (the sky was too hard to see when the scan picked the rotation).
+UPSIDE_DOWN = "upside down"
+# Quick tags ``shorts`` acts on when it cuts again (``shorts.apply_tags``):
+# the whole moment is left out ("paddock"), only the shown camera's pieces
+# ("wrong camera", "bad picture"), or the moment moves to the mixed action
+# shorts ("wrong theme").
+PADDOCK = "paddock"
+WRONG_CAMERA = "wrong camera"
+BAD_PICTURE = "bad picture"
+WRONG_THEME = "wrong theme"
+# A rider falling in front of the camera that the scan did not call a crash:
+# ``shorts`` makes it a "crash_other" moment and never leaves it out by score.
+CRASH_SEEN = "crash seen"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -373,6 +387,33 @@ class RatingsDB:
             for r in rows
             if tag in json.loads(r["tags"] or "[]")
         ]
+
+    def tag_by_theme(self, tag: str, without: str | None = None) -> dict[str, tuple[int, int]]:
+        """theme -> (moments whose latest vote carries *tag*, moments with a
+        vote at all), so a tag like "wrong theme" shows which detector
+        misses. A moment that also carries *without* is not counted as
+        tagged (a paddock clip called "wrong theme" is the paddock gate's
+        miss, not the theme detector's). Inherited votes (same footage) are
+        left out."""
+        rows = self.conn.execute(
+            """
+            SELECT c.theme, v.tags FROM clips c
+            JOIN (
+                SELECT clip_key, tags, inherited_from, ROW_NUMBER() OVER (
+                    PARTITION BY clip_key ORDER BY voted_at DESC, id DESC
+                ) AS n FROM votes
+            ) v ON v.clip_key = c.clip_key AND v.n = 1
+            WHERE v.inherited_from IS NULL
+            """
+        ).fetchall()
+        out: dict[str, list[int]] = {}
+        for r in rows:
+            counts = out.setdefault(r["theme"], [0, 0])
+            counts[1] += 1
+            tags = json.loads(r["tags"] or "[]")
+            if tag in tags and (without is None or without not in tags):
+                counts[0] += 1
+        return {theme: (a, b) for theme, (a, b) in out.items()}
 
     def stats(self) -> dict[str, int]:
         latest = self.conn.execute(
