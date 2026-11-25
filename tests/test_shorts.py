@@ -782,6 +782,61 @@ def test_corner_moments_come_from_the_front_cameras_hardest_turns(monkeypatch):
     assert len(shorts.corner_moments(day, [rider])) == 1
 
 
+def test_not_together_tag_does_not_ban_an_extra_angle_the_user_did_not_rate(monkeypatch):
+    """A "not together" tag names the cameras in the moment that was rated.
+
+    A rear-only moment over those same seconds then gains the front camera
+    as an extra angle. That front camera was not in the tagged moment, so
+    the tag must not ban the rear+front pair for the rest of the day.
+    The pair that was tagged (rear and helmet) still stays apart.
+    """
+    import videobrowser.shorts as shorts
+    from videobrowser.sync import CameraClock
+    from videobrowser.telemetry import SpeedSample
+
+    clocks = {
+        "R": CameraClock("R", 1000.0, 600.0, []),
+        "F": CameraClock("F", 1000.0, 600.0, []),
+        "H": CameraClock("H", 1000.0, 600.0, []),
+    }
+    day = shorts.DayData(
+        "2026-08-02", clocks, {"R": "x", "F": "x", "H": "x"}, {"R": 0, "F": 0, "H": 0}, [], [],
+    )
+    day.facings = {"R": "rear", "F": "front", "H": "cockpit"}
+    monkeypatch.setattr(shorts, "_recording_gps", lambda clock: ([SpeedSample(t, 100.0) for t in range(600)], []))
+
+    tagged = shorts.Moment(
+        "overtaken", 1100.0, 1116.0, 1.0, [shorts.Segment("R", 100, 108), shorts.Segment("H", 108, 116)]
+    )
+    rear_only = shorts.Moment("action", 1102.0, 1110.0, 1.0, [shorts.Segment("R", 102, 110)])
+    later_front = shorts.Moment(
+        "overtaken", 1200.0, 1216.0, 1.0, [shorts.Segment("R", 200, 208), shorts.Segment("F", 208, 216)]
+    )
+    later_helmet = shorts.Moment(
+        "duel", 1300.0, 1316.0, 1.0, [shorts.Segment("R", 300, 308), shorts.Segment("H", 308, 316)]
+    )
+    spans = [("2026-08-02", "R", 100.0, 108.0)]
+    moments = [tagged, rear_only, later_front, later_helmet]
+    moments = shorts.add_angles(moments, day)
+    assert [s.recording_id for s in rear_only.segments] == ["R", "F"]
+    out = shorts.not_together(moments, day, spans)
+    assert [s.recording_id for s in out[0].segments] == ["R"]
+    assert [s.recording_id for s in out[1].segments] == ["R", "F"]
+    assert [s.recording_id for s in out[2].segments] == ["R", "F"]
+    assert [s.recording_id for s in out[3].segments] == ["R"]
+
+    # The moment that was rated is itself rear-only and then gains the front
+    # camera: that is the pair the tag names, and it stays apart all day.
+    rated = shorts.Moment("action", 1400.0, 1408.0, 1.0, [shorts.Segment("R", 400, 408)])
+    other = shorts.Moment(
+        "overtaken", 1500.0, 1516.0, 1.0, [shorts.Segment("R", 500, 508), shorts.Segment("F", 508, 516)]
+    )
+    rated_spans = [("2026-08-02", "R", 400.0, 408.0)]
+    out = shorts.not_together(shorts.add_angles([rated, other], day), day, rated_spans)
+    assert [s.recording_id for s in out[0].segments] == ["R"]
+    assert [s.recording_id for s in out[1].segments] == ["R"]
+
+
 def test_add_angles_puts_the_front_cameras_view_after_a_rear_only_moment(monkeypatch):
     import videobrowser.shorts as shorts
     from videobrowser.sync import CameraClock
