@@ -362,15 +362,24 @@ class RatingsDB:
 
     def tagged(self, tag: str) -> list[tuple[str, str, float, float]]:
         """(day, first piece's recording, its start, its end) of every moment
-        whose latest vote row carries *tag*."""
+        the user tagged *tag* on.
+
+        A vote copied from another moment (``inherited_from`` set) does not
+        count. The rating page stamps one vote onto every moment it shows as
+        the same footage, including moments that only share a copied scan
+        clip and do not overlap in time. ``shorts`` reads this to decide
+        which camera pairs are out of sync; a window the user never watched
+        must not mark a pair, or the next run drops that pair for the whole
+        day."""
         rows = self.conn.execute(
             """
             SELECT c.date_label, c.recording_id, c.t_start, c.t_end, v.tags FROM clips c
             JOIN (
-                SELECT clip_key, tags, ROW_NUMBER() OVER (
+                SELECT clip_key, tags, inherited_from, ROW_NUMBER() OVER (
                     PARTITION BY clip_key ORDER BY voted_at DESC, id DESC
                 ) AS n FROM votes
             ) v ON v.clip_key = c.clip_key AND v.n = 1
+            WHERE v.inherited_from IS NULL
             """
         ).fetchall()
         return [

@@ -22,6 +22,7 @@ here without the browser asking first.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import random
@@ -68,6 +69,13 @@ SMALL_DAY = 8  # moments (rated or not) a day needs to count in full when drawin
 # file's start beside the next one, which are the same pictures to rate.
 SAME_FOOTAGE_OVERLAP = 0.3
 CHUNK = 1 << 20
+# How much of a file ``_identity`` reads. Size and mtime are not enough: a
+# camera card stores times in 2 s steps, and this machine's clock only moves
+# a timestamp every few milliseconds, so two different clips of one length
+# written together share both. Copies made with ``copy2`` keep the bytes.
+_SAMPLE = 65536
+# (path, size, mtime_ns) -> identity, so a vote does not re-read every file.
+_identity_cache: dict[tuple, tuple] = {}
 
 
 def list_moments(
@@ -153,11 +161,30 @@ def list_moments(
     return out
 
 
-def _identity(path: str) -> tuple[int, int]:
-    """A file's size and mtime: the same for every copy ``copy2`` made of
-    one scan clip."""
+def _identity(path: str) -> tuple[int, int, str]:
+    """Size, mtime and a sample of the bytes. The same for every copy
+    ``copy2`` made of one scan clip, and not for two different clips that
+    happen to share a size and a timestamp."""
     st = Path(path).stat()
-    return (st.st_size, st.st_mtime_ns)
+    key = (path, st.st_size, st.st_mtime_ns)
+    cached = _identity_cache.get(key)
+    if cached is not None:
+        return cached
+    ident = (st.st_size, st.st_mtime_ns, _byte_sample(path, st.st_size))
+    _identity_cache[key] = ident
+    return ident
+
+
+def _byte_sample(path: str, size: int) -> str:
+    """A hash of the start and end of *path*. Cheap next to a video, and
+    enough to tell two clips apart."""
+    with open(path, "rb") as f:
+        head = f.read(_SAMPLE)
+        tail = b""
+        if size > _SAMPLE:
+            f.seek(size - _SAMPLE)
+            tail = f.read(_SAMPLE)
+    return hashlib.sha1(head + tail).hexdigest()
 
 
 def _same_footage(a: dict, b: dict) -> bool:
@@ -350,7 +377,8 @@ def _shown_files(files: list[tuple], under: Path | None) -> list[tuple[int, tupl
 def _distinct(files: list[tuple[int, tuple]]) -> list[tuple[int, tuple]]:
     """*files* without copies of the same clip: a moment that lands in two
     shorts (an action short and a theme short) has the same scan clip copied
-    into both, with the same size and, from ``copy2``, the same mtime."""
+    into both. ``_identity`` matches that copy and not another clip that
+    only shares its size and timestamp."""
     seen: set[tuple[int, int]] = set()
     out = []
     for i, f in files:

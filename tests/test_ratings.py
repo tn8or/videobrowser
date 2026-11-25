@@ -181,6 +181,29 @@ def test_tagged_lists_moments_whose_latest_vote_carries_the_tag(tmp_path):
     assert tagged_spans(NOT_TOGETHER, tmp_path / "missing.sqlite") == []
 
 
+def test_a_tag_copied_onto_other_footage_does_not_mark_that_window(tmp_path):
+    """The page copies a vote onto every moment it groups as the same footage.
+
+    Some of those share only a copied scan clip and do not overlap the one
+    the user watched. ``shorts`` must not treat their windows as out of sync,
+    or it drops whatever camera pair happens to sit there, for the whole day.
+    """
+    from videobrowser.ratings import NOT_TOGETHER
+
+    db = RatingsDB.open(tmp_path / "r.sqlite")
+    watched = db.register(_record(10, 18, theme="overtake"))
+    # Overlaps the watched moment: the other output of the same footage.
+    same = db.register(_record(12, 20, theme="clip"))
+    # No time overlap: grouped only because the page says so (a shared file).
+    other = db.register(_record(100, 108, theme="action", rid="GX019999"))
+    db.vote(watched, -1, [NOT_TOGETHER], also=[other])
+    assert db.latest_vote(same)["inherited_from"] == watched
+    assert db.latest_vote(other)["inherited_from"] == watched
+    assert json.loads(db.latest_vote(other)["tags"]) == [NOT_TOGETHER]
+    assert db.tagged(NOT_TOGETHER) == [("2026-08-01", "GX010001", 10.0, 18.0)]
+    db.close()
+
+
 def test_tag_by_theme_counts_tagged_against_rated(tmp_path):
     from videobrowser.ratings import WRONG_THEME
 
