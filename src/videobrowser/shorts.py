@@ -1049,35 +1049,63 @@ def apply_tags(moments: list[Moment], day: DayData, tagged: dict[str, list]) -> 
     return [m for m in moments if id(m) not in drop]
 
 
-def not_together(
-    moments: list[Moment], day: DayData, spans: list[tuple[str, str, float, float]]
-) -> list[Moment]:
-    """Leave the other cameras out where the rating page says a moment's
-    cameras do not belong together (``ratings.NOT_TOGETHER``).
+def _window_iou(a0: float, a1: float, b0: float, b1: float) -> float:
+    inter = min(a1, b1) - max(a0, b0)
+    if inter <= 0:
+        return 0.0
+    union = max(a1, b1) - min(a0, b0)
+    return inter / union if union > 0 else 0.0
 
-    *spans*: (day, first piece's recording, start, end) of the tagged
-    moments. Each one marks its recording and every other recording in the
-    moment found there as a bad pair: their clocks disagree, and one
-    recording keeps one clock error all through, so the pair is left apart
-    in every moment of the day. A moment keeps its first piece's camera.
+
+def bad_camera_pairs(
+    moments: list[Moment], day: DayData, spans: list[tuple[str, str, float, float]]
+) -> set[frozenset[str]]:
+    """Camera pairs the rating page said do not show the same seconds.
+
+    *spans*: (day, first piece's recording, start, end) of moments tagged
+    ``ratings.NOT_TOGETHER``. The moment whose first piece best matches
+    that window (highest overlap over union) marks its first camera and
+    every other camera it has as a bad pair. A moment that only overlaps
+    the window does not: it was not the one rated, and a front angle added
+    to it must not ban that pair for the rest of the day. One recording
+    keeps one clock error all through, so a pair that was rated is left
+    apart in every moment. A moment keeps its first piece's camera.
     """
     flagged = [(rid, lo, hi) for label, rid, lo, hi in spans if label == day.date_label]
-    if not flagged:
-        return moments
     bad: set[frozenset[str]] = set()
-    for m in moments:
-        first = m.segments[0]
-        if any(
-            rid == first.recording_id and min(hi, first.t_end) > max(lo, first.t_start)
-            for rid, lo, hi in flagged
-        ):
+    for rid, lo, hi in flagged:
+        best = 0.0
+        hits: list[Moment] = []
+        for m in moments:
+            if not m.segments or m.segments[0].recording_id != rid:
+                continue
+            iou = _window_iou(m.segments[0].t_start, m.segments[0].t_end, lo, hi)
+            if iou <= 0:
+                continue
+            if iou > best + 1e-9:
+                best = iou
+                hits = [m]
+            elif abs(iou - best) <= 1e-9:
+                hits.append(m)
+        for m in hits:
+            first = m.segments[0]
             bad.update(
                 frozenset((first.recording_id, s.recording_id))
                 for s in m.segments
                 if s.recording_id != first.recording_id
             )
+    return bad
+
+
+def split_bad_pairs(moments: list[Moment], day: DayData, bad: set[frozenset[str]]) -> list[Moment]:
+    """Drop cameras that form a *bad* pair with a moment's first camera.
+    The first camera stays."""
+    if not bad:
+        return moments
     split = 0
     for m in moments:
+        if not m.segments:
+            continue
         first = m.segments[0].recording_id
         keep = [s for s in m.segments if frozenset((first, s.recording_id)) not in bad]
         if len(keep) == len(m.segments):
@@ -1091,6 +1119,21 @@ def not_together(
     if split:
         print(f"  {split} moment(s) without a camera rated as not together with it")
     return moments
+
+
+def not_together(
+    moments: list[Moment], day: DayData, spans: list[tuple[str, str, float, float]]
+) -> list[Moment]:
+    """Leave the other cameras out where the rating page says a moment's
+    cameras do not belong together (``ratings.NOT_TOGETHER``).
+
+    *spans*: (day, first piece's recording, start, end) of the tagged
+    moments. Each one marks its recording and every other recording in the
+    moment found there as a bad pair: their clocks disagree, and one
+    recording keeps one clock error all through, so the pair is left apart
+    in every moment of the day. A moment keeps its first piece's camera.
+    """
+    return split_bad_pairs(moments, day, bad_camera_pairs(moments, day, spans))
 
 
 def _moment_action(m: Moment, day: DayData) -> tuple[int, float] | None:
@@ -1794,6 +1837,9 @@ def build_shorts(
             moments = moments + corner_moments(day, moments, min_speed)
         if extra_angle:
             moments = add_angles(moments, day, min_speed)
+        # After extra angles, so a tag on the moment that gained the front
+        # camera still names that pair. Only that moment's cameras count
+        # (``bad_camera_pairs``), not every moment overlapping its window.
         if not_together_spans:
             moments = not_together(moments, day, not_together_spans)
         if any(tag_spans.values()):
